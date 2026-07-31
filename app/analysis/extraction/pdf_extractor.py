@@ -1,30 +1,50 @@
-"""PDF text extraction via PyMuPDF.
+"""PDF text extraction via pdfplumber.
 
-Licensing note: PyMuPDF is AGPL-3.0 (or commercial). That is acceptable for a
-local single-user tool but becomes viral if this service is ever hosted or
-distributed. Because extraction sits behind ``TextExtractor``, switching to
-pdfplumber later means replacing only this file.
+Chosen over PyMuPDF for distribution reasons:
+
+* **Licence.** pdfplumber and pdfminer.six are MIT. PyMuPDF is AGPL-3.0, which
+  is viral for a distributed Windows executable unless a commercial licence is
+  bought.
+* **Packaging.** The text path is pdfminer.six, which is pure Python and
+  bundles cleanly under PyInstaller.
+
+Only this file changed in the swap. ``TextExtractor`` and every caller are
+untouched, which is the point of the interface.
 """
 
 from __future__ import annotations
 
+import importlib.metadata
+from io import BytesIO
 from typing import ClassVar
 
-import pymupdf
+import pdfplumber
+from pdfminer.pdfdocument import PDFPasswordIncorrect
 
 from app.analysis.extraction.base import ExtractedText, ExtractionError, TextExtractor
+
+# pdfplumber's defaults are tuned for tables. Resumes are mostly running text,
+# and a slightly wider x tolerance stops letter-spaced headings ("S K I L L S")
+# from being split into separate words.
+_X_TOLERANCE = 2.0
+_Y_TOLERANCE = 3.0
 
 
 class PdfTextExtractor(TextExtractor):
     content_types: ClassVar[tuple[str, ...]] = ("application/pdf",)
     extensions: ClassVar[tuple[str, ...]] = (".pdf",)
-    name: ClassVar[str] = "pymupdf"
+    name: ClassVar[str] = "pdfplumber"
 
     def _extract(self, data: bytes) -> ExtractedText:
         warnings: list[str] = []
 
         try:
-            document = pymupdf.open(stream=data, filetype="pdf")
+            document = pdfplumber.open(BytesIO(data))
+        except PDFPasswordIncorrect as exc:
+            raise ExtractionError(
+                "PDF is password protected and cannot be read.",
+                content_type="application/pdf",
+            ) from exc
         except Exception as exc:  # noqa: BLE001 - library raises broad types
             # Deliberately does not echo the exception text, which can embed
             # fragments of document content.
@@ -34,22 +54,20 @@ class PdfTextExtractor(TextExtractor):
             ) from exc
 
         try:
-            if document.needs_pass:
-                raise ExtractionError(
-                    "PDF is password protected and cannot be read.",
-                    content_type="application/pdf",
-                )
-
             pages: list[str] = []
-            for page in document:
+            for index, page in enumerate(document.pages, start=1):
                 try:
-                    # "text" preserves reading order well enough for the
-                    # line-based section detection downstream.
-                    pages.append(page.get_text("text"))
+                    extracted = page.extract_text(
+                        x_tolerance=_X_TOLERANCE, y_tolerance=_Y_TOLERANCE
+                    )
                 except Exception:  # noqa: BLE001 - skip unreadable page only
-                    warnings.append(f"Page {page.number + 1} could not be read.")
+                    warnings.append(f"Page {index} could not be read.")
+                    continue
 
-            page_count = document.page_count
+                if extracted:
+                    pages.append(extracted)
+
+            page_count = len(document.pages)
         finally:
             document.close()
 
@@ -64,10 +82,15 @@ class PdfTextExtractor(TextExtractor):
                 content_type="application/pdf",
             )
 
+        try:
+            version = importlib.metadata.version("pdfplumber")
+        except importlib.metadata.PackageNotFoundError:  # pragma: no cover
+            version = "unknown"
+
         return ExtractedText(
             text=text,
             extractor=self.name,
-            extractor_version=getattr(pymupdf, "__version__", "unknown"),
+            extractor_version=version,
             page_count=page_count,
             warnings=warnings,
         )

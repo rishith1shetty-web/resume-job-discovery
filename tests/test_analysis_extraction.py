@@ -28,8 +28,22 @@ def test_extract_pdf() -> None:
     result = extract_text(make_pdf(), content_type="application/pdf")
 
     assert "Financial Analyst" in result.text
-    assert result.extractor == "pymupdf"
+    assert result.extractor == "pdfplumber"
     assert result.page_count is not None and result.page_count >= 1
+
+
+def test_pdf_extraction_is_not_agpl_licensed() -> None:
+    """Guard the distribution decision.
+
+    PyMuPDF is AGPL-3.0, which is viral for a distributed Windows executable.
+    If it is reintroduced, this fails.
+    """
+    import importlib.util
+
+    assert importlib.util.find_spec("pymupdf") is None, (
+        "PyMuPDF (AGPL-3.0) is installed again; PDF extraction must stay MIT."
+    )
+    assert importlib.util.find_spec("fitz") is None
 
 
 def test_extract_docx() -> None:
@@ -56,7 +70,7 @@ def test_extraction_is_deterministic() -> None:
 
 
 def test_extractor_resolves_by_extension_when_content_type_missing() -> None:
-    assert get_extractor(extension=".pdf").name == "pymupdf"
+    assert get_extractor(extension=".pdf").name == "pdfplumber"
     assert get_extractor(extension=".docx").name == "python-docx"
     assert get_extractor(extension=".txt").name == "text-decode"
 

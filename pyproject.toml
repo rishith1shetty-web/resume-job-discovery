@@ -15,7 +15,10 @@ dependencies = [
     "structlog>=24.4.0",
     # Phase 2: resume upload and text extraction.
     "python-multipart>=0.0.20",  # required by FastAPI for multipart uploads
-    "pymupdf>=1.24.0",           # PDF text extraction (AGPL-3.0)
+    # pdfplumber (MIT, over pdfminer.six) rather than PyMuPDF (AGPL-3.0):
+    # the AGPL is viral for a distributed Windows executable, and the
+    # pdfminer text path is pure Python so it bundles cleanly.
+    "pdfplumber>=0.11.0",        # PDF text extraction
     "python-docx>=1.1.0",        # DOCX text extraction
 ]
 

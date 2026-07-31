@@ -10,9 +10,9 @@ from __future__ import annotations
 from io import BytesIO
 
 import docx
-import pymupdf
 
 from tests.conftest import TEST_RECORD_MARKER
+from tests.pdf_builder import build_blank_pdf, build_pdf_from_text
 
 # Worked example from CLAUDE.md section 3: Finance / Financial Analyst.
 FINANCIAL_ANALYST_RESUME = f"""Jane {TEST_RECORD_MARKER} Doe
@@ -77,30 +77,12 @@ def make_txt(text: str = FINANCIAL_ANALYST_RESUME) -> bytes:
 
 def make_pdf(text: str = FINANCIAL_ANALYST_RESUME) -> bytes:
     """Build a real PDF with selectable text."""
-    document = pymupdf.open()
-    lines = text.split("\n")
-
-    # ~50 lines per page keeps the text inside the page box.
-    for start in range(0, len(lines), 50):
-        page = document.new_page()
-        y = 60.0
-        for line in lines[start : start + 50]:
-            if line.strip():
-                page.insert_text((50, y), line, fontsize=9)
-            y += 13.0
-
-    data: bytes = document.tobytes()
-    document.close()
-    return data
+    return build_pdf_from_text(text)
 
 
 def make_scanned_pdf() -> bytes:
     """A PDF with pages but no selectable text, like a scan."""
-    document = pymupdf.open()
-    document.new_page()
-    data: bytes = document.tobytes()
-    document.close()
-    return data
+    return build_blank_pdf()
 
 
 def make_docx(text: str = FINANCIAL_ANALYST_RESUME) -> bytes:
