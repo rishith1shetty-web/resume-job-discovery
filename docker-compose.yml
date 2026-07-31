@@ -1,0 +1,54 @@
+# ---------------------------------------------------------------------------
+# Infrastructure for JobFinder (PostgreSQL + Redis).
+#
+# ISOLATION: published ports and volume names are prefixed/offset so this stack
+# cannot collide with the existing LinkedIn/Dice auto-apply project or with a
+# local PostgreSQL install on 5432.
+#
+#   docker compose up -d
+# ---------------------------------------------------------------------------
+name: jobfinder
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: jobfinder-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-change-me}
+      POSTGRES_DB: ${POSTGRES_DB:-resume_job_discovery}
+    ports:
+      # host 5433 -> container 5432. The local PostgreSQL 16 server already
+      # owns 5432; this stack is the alternative, not a replacement for it.
+      - "127.0.0.1:5433:5432"
+    volumes:
+      - jobfinder_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-postgres} -d ${POSTGRES_DB:-resume_job_discovery}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    container_name: jobfinder-redis
+    restart: unless-stopped
+    # Provisioned for Phase 7 background search workers. Unused in Phase 1.
+    command: ["redis-server", "--appendonly", "yes"]
+    ports:
+      # host 6380 -> container 6379, keeping 6379 free for any local install
+      - "127.0.0.1:${REDIS_PORT:-6380}:6379"
+    volumes:
+      - jobfinder_redisdata:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  jobfinder_pgdata:
+    name: jobfinder_pgdata
+  jobfinder_redisdata:
+    name: jobfinder_redisdata
