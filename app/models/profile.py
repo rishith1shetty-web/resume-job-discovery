@@ -23,7 +23,6 @@ from typing import TYPE_CHECKING, Any
 from sqlalchemy import (
     Boolean,
     DateTime,
-    Enum,
     Float,
     ForeignKey,
     Index,
@@ -40,21 +39,15 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 from app.core.constants import Seniority, SkillKind
 from app.db.base import Base
 from app.db.mixins import TimestampMixin, UUIDPrimaryKeyMixin
+from app.db.types import enum_column
 
 if TYPE_CHECKING:
     from app.models.resume import Resume
 
-
-def _enum_column(enum_cls: type, name: str, length: int = 32) -> Enum:
-    """VARCHAR + CHECK rather than a native PG enum, which is easier to evolve."""
-    return Enum(
-        enum_cls,
-        name=name,
-        native_enum=False,
-        create_constraint=True,
-        length=length,
-        values_callable=lambda enum: [member.value for member in enum],
-    )
+# Length 32 is what migration 0002 created for these two columns; it is passed
+# explicitly rather than taking the helper's default so the models cannot drift
+# away from the existing schema.
+_ENUM_LENGTH = 32
 
 
 class ResumeText(UUIDPrimaryKeyMixin, TimestampMixin, Base):
@@ -154,7 +147,7 @@ class ResumeProfile(UUIDPrimaryKeyMixin, TimestampMixin, Base):
 
     # --- Seniority and experience -----------------------------------------
     seniority: Mapped[Seniority | None] = mapped_column(
-        _enum_column(Seniority, "seniority_level")
+        enum_column(Seniority, "seniority_level", _ENUM_LENGTH)
     )
     seniority_confidence: Mapped[float] = mapped_column(
         Float, default=0.0, nullable=False
@@ -244,7 +237,7 @@ class ResumeSkill(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     skill_key: Mapped[str] = mapped_column(String(64), nullable=False)
     display: Mapped[str] = mapped_column(String(128), nullable=False)
     kind: Mapped[SkillKind] = mapped_column(
-        _enum_column(SkillKind, "skill_kind"), nullable=False
+        enum_column(SkillKind, "skill_kind", _ENUM_LENGTH), nullable=False
     )
 
     occurrences: Mapped[int] = mapped_column(Integer, default=0, nullable=False)

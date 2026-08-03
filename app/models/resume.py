@@ -24,6 +24,7 @@ from app.db.mixins import TimestampMixin, UUIDPrimaryKeyMixin
 
 if TYPE_CHECKING:
     from app.models.profile import ResumeProfile, ResumeText
+    from app.models.search import SearchRun
     from app.models.user import User
 
 
@@ -78,6 +79,14 @@ class Resume(UUIDPrimaryKeyMixin, TimestampMixin, Base):
         back_populates="resume",
         cascade="all, delete-orphan",
         order_by="desc(ResumeProfile.created_at)",
+        lazy="raise",
+    )
+    # Search history is per resume. Two resumes never share runs, results or
+    # application state (CLAUDE.md section 11).
+    search_runs: Mapped[list[SearchRun]] = relationship(
+        back_populates="resume",
+        cascade="all, delete-orphan",
+        order_by="desc(SearchRun.created_at)",
         lazy="raise",
     )
 

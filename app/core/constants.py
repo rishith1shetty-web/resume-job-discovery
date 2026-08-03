@@ -161,8 +161,108 @@ class SearchRunStatus(StrEnum):
     CANCELLED = "cancelled"
 
 
+# A run in one of these states will not change again.
+TERMINAL_SEARCH_RUN_STATUSES: frozenset[SearchRunStatus] = frozenset(
+    {
+        SearchRunStatus.COMPLETED,
+        SearchRunStatus.COMPLETED_WITH_ERRORS,
+        SearchRunStatus.FAILED,
+        SearchRunStatus.CANCELLED,
+    }
+)
+
+
+class PortalRunStatus(StrEnum):
+    """One portal's leg of a search run.
+
+    SKIPPED covers a portal that was selected but never attempted, e.g. it was
+    disabled between run creation and execution. It is distinct from FAILED so
+    the run summary can tell "did not run" apart from "tried and broke".
+    """
+
+    PENDING = "pending"
+    RUNNING = "running"
+    COMPLETED = "completed"
+    FAILED = "failed"
+    SKIPPED = "skipped"
+
+
+class RawJobStatus(StrEnum):
+    """Processing state of a listing exactly as a portal returned it.
+
+    ``raw_jobs`` is an audit trail: rows are never edited into shape, they are
+    promoted to a canonical ``jobs`` row and marked here. Phase 5 owns the
+    transitions; Phase 3 only defines them.
+    """
+
+    COLLECTED = "collected"
+    NORMALIZED = "normalized"
+    DUPLICATE = "duplicate"
+    REJECTED = "rejected"
+    FAILED = "failed"
+
+
+class JobUrlKind(StrEnum):
+    """Where an application URL points (docs/DECISIONS.md D-002, D-003).
+
+    Recorded per source so Phase 5 can pick the most direct usable URL when the
+    same vacancy arrives from several portals.
+    """
+
+    EMPLOYER_CAREER = "employer_career"
+    ATS = "ats"
+    PORTAL_LISTING = "portal_listing"
+    AGGREGATOR_REDIRECT = "aggregator_redirect"
+    UNKNOWN = "unknown"
+
+
+# Preference order for the canonical application URL (CLAUDE.md section 9).
+# Lower rank wins. Phase 5 implements the resolution; this is the rule it uses.
+JOB_URL_PREFERENCE: dict[JobUrlKind, int] = {
+    JobUrlKind.EMPLOYER_CAREER: 0,
+    JobUrlKind.ATS: 1,
+    JobUrlKind.PORTAL_LISTING: 2,
+    JobUrlKind.AGGREGATOR_REDIRECT: 3,
+    JobUrlKind.UNKNOWN: 4,
+}
+
+
+class WorkMode(StrEnum):
+    """Dashboard "location / work mode" column (CLAUDE.md section 10)."""
+
+    ONSITE = "onsite"
+    HYBRID = "hybrid"
+    REMOTE = "remote"
+
+
+class PortalErrorKind(StrEnum):
+    """Why a portal leg failed.
+
+    Kept coarse and portal-agnostic: the core never branches on a portal name,
+    so it must be able to reason about failures generically.
+    """
+
+    TIMEOUT = "timeout"
+    RATE_LIMITED = "rate_limited"
+    AUTH_REQUIRED = "auth_required"
+    BLOCKED = "blocked"
+    NETWORK = "network"
+    PARSE = "parse"
+    NOT_IMPLEMENTED = "not_implemented"
+    UNKNOWN = "unknown"
+
+
 # Allowed values for `requested_limit` on a search run (CLAUDE.md section 5).
 RESULT_LIMIT_OPTIONS: tuple[int, ...] = (20, 50, 100)
+
+# CLAUDE.md section 18: the match threshold is locked. It may be raised, never
+# lowered to fill a quota. This is the floor both the settings validator and
+# the `search_runs.min_score` CHECK constraint enforce.
+MIN_MATCH_SCORE_FLOOR: int = 70
+
+# Scores are percentages on a 0-100 scale, matching the 70% threshold.
+SCORE_MIN: float = 0.0
+SCORE_MAX: float = 100.0
 
 # Resume upload formats (CLAUDE.md section 2).
 SUPPORTED_RESUME_CONTENT_TYPES: tuple[str, ...] = (

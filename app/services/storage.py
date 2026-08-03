@@ -14,7 +14,7 @@ so an object-storage backend can be added later without touching callers.
 from __future__ import annotations
 
 import uuid
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Protocol
 
 from app.core.config import Settings
@@ -23,6 +23,14 @@ from app.core.logging import get_logger
 logger = get_logger(__name__)
 
 RESUME_SUBDIR = "resumes"
+
+#: Storage paths are *logical keys*, not OS paths: they are persisted in
+#: ``resumes.storage_path`` and must read back identically on any platform, so
+#: they are always built with ``PurePosixPath`` and always use forward slashes.
+#: A native ``Path`` would emit backslashes on Windows, which would make the
+#: stored value platform-specific - and the same forward-slash form is what an
+#: object-storage backend will want as its key.
+STORAGE_SEPARATOR = "/"
 
 
 class ResumeStorage(Protocol):
@@ -54,9 +62,17 @@ class LocalResumeStorage:
         return self._root
 
     def _relative_path(self, user_id: uuid.UUID, checksum: str, extension: str) -> str:
-        # Shard by the checksum prefix so one directory does not accumulate
-        # every file a user ever uploads.
-        return f"{RESUME_SUBDIR}/{user_id}/{checksum[:2]}/{checksum}{extension}"
+        # Joined rather than interpolated, so the separator is the path
+        # library's concern and cannot drift. Shard by the checksum prefix so
+        # one directory does not accumulate every file a user ever uploads.
+        return str(
+            PurePosixPath(
+                RESUME_SUBDIR,
+                str(user_id),
+                checksum[:2],
+                f"{checksum}{extension}",
+            )
+        )
 
     def save(
         self, *, user_id: uuid.UUID, checksum: str, extension: str, data: bytes
@@ -87,8 +103,17 @@ class LocalResumeStorage:
         return relative
 
     def resolve(self, storage_path: str) -> Path:
-        """Resolve a relative storage path, refusing anything outside the root."""
-        candidate = (self._root / storage_path).resolve()
+        """Resolve a relative storage path, refusing anything outside the root.
+
+        The stored key is interpreted as POSIX and rebuilt segment by segment,
+        so it resolves to the same file whatever the host platform separator
+        happens to be.
+        """
+        relative = PurePosixPath(storage_path)
+        if relative.is_absolute():
+            raise ValueError("Storage path escapes the storage root.")
+
+        candidate = self._root.joinpath(*relative.parts).resolve()
         if not candidate.is_relative_to(self._root):
             # Defensive: paths are generated internally, never client-supplied.
             raise ValueError("Storage path escapes the storage root.")

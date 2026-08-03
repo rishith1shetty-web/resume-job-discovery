@@ -10,17 +10,29 @@ from app.models import Base, Portal, PortalConfig, Resume, User
 
 
 def test_defined_tables_match_the_completed_phases() -> None:
-    # Phase 1 foundation plus Phase 2 resume intelligence. The remaining
-    # CLAUDE.md section 12 tables (search_runs, jobs, applications, ...)
-    # arrive in Phase 3.
+    # Phase 1 foundation, Phase 2 resume intelligence, Phase 3 job/search/
+    # application data. That completes the CLAUDE.md section 12 table set.
     assert set(Base.metadata.tables) == {
+        # Phase 1
         "users",
         "resumes",
         "portals",
         "portal_configs",
+        # Phase 2
         "resume_texts",
         "resume_profiles",
         "resume_skills",
+        # Phase 3
+        "search_runs",
+        "search_run_portals",
+        "search_queries",
+        "raw_jobs",
+        "jobs",
+        "job_sources",
+        "job_matches",
+        "applications",
+        "application_status_history",
+        "portal_errors",
     }
 
 

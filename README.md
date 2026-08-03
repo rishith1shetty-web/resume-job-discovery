@@ -34,7 +34,7 @@ different **databases**. Nothing here reads, writes, migrates or inspects
 
 ---
 
-## Current status: Phase 2 complete (Resume Intelligence)
+## Current status: Phase 3 complete (Job, Search and Application Data)
 
 **Phase 1 — Foundation**
 
@@ -50,7 +50,7 @@ different **databases**. Nothing here reads, writes, migrates or inspects
 
 - Resume upload (PDF, DOCX, TXT) with magic-byte validation, filename
   sanitisation, size limits, SHA-256 checksums and duplicate handling
-- Text extraction behind one interface: PyMuPDF, python-docx, text decoding
+- Text extraction behind one interface: pdfplumber, python-docx, text decoding
 - Deterministic extraction of skills, technologies, tools, titles,
   responsibilities, education, certifications, experience and seniority
 - Detection of **exactly one** primary domain and **one** target role, with
@@ -60,8 +60,27 @@ different **databases**. Nothing here reads, writes, migrates or inspects
   versioned so earlier detections stay traceable
 - Six resume endpoints (see [API](#api))
 
-Not implemented yet, by design: portal searching, the matching engine,
-background workers, dashboard endpoints, frontend code. See
+**Phase 3 — Job, Search and Application Data**
+
+- The remaining CLAUDE.md section 12 tables: `search_runs`,
+  `search_run_portals`, `search_queries`, `raw_jobs`, `jobs`, `job_sources`,
+  `job_matches`, `applications`, `application_status_history`, `portal_errors`
+- One canonical job per vacancy with every portal source preserved, and the
+  listing URL kept separate from the application URL
+- Search runs with per-portal quotas (`requested_limit // portal_count`,
+  remainder to the first portals), limits locked to 20/50/100 and the
+  threshold locked at 70 — both as CHECK constraints, not just validators
+- Manual application status keyed on (user, resume, job), so rediscovering a
+  vacancy through a second portal resolves to the existing record instead of a
+  new unapplied one
+- Append-only status history; a repeated identical update writes nothing
+- `Expired` is a job condition (`jobs.expired_at`), deliberately not an
+  application status, so a stale listing cannot overwrite `Applied`
+- Ten endpoints for portals, search runs, jobs and applications
+
+Not implemented yet, by design: portal adapters and collection, job
+normalisation and deduplication, the matching engine, background workers,
+frontend code. A search run is recorded and stays `pending` until Phase 7. See
 [Development order](#development-order).
 
 ### Resume analysis notes
@@ -166,6 +185,20 @@ uvicorn app.main:app --reload --port 8100
 | POST | `/api/v1/resumes/{id}/analyze` | Analyze; creates a profile version |
 | GET | `/api/v1/resumes/{id}/profile` | Get the analyzed profile |
 | PATCH | `/api/v1/resumes/{id}/profile` | Confirm/correct domain and role |
+| GET | `/api/v1/portals` | Portals for the checkbox list |
+| POST | `/api/v1/search-runs` | Record a run and its per-portal quotas |
+| GET | `/api/v1/search-runs` | List runs (paginated, `?resume_id=`) |
+| GET | `/api/v1/search-runs/{id}` | Get one run |
+| GET | `/api/v1/search-runs/{id}/progress` | Per-portal progress |
+| GET | `/api/v1/jobs` | Jobs for one resume (`resume_id` required) |
+| GET | `/api/v1/jobs/{id}` | One job with every portal source |
+| PATCH | `/api/v1/applications/{job_id}` | Set the manual status |
+| GET | `/api/v1/applications` | List applications |
+| GET | `/api/v1/application-history` | Immutable status transitions |
+
+`POST /search-runs` records the run and computes quotas; it does not collect
+anything. Adapters land in Phase 4 and the background runner in Phase 7, so a
+new run stays `pending`.
 
 ---
 
@@ -204,12 +237,21 @@ rather than failing the suite.
 app/
 ├── main.py              app factory: middleware, CORS, routers, handlers
 ├── core/                config, logging, exceptions, error handlers, envelope
-├── db/                  declarative base, async engine/session, mixins
+├── db/                  declarative base, async engine/session, mixins, types
 ├── models/              SQLAlchemy models
+│   ├── user.py          users
+│   ├── resume.py        resumes
+│   ├── profile.py       resume_texts, resume_profiles, resume_skills
+│   ├── portal.py        portals, portal_configs
+│   ├── search.py        search_runs, search_run_portals, search_queries,
+│   │                    portal_errors
+│   ├── job.py           jobs, job_sources, raw_jobs, job_matches
+│   └── application.py   applications, application_status_history
 ├── schemas/             Pydantic request/response schemas
 ├── api/
 │   ├── deps.py          shared dependencies (session, settings, user, storage)
-│   └── v1/routes/       health, config, resumes
+│   └── v1/routes/       health, config, resumes, portals, search-runs, jobs,
+│                        applications
 ├── analysis/            deterministic resume analysis (no DB, no network)
 │   ├── extraction/      PDF / DOCX / TXT behind one TextExtractor interface
 │   ├── taxonomy/        domains, roles, skills (data + lookup)
@@ -228,10 +270,11 @@ app/
 │   ├── base.py          BasePortal, RawJob, PortalCapabilities
 │   ├── registry.py      PortalRegistry
 │   └── adapters/        empty until Phase 4
-└── services/            storage, validation, resume/analysis/user services
+└── services/            storage, validation, resume/analysis/user services,
+                         quota split, search-run/job/application services
 migrations/              Alembic
 tests/                   Pytest
-docs/                    FRONTEND_INTEGRATION.md
+docs/                    FRONTEND_INTEGRATION.md, DECISIONS.md
 ```
 
 ### Extending resume analysis
@@ -282,7 +325,7 @@ the response envelope, error format, pagination, CORS and auth assumptions.
 |---|---|---|
 | 1 | Foundation: structure, config, DB, health, logging, tests | **Complete** |
 | 2 | Resume intelligence: parsing, profile, domain/role detection | **Complete** |
-| 3 | Data + dashboard foundation: job/search/application models | Not started |
+| 3 | Data foundation: job/search/application models and contracts | **Complete** |
 | 4 | Portal framework: first adapter, contract tests | Not started |
 | 5 | Job processing: normalisation, dedup, URL validation | Not started |
 | 6 | Matching: role gate, weighted scoring, hard rejects | Not started |

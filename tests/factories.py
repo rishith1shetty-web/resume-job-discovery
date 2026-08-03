@@ -7,11 +7,20 @@ a check that the extractors handle real files.
 
 from __future__ import annotations
 
+import uuid
+from datetime import datetime
 from io import BytesIO
 
 import docx
+from sqlalchemy.ext.asyncio import AsyncSession
 
-from tests.conftest import TEST_RECORD_MARKER
+from app.core.constants import JobUrlKind, ResumeStatus
+from app.models.job import Job, JobMatch, JobSource
+from app.models.portal import Portal
+from app.models.profile import ResumeProfile
+from app.models.resume import Resume
+from app.models.user import User
+from tests.conftest import TEST_RECORD_MARKER, TEST_USER_EMAIL
 from tests.pdf_builder import build_blank_pdf, build_pdf_from_text
 
 # Worked example from CLAUDE.md section 3: Finance / Financial Analyst.
@@ -105,3 +114,167 @@ def upload_files(
 ) -> dict[str, tuple[str, bytes, str]]:
     """Build the multipart payload for httpx."""
     return {"file": (filename, data, content_type)}
+
+
+# ---------------------------------------------------------------------------
+# Database builders (Phase 3)
+#
+# Every record carries TEST_RECORD_MARKER so anything that somehow escaped the
+# transaction rollback is greppable. Nothing here commits.
+# ---------------------------------------------------------------------------
+
+
+async def make_portal(
+    session: AsyncSession,
+    *,
+    slug: str = "test-portal",
+    display_name: str | None = None,
+    is_enabled: bool = True,
+    is_implemented: bool = False,
+) -> Portal:
+    portal = Portal(
+        slug=f"{TEST_RECORD_MARKER}-{slug}",
+        display_name=display_name or f"{TEST_RECORD_MARKER} {slug}",
+        is_enabled=is_enabled,
+        is_implemented=is_implemented,
+        notes=TEST_RECORD_MARKER,
+    )
+    session.add(portal)
+    await session.flush()
+    return portal
+
+
+async def make_user(session: AsyncSession, *, email: str | None = None) -> User:
+    user = User(
+        email=email or f"{uuid.uuid4().hex[:8]}+{TEST_USER_EMAIL}",
+        full_name=f"{TEST_RECORD_MARKER} user",
+    )
+    session.add(user)
+    await session.flush()
+    return user
+
+
+async def make_resume(
+    session: AsyncSession, *, user: User, checksum: str | None = None
+) -> Resume:
+    resume = Resume(
+        user_id=user.id,
+        original_filename=f"{TEST_RECORD_MARKER}-resume.txt",
+        storage_path=f"{TEST_RECORD_MARKER}/resume.txt",
+        content_type="text/plain",
+        file_size_bytes=len(FINANCIAL_ANALYST_RESUME),
+        checksum_sha256=checksum or uuid.uuid4().hex * 2,
+        status=ResumeStatus.PARSED,
+    )
+    session.add(resume)
+    await session.flush()
+    return resume
+
+
+async def make_profile(
+    session: AsyncSession,
+    *,
+    resume: Resume,
+    domain: str = "finance",
+    target_role: str = "financial_analyst",
+) -> ResumeProfile:
+    profile = ResumeProfile(
+        resume_id=resume.id,
+        analysis_version="test-1.0.0",
+        is_active=True,
+        detected_domain=domain,
+        detected_domain_display=domain.title(),
+        domain_confidence=0.9,
+        detected_target_role=target_role,
+        detected_target_role_display=target_role.replace("_", " ").title(),
+        target_role_confidence=0.9,
+    )
+    session.add(profile)
+    await session.flush()
+    return profile
+
+
+async def make_job(
+    session: AsyncSession,
+    *,
+    title: str = "Financial Analyst",
+    company: str = "Acme Corporation",
+    canonical_key: str | None = None,
+    posted_at: datetime | None = None,
+    expired_at: datetime | None = None,
+    preferred_application_url: str | None = None,
+) -> Job:
+    job = Job(
+        canonical_key=canonical_key or f"{TEST_RECORD_MARKER}:{uuid.uuid4().hex}",
+        title=title,
+        normalized_title=title.lower(),
+        company=company,
+        normalized_company=company.lower(),
+        location="New York, NY",
+        posted_at=posted_at,
+        expired_at=expired_at,
+        preferred_application_url=preferred_application_url,
+        preferred_url_kind=(
+            JobUrlKind.EMPLOYER_CAREER if preferred_application_url else None
+        ),
+    )
+    session.add(job)
+    await session.flush()
+    return job
+
+
+async def make_job_source(
+    session: AsyncSession,
+    *,
+    job: Job,
+    portal: Portal,
+    external_id: str | None = None,
+    application_url: str | None = None,
+    url_kind: JobUrlKind = JobUrlKind.PORTAL_LISTING,
+    is_preferred: bool = False,
+) -> JobSource:
+    source = JobSource(
+        job_id=job.id,
+        portal_id=portal.id,
+        external_id=external_id,
+        source_url=f"https://example.invalid/{portal.slug}/{uuid.uuid4().hex[:8]}",
+        application_url=application_url,
+        url_kind=url_kind,
+        is_preferred=is_preferred,
+    )
+    session.add(source)
+    await session.flush()
+    return source
+
+
+async def make_match(
+    session: AsyncSession,
+    *,
+    resume: Resume,
+    job: Job,
+    search_run_id: uuid.UUID | None = None,
+    final_score: float = 85.0,
+    ranking_score: float | None = None,
+    qualified: bool = True,
+    matched_at: datetime | None = None,
+) -> JobMatch:
+    """Score a job for a resume.
+
+    Pass ``matched_at`` when a test depends on which of several scores is the
+    newest: rows written microseconds apart can otherwise share a timestamp.
+    """
+    match = JobMatch(
+        resume_id=resume.id,
+        job_id=job.id,
+        search_run_id=search_run_id,
+        final_score=final_score,
+        role_score=final_score,
+        skill_score=final_score,
+        ranking_score=ranking_score if ranking_score is not None else final_score,
+        qualified=qualified,
+        scoring_version="test-0",
+        **({"matched_at": matched_at} if matched_at is not None else {}),
+    )
+    session.add(match)
+    await session.flush()
+    return match

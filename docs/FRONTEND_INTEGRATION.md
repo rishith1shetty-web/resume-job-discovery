@@ -384,32 +384,119 @@ UI notes:
 - Show `confidence` so a weak detection is visibly weak.
 - **Resume text is never returned.** There is no endpoint that exposes it.
 
-## 9. Planned endpoints
+---
 
-Contracts are not final until the phase ships, but names and shapes will follow
-the conventions above.
+### Search, job and application endpoints (Phase 3)
 
-| Endpoint | Phase |
-|---|---|
-| `GET /portals`, `PATCH /portals/{id}` | 4 |
-| `POST /search-runs`, `GET /search-runs/{id}` | 7 |
-| `GET /search-runs/{id}/progress` | 7 |
-| `GET /jobs`, `GET /jobs/{id}` | 3 / 7 |
-| `PATCH /applications/{job_id}`, `GET /applications` | 8 |
-| `GET /application-history` | 8 |
+| Method | Path | Notes |
+|---|---|---|
+| GET | `/api/v1/portals` | Checkbox list; `?enabled_only=` |
+| POST | `/api/v1/search-runs` | `resume_id`, `selected_portal_ids`, `requested_limit` |
+| GET | `/api/v1/search-runs` | Paginated; `?resume_id=` |
+| GET | `/api/v1/search-runs/{id}` | Run plus per-portal quotas |
+| GET | `/api/v1/search-runs/{id}/progress` | Per-portal progress |
+| GET | `/api/v1/jobs` | **`resume_id` required**; filters and sorts |
+| GET | `/api/v1/jobs/{id}` | Description and every portal source |
+| PATCH | `/api/v1/applications/{job_id}` | **`resume_id` required**; manual status |
+| GET | `/api/v1/applications` | `?resume_id=&status=` |
+| GET | `/api/v1/application-history` | `?resume_id=`; immutable, newest first |
 
-`POST /search-runs` will accept `resume_id`, `selected_portal_ids` and
-`requested_limit` (20, 50 or 100).
 
-### Search progress
+These contracts are live and stable. What is **not** live yet is collection:
+portal adapters arrive in Phase 4 and the background runner in Phase 7, so a
+search run is recorded and stays `pending`, and `GET /jobs` returns whatever
+has been stored so far. Build against these shapes now.
 
-Search runs execute in the background. Poll `GET /search-runs/{id}/progress`
-for per-portal state; expect `pending`, `running`, `completed`,
-`completed_with_errors`, `failed`, `cancelled`.
+#### `GET /portals`
+
+Portal checkboxes. Query `?enabled_only=true` for just the enabled ones.
+
+A portal is only usable when **`is_selectable`** is true — that means enabled
+*and* backed by a working adapter. Render the rest disabled rather than hiding
+them, so the user can see what is coming.
+
+#### `POST /search-runs`
+
+```json
+{
+  "resume_id": "uuid",
+  "selected_portal_ids": ["uuid", "uuid"],
+  "requested_limit": 20
+}
+```
+
+- `requested_limit` accepts **only** 20, 50 or 100. Anything else is a 422 on
+  `body.requested_limit`.
+- 1–8 portals, no repeats.
+- `min_score` is **not** an input. It is always 70 and is returned read-only.
+- 422 when the resume has not been analysed or has no target role — send the
+  user to the profile screen rather than showing a generic error.
+
+The response carries one entry per selected portal with its `target_quota`:
+the limit split as evenly as possible, remainder to the first portals listed
+(20 over 2 → 10/10; 50 over 4 → 13/13/12/12).
+
+#### `GET /search-runs/{id}` and `/progress`
+
+Poll `/progress` while a run is executing. Per-portal state is
+`pending`, `running`, `completed`, `failed`, `skipped`; the run itself is
+`pending`, `running`, `completed`, `completed_with_errors`, `failed` or
+`cancelled`.
 
 `completed_with_errors` is a **success** state: some portals failed, the rest
 returned results. Render partial results plus per-portal errors — never treat it
 as a total failure.
+
+Counters narrow in this order, and the difference is worth showing:
+
+| Field | Meaning |
+|---|---|
+| `raw_count` | everything the portal returned |
+| `qualified_count` | what passed the 70% threshold |
+| `selected_count` | what the quota actually took |
+| `shortfall` | quota slots that could not be filled with qualified jobs |
+
+A shortfall is never closed with a weaker job.
+
+#### `GET /jobs?resume_id=…`
+
+`resume_id` is **required**. Scores and application status belong to a
+(resume, job) pair, so there is no correct way to list jobs without it.
+
+Filters: `search_run_id`, `portal` (slug), `status`, `include_expired`
+(default false). Sort: `best_overall` (default), `highest_match`,
+`newest_first`, `portal`, `company`, `status`.
+
+Each row carries `portals[]` — every portal that lists the job. A vacancy found
+on two portals is **one row with two entries**, not two rows. `application_url`
+is the most direct usable link; open it in a new tab and let the user apply.
+
+#### `PATCH /applications/{job_id}?resume_id=…`
+
+```json
+{ "status": "applied", "notes": "optional" }
+```
+
+- Creates the record on first use, so no separate create call.
+- `applied` stamps `applied_at`; moving on to `interview`, `rejected` or
+  `offer` keeps that original timestamp.
+- Re-sending the current status returns 200 with a `message` and writes no
+  history entry — safe to fire on every click.
+- There is no `expired` status; sending one is a 422.
+
+#### `GET /applications` and `GET /application-history`
+
+Both take an optional `resume_id`. History is newest-first and immutable: a
+correction adds a transition rather than editing one.
+
+---
+
+## 9. Planned endpoints
+
+| Endpoint | Phase |
+|---|---|
+| `PATCH /portals/{id}` (enable/disable, configure) | 4 |
+| Search-run execution behind `POST /search-runs` | 7 |
 
 ---
 
