@@ -33,7 +33,17 @@ class ApplicationUpdateRequest(BaseModel):
     )
 
     status: ApplicationStatus
-    notes: Annotated[str | None, Field(default=None, max_length=4000)] = None
+    # No length cap: the column is TEXT, and an arbitrary API limit would
+    # reject a note the database would happily store. Omitting the field
+    # entirely keeps whatever note is already recorded - notes are replaced
+    # only when a replacement is actually sent.
+    notes: str | None = Field(
+        default=None,
+        description=(
+            "Optional free text. Omit to keep the existing note; send a value "
+            "to replace it."
+        ),
+    )
 
 
 class ApplicationOut(BaseModel):
@@ -47,8 +57,19 @@ class ApplicationOut(BaseModel):
     status: ApplicationStatus
     applied_at: datetime | None = None
     notes: str | None = None
+    has_notes: bool = Field(
+        default=False,
+        description="Whether a note is recorded, for a list-view indicator.",
+    )
     created_at: datetime
     updated_at: datetime
+    status_changed_at: datetime = Field(
+        description=(
+            "When the status last actually changed. Derived from the status "
+            "history, so it never disagrees with it. Re-sending the same "
+            "status does not move it."
+        )
+    )
 
     # Denormalised for the history table, which would otherwise need a second
     # request per row to be readable.
@@ -74,8 +95,34 @@ class ApplicationStatusHistoryOut(BaseModel):
 
 
 class ApplicationHistoryItem(ApplicationStatusHistoryOut):
-    """A transition with enough job context to render a history row."""
+    """A transition with enough context to render a history row.
 
+    Carries the resume and the *canonical* job. Raw portal captures are never
+    exposed here: a listing is an audit record of what a portal returned, not
+    something the user applied to.
+    """
+
+    resume_id: uuid.UUID
     job_id: uuid.UUID
     job_title: str | None = None
     company: str | None = None
+
+
+class ApplicationDetailOut(BaseModel):
+    """One application together with its full timeline.
+
+    What the dashboard reads when the user opens a job's tracking panel, so a
+    status, its note and how it got there arrive in one request.
+    """
+
+    application: ApplicationOut | None = Field(
+        default=None,
+        description=(
+            "Null when this resume has recorded nothing for this job yet. "
+            "That is a normal state, not an error: treat it as `not_applied`."
+        ),
+    )
+    status: ApplicationStatus = Field(
+        description="Current status, or `not_applied` when none is recorded."
+    )
+    history: list[ApplicationStatusHistoryOut] = Field(default_factory=list)

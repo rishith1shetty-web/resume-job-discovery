@@ -276,6 +276,91 @@ a {
   background: var(--surface);
 }
 
+/* Manual application tracking, inside a results row. */
+.status-cell {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 170px;
+}
+
+.status-controls {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.select-compact {
+  padding: 4px 6px;
+  font-size: 12px;
+}
+
+.status-meta {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.note-dot {
+  font-size: 11px;
+  opacity: 0.75;
+}
+
+.note-editor {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.textarea {
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  font: inherit;
+  font-size: 12px;
+  background: var(--surface);
+  resize: vertical;
+}
+
+.textarea:focus {
+  outline: 2px solid var(--accent-soft);
+  border-color: var(--accent);
+}
+
+.icon-button {
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface);
+  cursor: pointer;
+  padding: 3px 7px;
+  font-size: 12px;
+  line-height: 1.2;
+}
+
+.icon-button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.link-button {
+  border: 0;
+  background: none;
+  padding: 0;
+  color: var(--accent);
+  cursor: pointer;
+  text-align: left;
+  font: inherit;
+}
+
+.link-button:hover {
+  text-decoration: underline;
+}
+
+.status-error {
+  color: var(--bad);
+}
+
 .input-error {
   color: var(--bad);
   font-size: 12px;

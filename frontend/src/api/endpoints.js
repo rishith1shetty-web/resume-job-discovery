@@ -28,13 +28,13 @@
  *   GET   /jobs/{id}
  * Applications
  *   GET   /applications
+ *   GET   /applications/{job_id}
+ *   PATCH /applications/{job_id}
  *   GET   /application-history
  *
- * Deliberately NOT called: PATCH /applications/{job_id}. Editing an
- * application's status is Phase 8; this dashboard only reads it.
- *
  * Nothing here opens, fills or submits an application. Job links are rendered
- * for the user to open themselves.
+ * for the user to open themselves, and PATCH /applications/{job_id} records
+ * what they say happened afterwards.
  */
 
 import { request, requestEnvelope, requestWithMessage } from './client.js'
@@ -237,9 +237,46 @@ export function listApplications({ resumeId, status, page = 1, pageSize = 25 } =
   })
 }
 
-export function listApplicationHistory({ resumeId, page = 1, pageSize = 50 } = {}, signal) {
+export function listApplicationHistory(
+  { resumeId, jobId, page = 1, pageSize = 50 } = {},
+  signal,
+) {
   return request('/application-history', {
-    query: { resume_id: resumeId, page, page_size: pageSize },
+    query: { resume_id: resumeId, job_id: jobId, page, page_size: pageSize },
+    signal,
+  })
+}
+
+/**
+ * One job's tracking state under one resume, with its full timeline.
+ *
+ * A job the user has never tracked returns `application: null` and
+ * `status: "not_applied"` — a normal state, not an error.
+ */
+export function getApplication(jobId, resumeId, signal) {
+  return request(`/applications/${jobId}`, {
+    query: { resume_id: resumeId },
+    signal,
+  })
+}
+
+/**
+ * Record the status the user chose, and optionally replace the note.
+ *
+ * Creates the record on first use and updates it afterwards — there is never a
+ * second row for the same resume and canonical job. Omit `notes` to keep the
+ * existing note.
+ *
+ * This records what the user did; it does not apply to anything.
+ */
+export function updateApplication(jobId, resumeId, { status, notes }, signal) {
+  const body = { status }
+  if (notes !== undefined) body.notes = notes
+
+  return requestWithMessage(`/applications/${jobId}`, {
+    method: 'PATCH',
+    query: { resume_id: resumeId },
+    body,
     signal,
   })
 }

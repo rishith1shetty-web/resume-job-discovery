@@ -35,8 +35,9 @@ class PortalSeed:
     notes: str
 
 
-#: Only the two Phase 4 portals (docs/DECISIONS.md D-001). Adding a portal here
-#: is not what makes it usable - it still needs a registered adapter.
+#: The portals with adapters (docs/DECISIONS.md D-001, plus Hiring Cafe in
+#: Phase 9A). Adding a portal here is not what makes it usable - it still needs
+#: a registered adapter.
 PORTAL_SEEDS: tuple[PortalSeed, ...] = (
     PortalSeed(
         slug="jobright",
@@ -48,6 +49,21 @@ PORTAL_SEEDS: tuple[PortalSeed, ...] = (
             "private /api/ surface is disallowed by robots.txt and is not "
             "used. Those pages do not paginate, so roughly 16 listings are "
             "available per taxonomy slug per pass."
+        ),
+    ),
+    PortalSeed(
+        slug="hiringcafe",
+        website_url="https://hiringcafe.com/",
+        display_order=15,
+        is_enabled=True,
+        notes=(
+            "Collects from the robots-allowed /jobs/<taxonomy> pages listed in "
+            "the site's own jobs-sitemap.xml. The site's search surface "
+            "(?searchState=) and pagination (?page=) are both disallowed by "
+            "robots.txt and are not used, so roughly 20 listings are available "
+            "per taxonomy slug per pass. Descriptions are composed from Hiring "
+            "Cafe's structured fields, not the employer's verbatim posting; "
+            "application links point at the employer's own ATS."
         ),
     ),
     PortalSeed(

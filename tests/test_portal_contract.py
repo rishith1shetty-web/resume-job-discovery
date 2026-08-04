@@ -33,10 +33,11 @@ REGISTERED_SLUGS = registry.slugs
 # --- Registration -----------------------------------------------------------
 
 
-def test_phase_4_registers_exactly_jobright_and_linkedin() -> None:
-    # The rollout order in docs/DECISIONS.md D-001. A third portal appearing
-    # here means someone skipped the one-at-a-time rule.
-    assert set(REGISTERED_SLUGS) == {"jobright", "linkedin"}
+def test_only_approved_adapters_are_registered() -> None:
+    # The rollout order in docs/DECISIONS.md D-001: Jobright and LinkedIn in
+    # Phase 4, Hiring Cafe in Phase 9A. A slug appearing here that is not on
+    # this list means someone skipped the one-at-a-time rule.
+    assert set(REGISTERED_SLUGS) == {"jobright", "linkedin", "hiringcafe"}
 
 
 @pytest.mark.parametrize("slug", REGISTERED_SLUGS)

@@ -1,6 +1,7 @@
 import { useMemo, useState } from 'react'
 
 import { listPortals, startSearchRun } from '../api/endpoints.js'
+import { ApplicationStatusCell } from '../components/ApplicationStatus.jsx'
 import { useAsync } from '../hooks/useAsync.js'
 import {
   AsyncBlock,
@@ -181,7 +182,7 @@ export function FindMatches() {
 
       {error && <ErrorState error={error} onRetry={() => setError(null)} />}
 
-      {outcome && <SearchOutcome outcome={outcome} />}
+      {outcome && <SearchOutcome outcome={outcome} resumeId={activeResumeId} />}
     </div>
   )
 }
@@ -195,7 +196,7 @@ const RUN_TONES = {
   cancelled: 'neutral',
 }
 
-function SearchOutcome({ outcome }) {
+function SearchOutcome({ outcome, resumeId }) {
   const run = outcome.data ?? outcome
   const results = run.results ?? []
 
@@ -343,7 +344,11 @@ function SearchOutcome({ outcome }) {
                   <div className="muted small">{humanize(job.role_verdict)}</div>
                 </td>
                 <td>
-                  <Badge tone="neutral">{humanize(job.application_status)}</Badge>
+                  <ApplicationStatusCell
+                    jobId={job.job_id}
+                    resumeId={resumeId}
+                    initial={{ status: job.application_status }}
+                  />
                 </td>
                 <td>
                   {job.preferred_application_url ? (
@@ -364,7 +369,12 @@ function SearchOutcome({ outcome }) {
         )}
 
         <p className="muted small">
-          Status changes are recorded manually and are not editable here yet.
+          Open a job, apply on the employer&apos;s own site, then record what
+          happened here. Marking a job <strong>Applied</strong>,{' '}
+          <strong>Interview</strong>, <strong>Rejected</strong> or{' '}
+          <strong>Offer</strong> removes it from future searches for this
+          resume; <strong>Saved</strong> and <strong>Skipped</strong> leave it
+          eligible. Other resumes are unaffected.
         </p>
       </Card>
     </div>

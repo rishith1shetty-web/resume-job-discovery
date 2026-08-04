@@ -201,6 +201,39 @@ def test_employer_direct_is_only_claimed_when_the_domain_proves_it() -> None:
 @pytest.mark.parametrize(
     ("url", "company"),
     [
+        # A careers site parked on the company name plus a word. Found via
+        # Hiring Cafe, which links employer-direct far more often than a board
+        # does, so this shape had not been exercised before.
+        ("https://jobs.compassgroupcareers.com/job/123", "Compass Group"),
+        ("https://berkadiacareers.com/job/1", "Berkadia"),
+        ("https://senecaholdings.com/careers/1", "Seneca Holdings"),
+    ],
+)
+def test_a_company_named_careers_domain_is_employer_direct(
+    url: str, company: str
+) -> None:
+    assert classify_url(url, company=company) is JobUrlKind.EMPLOYER_CAREER
+
+
+@pytest.mark.parametrize(
+    ("url", "company"),
+    [
+        # A short company key must not claim every host that starts with it.
+        ("https://bankjobs.com/1", "Bank"),
+        ("https://acmecorp.com/1", "AB"),
+        # Sharing a prefix is not the same as being the employer.
+        ("https://compassionatecare.com/1", "Compass"),
+    ],
+)
+def test_a_prefix_alone_does_not_prove_the_employer(
+    url: str, company: str
+) -> None:
+    assert classify_url(url, company=company) is not JobUrlKind.EMPLOYER_CAREER
+
+
+@pytest.mark.parametrize(
+    ("url", "company"),
+    [
         # Nothing ties this host to the employer.
         ("https://apply.talentplatform.example/job/1", "Berkadia"),
         # A careers-looking path is not evidence of anything.

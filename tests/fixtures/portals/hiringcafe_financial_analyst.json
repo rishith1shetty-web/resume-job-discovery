@@ -1,0 +1,1094 @@
+{
+ "props": {
+  "pageProps": {
+   "ssrHits": [
+    {
+     "id": "utipro___gusea1p01___DEA1005DEAC___a1f943e7-8d4d-4348-bf5e-4664f78d3abb___c12c7e61-16dc-4b9e-9595-a6b01ccced33",
+     "board_token": "gusea1p01_dea1005deac_a1f943e7-8d4d-4348-bf5e-4664f78d3abb",
+     "source": "ultipro",
+     "apply_url": "https://gusea1p01.rec.pro.ukg.net/DEA1005DEAC/JobBoard/a1f943e7-8d4d-4348-bf5e-4664f78d3abb/OpportunityDetail?opportunityId=c12c7e61-16dc-4b9e-9595-a6b01ccced33",
+     "source_and_board_token": "ultipro_gusea1p01_dea1005deac_a1f943e7-8d4d-4348-bf5e-4664f78d3abb",
+     "job_information": {
+      "title": "Financial Analyst III",
+      "job_title_raw": "Financial Analyst III",
+      "num_views": 36,
+      "num_applies": 21
+     },
+     "v5_processed_job_data": {
+      "core_job_title": "Financial Analyst",
+      "requirements_summary": "Bachelor's in finance/accounting, 5+ years financial analysis (healthcare preferred), advanced Excel, budgeting, forecasting, financial modeling, and strong presentation skills.",
+      "technical_tools": [
+       "Microsoft Excel"
+      ],
+      "licenses_or_certifications": [],
+      "associates_degree_requirement": "Not Mentioned",
+      "associates_degree_fields_of_study": [],
+      "bachelors_degree_requirement": "Required",
+      "bachelors_degree_fields_of_study": [
+       "Finance",
+       "Accounting"
+      ],
+      "masters_degree_requirement": "Not Mentioned",
+      "masters_degree_fields_of_study": [],
+      "doctorate_degree_requirement": "Not Mentioned",
+      "doctorate_degree_fields_of_study": [],
+      "licenses_or_certifications_not_mentioned": true,
+      "min_industry_and_role_yoe": 5,
+      "401k_matching": false,
+      "is_min_industry_and_role_yoe_not_mentioned": false,
+      "min_management_and_leadership_yoe": null,
+      "is_min_management_and_leadership_yoe_not_mentioned": true,
+      "job_category": "Financial Services",
+      "role_activities": [
+       "leading budgets",
+       "developing models",
+       "presenting findings"
+      ],
+      "commitment": [
+       "Full Time"
+      ],
+      "role_type": "Individual Contributor",
+      "seniority_level": "Senior Level",
+      "workplace_countries": [
+       "US"
+      ],
+      "boundless_workplace_states": [],
+      "boundless_workplace_countries": [],
+      "boundless_workplace_continents": [],
+      "workplace_continents": [
+       "North America"
+      ],
+      "workplace_states": [
+       "Indiana, US"
+      ],
+      "workplace_cities": [
+       "Evansville, Indiana, US"
+      ],
+      "workplace_counties": [
+       "Vanderburgh County, Indiana, US"
+      ],
+      "workplace_type": "Onsite",
+      "workplace_physical_environment": "Office",
+      "oral_communication_level": "High",
+      "physical_labor_intensity": "Low",
+      "physical_position": "Sitting",
+      "computer_usage": "High",
+      "cognitive_demand": "High",
+      "air_travel_requirement": "None",
+      "land_travel_requirement": "None",
+      "morning_shift_work": "Not Indicated",
+      "evening_shift_work": "Not Indicated",
+      "overnight_work": "Not Indicated",
+      "formatted_workplace_location": "Evansville, Indiana, United States",
+      "on_call_requirement": "None",
+      "weekend_availability_required": false,
+      "holiday_availability_required": false,
+      "generous_paid_time_off": false,
+      "four_day_work_week": false,
+      "overtime_required": false,
+      "is_workplace_worldwide_ok": false,
+      "language_requirements": [
+       "English"
+      ],
+      "num_language_requirements": 1,
+      "number_of_workplace_cities": 1,
+      "number_of_workplace_counties": 1,
+      "number_of_workplace_states": 1,
+      "number_of_workplace_countries": 1,
+      "number_of_workplace_continents": 1,
+      "yearly_max_compensation": 104520,
+      "yearly_min_compensation": 69680,
+      "monthly_max_compensation": 8710,
+      "monthly_min_compensation": 5806.666666666667,
+      "weekly_max_compensation": 2010,
+      "weekly_min_compensation": 1340,
+      "hourly_max_compensation": 50.25,
+      "hourly_min_compensation": 33.5,
+      "bi-weekly_min_compensation": 2680,
+      "bi-weekly_max_compensation": 4020,
+      "daily_min_compensation": 268,
+      "daily_max_compensation": 402,
+      "estimated_publish_date": "2026-07-30T20:41:50.852Z",
+      "estimated_publish_date_millis": 1785444110852,
+      "fair_chance": false,
+      "visa_sponsorship": false,
+      "relocation_assistance": false,
+      "military_veterans": false,
+      "tuition_reimbursement": false,
+      "retirement_plan": false,
+      "generous_parental_leave": false,
+      "is_high_school_required": true,
+      "is_driver_license_required": false,
+      "is_compensation_transparent": true,
+      "listed_compensation_currency": "USD",
+      "listed_compensation_frequency": "Yearly",
+      "security_clearance": "None",
+      "position_employer_type": "Internal Position",
+      "company_name": "Deaconess",
+      "company_website": "deaconess.com",
+      "company_sector_and_industry": "Healthcare",
+      "company_activities": [
+       "financial analysis",
+       "budgeting"
+      ],
+      "company_tagline": "A healthcare organization focused on delivering clinical services while supporting organizational financial strategy and performance."
+     },
+     "enriched_company_data": {
+      "enriched_at": "2026-06-05T10:41:14.846Z",
+      "status": "VALID_COMPANY",
+      "name": "Deaconess Health System",
+      "homepage_uri": "deaconess.com",
+      "hq_country": "US",
+      "parent_company": null,
+      "subsidiaries": null,
+      "industries": [
+       "Healthcare",
+       "Hospitals"
+      ],
+      "activities": [
+       "Medical services",
+       "Hospital care",
+       "Surgical services",
+       "Diagnostic services",
+       "Patient care"
+      ],
+      "nb_employees": null,
+      "year_founded": 1892,
+      "tagline": "A health system providing hospital and medical care services.",
+      "organization_type": "Non-Profit",
+      "latest_funding_investors": null,
+      "latest_funding_type": null,
+      "latest_funding_year": null,
+      "latest_funding_amount": null,
+      "stock_exchange": null,
+      "stock_symbol": null
+     },
+     "_geoloc": [
+      {
+       "lat": 37.97564761445673,
+       "lon": -87.46548279262649
+      }
+     ],
+     "original_source_id": "c12c7e61-16dc-4b9e-9595-a6b01ccced33",
+     "requisition_id": "htdgi64u3j90ft54",
+     "collapse_key": "c20c0f9c6b12f5d29a610a00ad7c0524b7b1e17240b1b7aca6d065fc10cf4b77",
+     "is_expired": false,
+     "objectID": "utipro___gusea1p01___DEA1005DEAC___a1f943e7-8d4d-4348-bf5e-4664f78d3abb___c12c7e61-16dc-4b9e-9595-a6b01ccced33"
+    },
+    {
+     "id": "utipro___deaconess___DEA1005DEAC___a1f943e7-8d4d-4348-bf5e-4664f78d3abb___c12c7e61-16dc-4b9e-9595-a6b01ccced33",
+     "board_token": "deaconess_dea1005deac_a1f943e7-8d4d-4348-bf5e-4664f78d3abb",
+     "source": "ultipro",
+     "apply_url": "https://deaconess.rec.pro.ukg.net/DEA1005DEAC/JobBoard/a1f943e7-8d4d-4348-bf5e-4664f78d3abb/OpportunityDetail?opportunityId=c12c7e61-16dc-4b9e-9595-a6b01ccced33",
+     "source_and_board_token": "ultipro_deaconess_dea1005deac_a1f943e7-8d4d-4348-bf5e-4664f78d3abb",
+     "job_information": {
+      "title": "Financial Analyst III",
+      "job_title_raw": "Financial Analyst III",
+      "hiddenFromUsers": [
+       "EQV82DmZUbQq8T7OHZnMddxMp4A3"
+      ],
+      "num_views": 28,
+      "num_applies": 16
+     },
+     "v5_processed_job_data": {
+      "core_job_title": "Financial Analyst",
+      "requirements_summary": "Bachelor's in finance/accounting,5+ years financial analysis experience (healthcare preferred),advanced Excel,financial modeling,forecasting,budgeting,and strong communication.",
+      "technical_tools": [
+       "Microsoft Excel"
+      ],
+      "licenses_or_certifications": [],
+      "associates_degree_requirement": "Not Mentioned",
+      "associates_degree_fields_of_study": [],
+      "bachelors_degree_requirement": "Required",
+      "bachelors_degree_fields_of_study": [
+       "Finance",
+       "Accounting"
+      ],
+      "masters_degree_requirement": "Preferred",
+      "masters_degree_fields_of_study": [
+       "Finance",
+       "Accounting",
+       "Business Administration"
+      ],
+      "doctorate_degree_requirement": "Not Mentioned",
+      "doctorate_degree_fields_of_study": [],
+      "licenses_or_certifications_not_mentioned": true,
+      "min_industry_and_role_yoe": 5,
+      "401k_matching": false,
+      "is_min_industry_and_role_yoe_not_mentioned": false,
+      "min_management_and_leadership_yoe": null,
+      "is_min_management_and_leadership_yoe_not_mentioned": true,
+      "job_category": "Financial Services",
+      "role_activities": [
+       "leading budgets",
+       "preparing proformas",
+       "presenting findings"
+      ],
+      "commitment": [
+       "Full Time"
+      ],
+      "role_type": "Individual Contributor",
+      "seniority_level": "Senior Level",
+      "workplace_countries": [
+       "US"
+      ],
+      "boundless_workplace_states": [],
+      "boundless_workplace_countries": [],
+      "boundless_workplace_continents": [],
+      "workplace_continents": [
+       "North America"
+      ],
+      "workplace_states": [
+       "Indiana, US"
+      ],
+      "workplace_cities": [
+       "Evansville, Indiana, US"
+      ],
+      "workplace_counties": [
+       "Vanderburgh County, Indiana, US"
+      ],
+      "workplace_type": "Onsite",
+      "workplace_physical_environment": "Office",
+      "oral_communication_level": "High",
+      "physical_labor_intensity": "Low",
+      "physical_position": "Sitting",
+      "computer_usage": "High",
+      "cognitive_demand": "High",
+      "air_travel_requirement": "None",
+      "land_travel_requirement": "None",
+      "morning_shift_work": "Not Indicated",
+      "evening_shift_work": "Not Indicated",
+      "overnight_work": "Not Indicated",
+      "formatted_workplace_location": "Evansville, Indiana, United States",
+      "on_call_requirement": "None",
+      "weekend_availability_required": false,
+      "holiday_availability_required": false,
+      "generous_paid_time_off": false,
+      "four_day_work_week": false,
+      "overtime_required": false,
+      "is_workplace_worldwide_ok": false,
+      "language_requirements": [
+       "English"
+      ],
+      "num_language_requirements": 1,
+      "number_of_workplace_cities": 1,
+      "number_of_workplace_counties": 1,
+      "number_of_workplace_states": 1,
+      "number_of_workplace_countries": 1,
+      "number_of_workplace_continents": 1,
+      "yearly_max_compensation": 104520,
+      "yearly_min_compensation": 69680,
+      "monthly_max_compensation": 8710,
+      "monthly_min_compensation": 5806.666666666667,
+      "weekly_max_compensation": 2010,
+      "weekly_min_compensation": 1340,
+      "hourly_max_compensation": 50.25,
+      "hourly_min_compensation": 33.5,
+      "bi-weekly_min_compensation": 2680,
+      "bi-weekly_max_compensation": 4020,
+      "daily_min_compensation": 268,
+      "daily_max_compensation": 402,
+      "estimated_publish_date": "2026-07-30T20:41:50.852Z",
+      "estimated_publish_date_millis": 1785444110852,
+      "fair_chance": false,
+      "visa_sponsorship": false,
+      "relocation_assistance": false,
+      "military_veterans": false,
+      "tuition_reimbursement": false,
+      "retirement_plan": false,
+      "generous_parental_leave": false,
+      "is_high_school_required": true,
+      "is_driver_license_required": false,
+      "is_compensation_transparent": true,
+      "listed_compensation_currency": "USD",
+      "listed_compensation_frequency": "Yearly",
+      "security_clearance": "None",
+      "position_employer_type": "Internal Position",
+      "company_name": "Deaconess",
+      "company_website": "deaconess.com",
+      "company_sector_and_industry": "Healthcare",
+      "company_activities": [
+       "healthcare finance",
+       "financial analysis"
+      ],
+      "company_tagline": "A healthcare system providing financial and operational services to support clinical care and community health."
+     },
+     "enriched_company_data": {
+      "enriched_at": "2026-03-11T19:51:02.588Z",
+      "status": "VALID_COMPANY",
+      "name": "Deaconess Health System",
+      "homepage_uri": "deaconess.com",
+      "hq_country": "US",
+      "parent_company": null,
+      "subsidiaries": [
+       "Deaconess Clinic",
+       "The Women's Hospital",
+       "The Heart Hospital",
+       "Deaconess Henderson Hospital",
+       "Deaconess Cross Pointe"
+      ],
+      "industries": [
+       "Healthcare",
+       "Hospital Chains"
+      ],
+      "activities": [
+       "Acute hospital care",
+       "Emergency medical services",
+       "Specialized surgical procedures",
+       "Outpatient clinic services",
+       "Diagnostic medical imaging"
+      ],
+      "nb_employees": 8233,
+      "year_founded": 1892,
+      "tagline": "Provides acute hospital care and specialized medical services.",
+      "organization_type": "Non-Profit",
+      "latest_funding_investors": null,
+      "latest_funding_type": null,
+      "latest_funding_year": null,
+      "latest_funding_amount": null,
+      "stock_exchange": null,
+      "stock_symbol": null
+     },
+     "_geoloc": [
+      {
+       "lat": 37.97564761445673,
+       "lon": -87.46548279262649
+      }
+     ],
+     "original_source_id": "c12c7e61-16dc-4b9e-9595-a6b01ccced33",
+     "requisition_id": "0e6busp8cgqwu2ja",
+     "collapse_key": "3a1d4183e75e885d13b8e66d185fb12d4d6cde95b44f5f5c93f82aecf52181da",
+     "is_expired": false,
+     "objectID": "utipro___deaconess___DEA1005DEAC___a1f943e7-8d4d-4348-bf5e-4664f78d3abb___c12c7e61-16dc-4b9e-9595-a6b01ccced33"
+    },
+    {
+     "v5_processed_job_data": {
+      "security_clearance": "None",
+      "masters_degree_requirement": "Not Mentioned",
+      "bi-weekly_min_compensation": null,
+      "oral_communication_level": "Medium",
+      "workplace_physical_environment": "Office",
+      "hourly_max_compensation": null,
+      "overnight_work": "Not Indicated",
+      "is_driver_license_required": false,
+      "boundless_workplace_states": [],
+      "number_of_workplace_states": 1,
+      "retirement_plan": false,
+      "workplace_continents": [
+       "North America"
+      ],
+      "is_workplace_worldwide_ok": false,
+      "is_min_management_and_leadership_yoe_not_mentioned": true,
+      "monthly_min_compensation": null,
+      "military_veterans": false,
+      "is_compensation_transparent": false,
+      "land_travel_requirement": "None",
+      "is_high_school_required": false,
+      "number_of_workplace_continents": 1,
+      "company_name": "Caroline County Public Schools",
+      "workplace_cities": [
+       "Denton, Maryland, US"
+      ],
+      "401k_matching": false,
+      "cognitive_demand": "Medium",
+      "estimated_publish_date_millis": 1778760000000,
+      "fair_chance": false,
+      "associates_degree_requirement": "Not Mentioned",
+      "number_of_workplace_counties": 1,
+      "core_job_title": "Financial Analyst",
+      "weekend_availability_required": false,
+      "monthly_max_compensation": null,
+      "doctorate_degree_requirement": "Not Mentioned",
+      "company_website": "ccps.us",
+      "licenses_or_certifications": [],
+      "number_of_workplace_countries": 1,
+      "evening_shift_work": "Not Indicated",
+      "visa_sponsorship": false,
+      "daily_max_compensation": null,
+      "workplace_countries": [
+       "US"
+      ],
+      "role_activities": [],
+      "holiday_availability_required": false,
+      "role_type": "Individual Contributor",
+      "physical_position": "Sitting",
+      "listed_compensation_currency": "USD",
+      "four_day_work_week": false,
+      "is_min_industry_and_role_yoe_not_mentioned": null,
+      "bachelors_degree_requirement": "Not Mentioned",
+      "weekly_max_compensation": null,
+      "weekly_min_compensation": null,
+      "boundless_workplace_continents": [],
+      "generous_parental_leave": false,
+      "job_category": "Finance and Accounting",
+      "workplace_type": "Onsite",
+      "computer_usage": "Medium",
+      "relocation_assistance": false,
+      "generous_paid_time_off": false,
+      "boundless_workplace_countries": [],
+      "air_travel_requirement": "None",
+      "company_tagline": "Public education provider focused on student learning.",
+      "workplace_counties": [
+       "Caroline County, Maryland, US"
+      ],
+      "language_requirements": [
+       "English"
+      ],
+      "hourly_min_compensation": null,
+      "daily_min_compensation": null,
+      "company_activities": [
+       "Education",
+       "Public Schools"
+      ],
+      "bi-weekly_max_compensation": null,
+      "num_language_requirements": 1,
+      "company_sector_and_industry": "Education",
+      "commitment": [
+       "Full Time"
+      ],
+      "doctorate_degree_fields_of_study": [],
+      "requirements_summary": "Finance/Financial Analyst role requiring financial analysis skills.",
+      "tuition_reimbursement": false,
+      "masters_degree_fields_of_study": [],
+      "overtime_required": false,
+      "formatted_workplace_location": "Denton, Maryland, United States",
+      "number_of_workplace_cities": 1,
+      "technical_tools": [],
+      "workplace_states": [
+       "Maryland, US"
+      ],
+      "licenses_or_certifications_not_mentioned": true,
+      "seniority_level": "Mid Level",
+      "min_industry_and_role_yoe": null,
+      "physical_labor_intensity": "Low",
+      "listed_compensation_frequency": "Yearly",
+      "on_call_requirement": "None",
+      "min_management_and_leadership_yoe": null,
+      "bachelors_degree_fields_of_study": [],
+      "yearly_max_compensation": null,
+      "position_employer_type": "External Position",
+      "morning_shift_work": "Not Indicated",
+      "estimated_publish_date": "2026-05-14T12:00:00.000Z",
+      "yearly_min_compensation": null,
+      "associates_degree_fields_of_study": []
+     },
+     "collapse_key": "c08d057d69aed6e3527d5818a5af6f116d0cf12ccefd64a5b6053a81cc88fb05",
+     "apply_url": "https://www.applitrack.com/carolinecounty/onlineapp/jobpostings/view.asp?AppliTrackJobId=1944",
+     "enriched_company_data": {
+      "latest_funding_investors": null,
+      "homepage_uri": "ccps.us",
+      "parent_company": null,
+      "latest_funding_year": null,
+      "latest_funding_type": null,
+      "stock_exchange": null,
+      "stock_symbol": null,
+      "nb_employees": 675,
+      "year_founded": 1865,
+      "hq_country": "US",
+      "enriched_at": "2026-03-12T02:18:01.364Z",
+      "activities": [
+       "Primary education",
+       "Secondary education",
+       "Student athletic programs",
+       "Special education services",
+       "Educational administration"
+      ],
+      "industries": [
+       "Education"
+      ],
+      "latest_funding_amount": null,
+      "name": "Caroline County Public Schools",
+      "tagline": "Operates public schools and educational programs in Caroline County",
+      "organization_type": "Government",
+      "subsidiaries": [
+       "Caroline High School",
+       "Caroline Middle School",
+       "Bowling Green Elementary School",
+       "Lewis and Clark Elementary School",
+       "Madison Elementary School"
+      ],
+      "status": "VALID_COMPANY"
+     },
+     "requisition_id": "nyjhc6ermt9j0t1j",
+     "is_expired": false,
+     "source_and_board_token": "applitrack_carolinecounty",
+     "job_information": {
+      "savedFromUsers": [
+       "FkfrufVGVlPgVTR8mJKccU7vx3C2",
+       "WJYwTTtg88WxPWsazmycwLyU0bI2"
+      ],
+      "job_title_raw": "Financial Analyst",
+      "title": "Financial Analyst",
+      "hiddenFromUsers": [
+       "FzfGophSHYb0Dr4AmbjaM3Zruju1",
+       "Jz1EgYhBzNQLUt9WUuA7OxhtEMm1"
+      ],
+      "num_views": 206,
+      "num_applies": 115,
+      "num_saves": 2
+     },
+     "_geoloc": [
+      {
+       "lon": -75.964,
+       "lat": 38.05
+      }
+     ],
+     "board_token": "carolinecounty",
+     "id": "applitrack___carolinecounty___1944",
+     "source": "applitrack",
+     "objectID": "applitrack___carolinecounty___1944"
+    },
+    {
+     "id": "icims___odysseysystemsconsultinggroupltd___2f2c0413-aa50-481a-8031-b9f3d1d28e15",
+     "board_token": "odysseysystemsconsultinggroupltd",
+     "source": "icims",
+     "apply_url": "https://careers-odysseyconsult.icims.com/jobs/8263/job?utm_source=hiringcafe_integration&iis=Job%20Board&iisn=HiringCafe",
+     "source_and_board_token": "icims_odysseysystemsconsultinggroupltd",
+     "job_information": {
+      "title": "Financial Resource Manager",
+      "job_title_raw": "Financial Resource Manager",
+      "num_views": 1,
+      "num_applies": 1
+     },
+     "v5_processed_job_data": {
+      "core_job_title": "Financial Resource Manager",
+      "requirements_summary": "5+ years DoD financial resource management experience, active Secret clearance, high school diploma, 2+ years POM/PPBE experience, PPBE expertise, strong coordination and briefing skills.",
+      "technical_tools": [],
+      "licenses_or_certifications": [
+       "secret clearance"
+      ],
+      "associates_degree_requirement": "Not Mentioned",
+      "associates_degree_fields_of_study": [],
+      "bachelors_degree_requirement": "Not Mentioned",
+      "bachelors_degree_fields_of_study": [],
+      "masters_degree_requirement": "Not Mentioned",
+      "masters_degree_fields_of_study": [],
+      "doctorate_degree_requirement": "Not Mentioned",
+      "doctorate_degree_fields_of_study": [],
+      "licenses_or_certifications_not_mentioned": false,
+      "min_industry_and_role_yoe": 5,
+      "401k_matching": true,
+      "is_min_industry_and_role_yoe_not_mentioned": false,
+      "min_management_and_leadership_yoe": null,
+      "is_min_management_and_leadership_yoe_not_mentioned": true,
+      "job_category": "Analyst",
+      "role_activities": [
+       "managing budgets",
+       "analyzing baselines",
+       "drafting POMs"
+      ],
+      "commitment": [
+       "Full Time"
+      ],
+      "role_type": "Individual Contributor",
+      "seniority_level": "Senior Level",
+      "workplace_countries": [
+       "US"
+      ],
+      "boundless_workplace_states": [],
+      "boundless_workplace_countries": [],
+      "boundless_workplace_continents": [],
+      "workplace_continents": [
+       "North America"
+      ],
+      "workplace_states": [
+       "Virginia, US"
+      ],
+      "workplace_cities": [
+       "Hampton, Virginia, US"
+      ],
+      "workplace_counties": [
+       "Hampton County, Virginia, US"
+      ],
+      "workplace_type": "Onsite",
+      "workplace_physical_environment": "Office",
+      "oral_communication_level": "High",
+      "physical_labor_intensity": "Low",
+      "physical_position": "Sitting",
+      "computer_usage": "High",
+      "cognitive_demand": "High",
+      "air_travel_requirement": "None",
+      "land_travel_requirement": "None",
+      "morning_shift_work": "Not Indicated",
+      "evening_shift_work": "Not Indicated",
+      "overnight_work": "Not Indicated",
+      "formatted_workplace_location": "Hampton, Virginia, United States",
+      "on_call_requirement": "None",
+      "weekend_availability_required": false,
+      "holiday_availability_required": false,
+      "generous_paid_time_off": true,
+      "four_day_work_week": false,
+      "overtime_required": false,
+      "is_workplace_worldwide_ok": false,
+      "language_requirements": [
+       "English"
+      ],
+      "num_language_requirements": 1,
+      "number_of_workplace_cities": 1,
+      "number_of_workplace_counties": 1,
+      "number_of_workplace_states": 1,
+      "number_of_workplace_countries": 1,
+      "number_of_workplace_continents": 1,
+      "yearly_max_compensation": 80000,
+      "yearly_min_compensation": 70000,
+      "monthly_max_compensation": 6666.666666666667,
+      "monthly_min_compensation": 5833.333333333333,
+      "weekly_max_compensation": 1538.4615384615386,
+      "weekly_min_compensation": 1346.1538461538462,
+      "hourly_max_compensation": 38.46153846153846,
+      "hourly_min_compensation": 33.65384615384615,
+      "bi-weekly_min_compensation": 2692.3076923076924,
+      "bi-weekly_max_compensation": 3076.923076923077,
+      "daily_min_compensation": 269.2307692307692,
+      "daily_max_compensation": 307.6923076923077,
+      "estimated_publish_date": "2026-07-29T16:55:00.000Z",
+      "estimated_publish_date_millis": 1785344100000,
+      "fair_chance": false,
+      "visa_sponsorship": false,
+      "relocation_assistance": false,
+      "military_veterans": false,
+      "tuition_reimbursement": false,
+      "retirement_plan": true,
+      "generous_parental_leave": false,
+      "is_high_school_required": true,
+      "is_driver_license_required": false,
+      "is_compensation_transparent": true,
+      "listed_compensation_currency": "USD",
+      "listed_compensation_frequency": "Yearly",
+      "security_clearance": "None",
+      "position_employer_type": "Internal Position",
+      "company_name": "Odyssey Systems Consulting Group, Ltd.",
+      "company_website": "www.odysseyconsult.com",
+      "company_sector_and_industry": "Consulting Services",
+      "company_activities": [
+       "defense engineering",
+       "systems integration"
+      ],
+      "company_tagline": "A technical engineering and integration company serving the defense and warfighting ecosystem."
+     },
+     "enriched_company_data": {
+      "enriched_at": "2026-03-11T20:09:56.075Z",
+      "status": "VALID_COMPANY",
+      "name": "Odyssey Systems",
+      "homepage_uri": "odysseyconsult.com",
+      "hq_country": "US",
+      "parent_company": null,
+      "subsidiaries": [],
+      "industries": [
+       "Aerospace & Defense",
+       "Professional Services"
+      ],
+      "activities": [
+       "Aerospace engineering",
+       "Systems integration",
+       "Program management",
+       "Cybersecurity services",
+       "Technical consulting"
+      ],
+      "nb_employees": 1100,
+      "year_founded": 1997,
+      "tagline": "Provides technical engineering and program management for government agencies.",
+      "organization_type": "Private",
+      "latest_funding_investors": [
+       "Tees Valley Telecom"
+      ],
+      "latest_funding_type": "Corporate Round",
+      "latest_funding_year": 2021,
+      "latest_funding_amount": 1300000,
+      "stock_exchange": null,
+      "stock_symbol": null
+     },
+     "_geoloc": [
+      {
+       "lat": 37.0299,
+       "lon": -76.3452
+      }
+     ],
+     "requisition_id": "h57mu7nietcq0txp",
+     "collapse_key": "788d5db4d96c635841dd8248ffbe59db2afe31d7ef01b9b3b5bb987a36d041a1",
+     "is_expired": false,
+     "objectID": "icims___odysseysystemsconsultinggroupltd___2f2c0413-aa50-481a-8031-b9f3d1d28e15"
+    },
+    {
+     "id": "applicantpro___thompsongrayinc___4163943",
+     "board_token": "thompsongrayinc",
+     "source": "applicantpro",
+     "apply_url": "https://thompsongrayinc.applicantpro.com/jobs/4163943",
+     "source_and_board_token": "applicantpro_thompsongrayinc",
+     "job_information": {
+      "title": "Financial Analyst",
+      "job_title_raw": "Financial Analyst",
+      "num_views": 16,
+      "num_applies": 9
+     },
+     "v5_processed_job_data": {
+      "core_job_title": "Financial Analyst",
+      "requirements_summary": "BA/BS required,5+ years as a budget/financial/program analyst in Army organizations,proficiency with GFEBS and other Army financial systems,strong analytical,research,and communication skills.",
+      "technical_tools": [
+       "GFEBS",
+       "GFEBS BI",
+       "PMRT/CCaR",
+       "GCSS-Army",
+       "EDA",
+       "DARQ",
+       "WAWF",
+       "SDW",
+       "Microsoft Office",
+       "Teams"
+      ],
+      "licenses_or_certifications": [
+       "secret clearance"
+      ],
+      "associates_degree_requirement": "Not Mentioned",
+      "associates_degree_fields_of_study": [],
+      "bachelors_degree_requirement": "Required",
+      "bachelors_degree_fields_of_study": [
+       "Accounting",
+       "Business"
+      ],
+      "masters_degree_requirement": "Not Mentioned",
+      "masters_degree_fields_of_study": [],
+      "doctorate_degree_requirement": "Not Mentioned",
+      "doctorate_degree_fields_of_study": [],
+      "licenses_or_certifications_not_mentioned": false,
+      "min_industry_and_role_yoe": 5,
+      "401k_matching": true,
+      "is_min_industry_and_role_yoe_not_mentioned": false,
+      "min_management_and_leadership_yoe": null,
+      "is_min_management_and_leadership_yoe_not_mentioned": true,
+      "job_category": "Finance and Accounting",
+      "role_activities": [
+       "executing funds",
+       "analyzing finances",
+       "coordinating agencies"
+      ],
+      "commitment": [
+       "Full Time"
+      ],
+      "role_type": "Individual Contributor",
+      "seniority_level": "Senior Level",
+      "workplace_countries": [
+       "US"
+      ],
+      "boundless_workplace_states": [],
+      "boundless_workplace_countries": [],
+      "boundless_workplace_continents": [],
+      "workplace_continents": [
+       "North America"
+      ],
+      "workplace_states": [
+       "Alabama, US"
+      ],
+      "workplace_cities": [
+       "Redstone Arsenal, Alabama, US",
+       "Huntsville, Alabama, US"
+      ],
+      "workplace_counties": [
+       "Madison County, Alabama, US"
+      ],
+      "workplace_type": "Onsite",
+      "workplace_physical_environment": "Office",
+      "oral_communication_level": "High",
+      "physical_labor_intensity": "Low",
+      "physical_position": "Sitting",
+      "computer_usage": "High",
+      "cognitive_demand": "High",
+      "air_travel_requirement": "None",
+      "land_travel_requirement": "Minimal",
+      "morning_shift_work": "Not Indicated",
+      "evening_shift_work": "Not Indicated",
+      "overnight_work": "Not Indicated",
+      "formatted_workplace_location": "Redstone Arsenal or Huntsville",
+      "on_call_requirement": "None",
+      "weekend_availability_required": false,
+      "holiday_availability_required": false,
+      "generous_paid_time_off": true,
+      "four_day_work_week": false,
+      "overtime_required": false,
+      "is_workplace_worldwide_ok": false,
+      "language_requirements": [
+       "English"
+      ],
+      "num_language_requirements": 1,
+      "number_of_workplace_cities": 2,
+      "number_of_workplace_counties": 1,
+      "number_of_workplace_states": 1,
+      "number_of_workplace_countries": 1,
+      "number_of_workplace_continents": 1,
+      "yearly_max_compensation": null,
+      "yearly_min_compensation": null,
+      "monthly_max_compensation": null,
+      "monthly_min_compensation": null,
+      "weekly_max_compensation": null,
+      "weekly_min_compensation": null,
+      "hourly_max_compensation": null,
+      "hourly_min_compensation": null,
+      "bi-weekly_min_compensation": null,
+      "bi-weekly_max_compensation": null,
+      "daily_min_compensation": null,
+      "daily_max_compensation": null,
+      "estimated_publish_date": "2026-07-31T00:00:00.000Z",
+      "estimated_publish_date_millis": 1785456000000,
+      "fair_chance": false,
+      "visa_sponsorship": false,
+      "relocation_assistance": false,
+      "military_veterans": true,
+      "tuition_reimbursement": true,
+      "retirement_plan": true,
+      "generous_parental_leave": false,
+      "is_high_school_required": true,
+      "is_driver_license_required": false,
+      "is_compensation_transparent": false,
+      "listed_compensation_currency": "USD",
+      "listed_compensation_frequency": "Yearly",
+      "security_clearance": "Secret",
+      "position_employer_type": "External Position",
+      "company_name": "Thompson Gray Inc.",
+      "company_website": "thompsongrayinc.net",
+      "company_sector_and_industry": "Consulting Services",
+      "company_activities": [
+       "financial consulting",
+       "government contracting"
+      ],
+      "company_tagline": "A professional services firm providing financial and resource management support to government clients."
+     },
+     "enriched_company_data": {
+      "enriched_at": "2026-03-12T02:16:19.857Z",
+      "status": "VALID_COMPANY",
+      "name": "Thompson Gray",
+      "homepage_uri": "thompsongrayinc.net",
+      "hq_country": "US",
+      "parent_company": null,
+      "subsidiaries": [],
+      "industries": [
+       "Government Services",
+       "Management Consulting"
+      ],
+      "activities": [
+       "Financial management consulting",
+       "Business process transformation",
+       "Program management support",
+       "Enterprise system optimization",
+       "Acquisition support services"
+      ],
+      "nb_employees": 250,
+      "year_founded": 2008,
+      "tagline": "Provides financial management and programmatic support for defense agencies.",
+      "organization_type": "Private",
+      "latest_funding_investors": null,
+      "latest_funding_type": null,
+      "latest_funding_year": null,
+      "latest_funding_amount": null,
+      "stock_exchange": null,
+      "stock_symbol": null
+     },
+     "_geoloc": [
+      {
+       "lat": 34.674,
+       "lon": -86.65
+      },
+      {
+       "lat": 34.7304,
+       "lon": -86.5861
+      }
+     ],
+     "requisition_id": "twf5lg5d8f4izsuo",
+     "collapse_key": "89eaf40770fc03eac49026916e389fedca7c994991239ecbecb416f4292d1896",
+     "is_expired": false,
+     "objectID": "applicantpro___thompsongrayinc___4163943"
+    },
+    {
+     "v5_processed_job_data": {
+      "security_clearance": "None",
+      "masters_degree_requirement": "Not Mentioned",
+      "bi-weekly_min_compensation": null,
+      "oral_communication_level": "High",
+      "workplace_physical_environment": "Office",
+      "hourly_max_compensation": null,
+      "overnight_work": "Not Indicated",
+      "is_driver_license_required": false,
+      "boundless_workplace_states": [],
+      "number_of_workplace_states": 1,
+      "retirement_plan": false,
+      "workplace_continents": [
+       "North America"
+      ],
+      "is_workplace_worldwide_ok": false,
+      "is_min_management_and_leadership_yoe_not_mentioned": true,
+      "monthly_min_compensation": null,
+      "military_veterans": false,
+      "is_compensation_transparent": false,
+      "land_travel_requirement": "None",
+      "is_high_school_required": true,
+      "number_of_workplace_continents": 1,
+      "company_name": "Towerloan",
+      "workplace_cities": [
+       "Flowood, Mississippi, US"
+      ],
+      "401k_matching": false,
+      "cognitive_demand": "High",
+      "estimated_publish_date_millis": 1784851200000,
+      "fair_chance": false,
+      "associates_degree_requirement": "Not Mentioned",
+      "number_of_workplace_counties": 1,
+      "core_job_title": "Financial Analyst",
+      "weekend_availability_required": false,
+      "monthly_max_compensation": null,
+      "doctorate_degree_requirement": "Not Mentioned",
+      "company_website": "towerloan.com",
+      "licenses_or_certifications": [],
+      "number_of_workplace_countries": 1,
+      "evening_shift_work": "Not Indicated",
+      "visa_sponsorship": false,
+      "daily_max_compensation": null,
+      "workplace_countries": [
+       "US"
+      ],
+      "role_activities": [
+       "performing analysis",
+       "delivering reports",
+       "building models"
+      ],
+      "holiday_availability_required": false,
+      "role_type": "Individual Contributor",
+      "physical_position": "Sitting",
+      "listed_compensation_currency": "USD",
+      "four_day_work_week": false,
+      "is_min_industry_and_role_yoe_not_mentioned": null,
+      "bachelors_degree_requirement": "Required",
+      "weekly_max_compensation": null,
+      "weekly_min_compensation": null,
+      "boundless_workplace_continents": [],
+      "generous_parental_leave": false,
+      "job_category": "Finance and Accounting",
+      "workplace_type": "Onsite",
+      "computer_usage": "High",
+      "relocation_assistance": false,
+      "generous_paid_time_off": false,
+      "boundless_workplace_countries": [],
+      "air_travel_requirement": "None",
+      "company_tagline": "A privately owned consumer finance company operating offices across multiple states and focused on personalized financial solutions and employee development.",
+      "workplace_counties": [
+       "Rankin County, Mississippi, US"
+      ],
+      "language_requirements": [
+       "English"
+      ],
+      "hourly_min_compensation": null,
+      "daily_min_compensation": null,
+      "company_activities": [
+       "consumer finance",
+       "loan services"
+      ],
+      "bi-weekly_max_compensation": null,
+      "num_language_requirements": 1,
+      "company_sector_and_industry": "Finance",
+      "commitment": [
+       "Full Time"
+      ],
+      "doctorate_degree_fields_of_study": [],
+      "requirements_summary": "Bachelor's in finance/accounting/economics/business required; proven financial analyst experience; advanced Microsoft Excel; financial modeling, budgeting, forecasting, reporting, and strong analytical and communication skills.",
+      "tuition_reimbursement": false,
+      "masters_degree_fields_of_study": [],
+      "overtime_required": false,
+      "formatted_workplace_location": "Flowood, Mississippi, United States",
+      "number_of_workplace_cities": 1,
+      "technical_tools": [
+       "Microsoft Excel",
+       "Microsoft Word",
+       "Microsoft PowerPoint"
+      ],
+      "workplace_states": [
+       "Mississippi, US"
+      ],
+      "licenses_or_certifications_not_mentioned": true,
+      "seniority_level": "Mid Level",
+      "min_industry_and_role_yoe": null,
+      "physical_labor_intensity": "Low",
+      "listed_compensation_frequency": "Yearly",
+      "on_call_requirement": "None",
+      "min_management_and_leadership_yoe": null,
+      "bachelors_degree_fields_of_study": [
+       "accounting",
+       "finance",
+       "economics",
+       "business administration"
+      ],
+      "yearly_max_compensation": null,
+      "position_employer_type": "Internal Position",
+      "morning_shift_work": "Not Indicated",
+      "estimated_publish_date": "2026-07-24T00:00:00.000Z",
+      "yearly_min_compensation": null,
+      "associates_degree_fields_of_study": []
+     },
+     "source_and_board_token": "workday_towerloan-wd12-tower_loan_careers",
+     "job_information": {
+      "job_title_raw": "Financial Analyst",
+      "title": "Financial Analyst",
+      "hiddenFromUsers": [
+       "d4njlLlPLPRdqU6CTptpxKmJiW22",
+       "7JuvipSYmZYLiH0EsyfSKLnh4Xn1"
+      ],
+      "num_views": 86,
+      "num_applies": 50
+     },
+     "original_source_id": "workday___towerloan-wd12-tower_loan_careers___financial-analyst_jr1990",
+     "source": "workday",
+     "collapse_key": "f752467ee22560cfd7a1707179b0d05099e8497b1bb54782387734a121ff173a",
+     "apply_url": "https://towerloan.wd12.myworkdayjobs.com/tower_loan_careers/job/Flowood-MS/Financial-Analyst_JR1990",
+     "enriched_company_data": {
+      "latest_funding_investors": [
+       "Prospect Capital Management"
+      ],
+      "homepage_uri": "towerloan.com",
+      "parent_company": "First Tower Corp",
+      "latest_funding_year": 2025,
+      "latest_funding_type": "Corporate Round",
+      "stock_exchange": null,
+      "stock_symbol": null,
+      "nb_employees": 1000,
+      "year_founded": 1936,
+      "hq_country": "US",
+      "enriched_at": "2026-03-12T13:19:08.568Z",
+      "activities": [
+       "Personal installment loans",
+       "Debt consolidation lending",
+       "Home improvement financing",
+       "Retail sales financing",
+       "Credit insurance services"
+      ],
+      "industries": [
+       "Consumer Finance",
+       "Financial Services"
+      ],
+      "latest_funding_amount": 82000000,
+      "name": "Tower Loan",
+      "tagline": "Provides personal installment loans and consumer financial services.",
+      "organization_type": "Private",
+      "subsidiaries": [
+       "American Federated Life Insurance Company",
+       "American Federated Insurance Company",
+       "First Tower Loan, Inc."
+      ],
+      "status": "VALID_COMPANY"
+     },
+     "requisition_id": "zrb9jl875nrd2hwi",
+     "is_expired": false,
+     "_geoloc": [
+      {
+       "lon": -90.1778,
+       "lat": 32.3113
+      }
+     ],
+     "board_token": "towerloan-wd12-tower_loan_careers",
+     "id": "workday___towerloan-wd12-tower_loan_careers___financial-analyst_jr1990",
+     "objectID": "workday___towerloan-wd12-tower_loan_careers___financial-analyst_jr1990"
+    }
+   ],
+   "ssrPage": 0,
+   "ssrTotalCount": 8556,
+   "ssrPageSize": 20,
+   "ssrIsLastPage": false
+  }
+ }
+}

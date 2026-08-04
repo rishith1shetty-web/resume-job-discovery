@@ -172,8 +172,24 @@ async def test_seeding_does_not_re_enable_a_portal_an_operator_disabled(
     assert portal.is_enabled is False
 
 
-def test_only_the_two_approved_portals_are_seeded() -> None:
-    assert {seed.slug for seed in PORTAL_SEEDS} == {"jobright", "linkedin"}
+def test_only_approved_portals_are_seeded() -> None:
+    # Jobright and LinkedIn in Phase 4, Hiring Cafe in Phase 9A. Portals are
+    # added one at a time; an unexpected slug means that gate was skipped.
+    assert {seed.slug for seed in PORTAL_SEEDS} == {
+        "jobright",
+        "linkedin",
+        "hiringcafe",
+    }
+
+
+def test_hiring_cafe_is_seeded_as_enabled_and_implemented() -> None:
+    seed = next(seed for seed in PORTAL_SEEDS if seed.slug == "hiringcafe")
+
+    assert seed.is_enabled is True
+    # The notes must say where collection is allowed to read from, because the
+    # site's own search surface is disallowed by robots.txt.
+    assert "robots" in seed.notes.lower()
+    assert "searchstate" in seed.notes.lower()
 
 
 # --- Probe endpoint ---------------------------------------------------------

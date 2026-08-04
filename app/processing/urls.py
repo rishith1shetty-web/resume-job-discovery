@@ -128,6 +128,15 @@ _ATS_HOSTS = (
     "rippling.com",
     "gem.com",
     "polymer.co",
+    # Added in Phase 9A: these carry Hiring Cafe's employer application links.
+    # Without them the link is UNKNOWN, which ranks *below* a board listing, so
+    # the direct employer URL would lose to an aggregator page.
+    "ukg.net",
+    "applitrack.com",
+    "applicantpro.com",
+    "paycomonline.net",
+    "governmentjobs.com",
+    "paradox.ai",
 )
 
 # Job boards and aggregators. A link to one of these is a listing, not an
@@ -326,6 +335,22 @@ def classify_url(
     return JobUrlKind.UNKNOWN
 
 
+#: Words employers append to their own name for a careers domain. Only these
+#: turn "<company><word>.com" into evidence of the employer.
+_CAREERS_SUFFIXES = frozenset(
+    {
+        "careers",
+        "career",
+        "jobs",
+        "job",
+        "hiring",
+        "recruiting",
+        "recruitment",
+        "talent",
+    }
+)
+
+
 def _host_is_employer(bare_host: str, company: str) -> bool:
     """Does this host demonstrably belong to this employer?
 
@@ -353,7 +378,20 @@ def _host_is_employer(bare_host: str, company: str) -> bool:
     # "berkadia" for "Berkadia Commercial Mortgage" is the same employer. The
     # length floor stops a generic label like "bank" from claiming every
     # company whose name happens to start with it.
-    return len(domain_label) >= 6 and company_key.startswith(domain_label)
+    if len(domain_label) >= 6 and company_key.startswith(domain_label):
+        return True
+
+    # The mirror image: "compassgroupcareers.com" for "Compass Group".
+    # Employers often park their careers site on the company name plus a word.
+    #
+    # The remainder must be one of those words, not merely *some* suffix: a
+    # bare prefix test promotes "compassionatecare.com" for "Compass", which is
+    # a different company entirely. An unrecognised host stays UNKNOWN, which
+    # ranks below a working portal link (CLAUDE.md section 9).
+    if len(company_key) >= 6 and domain_label.startswith(company_key):
+        return domain_label[len(company_key) :] in _CAREERS_SUFFIXES
+
+    return False
 
 
 def normalize_and_classify(
