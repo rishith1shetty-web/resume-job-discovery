@@ -14,7 +14,15 @@ on screen comes from the API.
 
 ## Running it
 
-The backend must be running first.
+From the repository root, one command starts the backend and this dashboard
+together, waits for both and opens the browser:
+
+```powershell
+.\start_app.ps1 -Install      # -Install only needed the first time
+.\stop_app.ps1                # when you are done
+```
+
+To run the two halves yourself instead — the backend must be up first:
 
 ```bash
 # 1. Backend, from the repository root

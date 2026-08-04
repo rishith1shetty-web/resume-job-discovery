@@ -112,6 +112,66 @@ one dependency rather than redesigning the schema.
 
 ---
 
+## Quick start
+
+Once set up, both services start with one command from the repository root:
+
+```powershell
+.\start_app.ps1
+```
+
+It checks the prerequisites, starts the API on `127.0.0.1:8100` and the
+development dashboard on `localhost:5173`, waits until both answer, and opens
+the dashboard in your browser.
+
+```powershell
+.\stop_app.ps1
+```
+
+stops them again.
+
+**First run**, which installs the frontend dependencies and creates
+`frontend\.env.local`:
+
+```powershell
+.\start_app.ps1 -Install
+```
+
+| Switch | Effect |
+|---|---|
+| `-Install` | `npm install` if needed, and create `frontend\.env.local` from the example |
+| `-Reload` | Start uvicorn with `--reload` |
+| `-NoBrowser` | Do not open a browser |
+| `-TimeoutSeconds <n>` | How long to wait for each service (default 90) |
+
+`stop_app.ps1` takes `-Service backend|frontend` to stop one of them, and
+`-ClearLogs` to delete the log files as well.
+
+### What the launcher will and will not do
+
+It tracks **only the two processes it starts**. PID files go in `.run\`
+(git-ignored) and record the image name and start time as well as the PID, so
+`stop_app.ps1` can prove a PID still belongs to the process that was started
+before stopping it. Windows recycles PIDs; a recycled one fails the check and
+is reported as a stale file, not killed.
+
+Nothing is ever selected by process name. `Stop-Process -Name python` would
+kill every Python process on the machine — including the separate LinkedIn/Dice
+project — so the scripts cannot do it, and
+[tests/test_launcher_scripts.py](tests/test_launcher_scripts.py) fails the
+build if that ever changes.
+
+Port `8000` is never bound and never stopped. `start_app.ps1` refuses to run at
+all if `API_PORT` in `.env` is set to it.
+
+If either port is already in use, the launcher reports it and starts nothing on
+that port, rather than a second copy.
+
+Logs are written to `.run\backend.out.log`, `.run\backend.err.log` and the
+matching `frontend.*` files. On a failed start, the tail is printed.
+
+---
+
 ## Setup
 
 ### 1. Virtual environment
@@ -160,6 +220,12 @@ alembic upgrade head
 ```
 
 ### 5. Run
+
+```powershell
+.\start_app.ps1 -Install      # backend + dashboard
+```
+
+or start the API on its own:
 
 ```powershell
 uvicorn app.main:app --reload --port 8100
@@ -310,12 +376,16 @@ leaf.
 
 ## Frontend
 
-The React frontend is built separately in Lovable and consumes this backend over
-REST. No frontend code lives in this repository, and no Streamlit dashboard is
-built.
+[frontend/](frontend/) holds a small React **development dashboard** for
+exercising the backend by hand — upload a resume, run the analysis, correct the
+detected role, probe a portal adapter, inspect the tables. It is a testing tool,
+not the production UI: no database, no backend of its own, no authentication.
+See [frontend/README.md](frontend/README.md).
 
-See [docs/FRONTEND_INTEGRATION.md](docs/FRONTEND_INTEGRATION.md) for base URLs,
-the response envelope, error format, pagination, CORS and auth assumptions.
+The production frontend is built separately in Lovable and consumes this backend
+over REST. See [docs/FRONTEND_INTEGRATION.md](docs/FRONTEND_INTEGRATION.md) for
+base URLs, the response envelope, error format, pagination, CORS and auth
+assumptions.
 
 ---
 
@@ -326,7 +396,7 @@ the response envelope, error format, pagination, CORS and auth assumptions.
 | 1 | Foundation: structure, config, DB, health, logging, tests | **Complete** |
 | 2 | Resume intelligence: parsing, profile, domain/role detection | **Complete** |
 | 3 | Data foundation: job/search/application models and contracts | **Complete** |
-| 4 | Portal framework: first adapter, contract tests | Not started |
+| 4 | Portal framework: first adapter, contract tests | **Complete** |
 | 5 | Job processing: normalisation, dedup, URL validation | Not started |
 | 6 | Matching: role gate, weighted scoring, hard rejects | Not started |
 | 7 | Multi-portal search: quotas, freshness, redistribution | Not started |
