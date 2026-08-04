@@ -295,6 +295,57 @@ a {
   flex-wrap: wrap;
 }
 
+/* Portal checkboxes. The list is whatever the API reports as selectable, so
+   this wraps rather than assuming a fixed number of portals. */
+.portal-picker {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+  gap: 8px;
+}
+
+.portal-check {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  cursor: pointer;
+}
+
+.portal-check:hover {
+  border-color: var(--accent, var(--border));
+}
+
+.portal-check input {
+  cursor: pointer;
+}
+
+.plain-list {
+  margin: 6px 0 0;
+  padding-left: 18px;
+}
+
+/* Run summary counters. */
+.facts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 24px;
+  margin: 0 0 12px;
+}
+
+.facts dt {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  opacity: 0.7;
+}
+
+.facts dd {
+  margin: 2px 0 0;
+  font-weight: 600;
+}
+
 .locked-threshold {
   display: inline-flex;
   align-items: center;

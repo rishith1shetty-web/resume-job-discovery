@@ -1,9 +1,12 @@
-"""Search-run endpoints.
+"""Search-run endpoints - the Find Matches workflow.
 
-Creating a run records what to search and the quota each selected portal gets.
-It does not search: portal adapters land in Phase 4 and orchestration in Phase
-7, so a run created here stays PENDING and its counters stay zero. The contract
-is fixed now so the frontend can be built against it.
+``POST /search-runs`` records a run and executes it synchronously: it collects
+from every selected portal, canonicalises and deduplicates, drops jobs this
+resume has already applied with, scores what remains, keeps only the qualified,
+allocates a fair share per portal and returns them in a deterministic order.
+
+The 70% threshold is locked and is not accepted as input. A run that finds
+fewer qualified jobs than requested returns the smaller set and says so.
 """
 
 from __future__ import annotations
@@ -14,16 +17,20 @@ from typing import Annotated
 from fastapi import APIRouter, Query, status
 
 from app.api.deps import AppSettings, CurrentUser, DbSession
-from app.core.constants import PortalRunStatus
+from app.core.constants import ApplicationStatus, PortalRunStatus
 from app.models.search import SearchRun, SearchRunPortal
 from app.schemas.common import Page, PaginationMeta, ResponseEnvelope
 from app.schemas.search import (
+    ExecutedQueryOut,
+    SearchResultOut,
     SearchRunCreate,
     SearchRunOut,
     SearchRunPortalOut,
     SearchRunProgressOut,
+    SearchRunResultsOut,
 )
 from app.services import resume_service, search_run_service
+from app.services.search_orchestrator import SearchOutcome, execute_search_run
 
 router = APIRouter(prefix="/search-runs", tags=["Search"])
 
@@ -68,30 +75,125 @@ def _run_out(run: SearchRun) -> SearchRunOut:
     )
 
 
+def _result_out(item) -> SearchResultOut:
+    return SearchResultOut(
+        job_id=item.job_id,
+        title=item.title,
+        company=item.company,
+        location=item.location,
+        work_mode=item.work_mode,
+        posted_at=item.posted_at,
+        final_score=item.final_score,
+        ranking_score=item.ranking_score,
+        freshness_score=item.freshness_score,
+        qualified=item.qualified,
+        role_verdict=item.role_verdict,
+        match_explanation=item.match_explanation,
+        positive_evidence=list(item.positive_evidence),
+        portal_slugs=list(item.portal_slugs),
+        discovered_via=item.discovered_via,
+        preferred_application_url=item.preferred_application_url,
+        preferred_url_kind=item.preferred_url_kind,
+        application_status=item.application_status,
+        is_new=item.is_new,
+    )
+
+
+def _stored_result_out(item, statuses: dict) -> SearchResultOut:
+    """Rebuild one result row from what the run stored.
+
+    Scores and the explanation come from that run's own ``job_matches`` row, so
+    the numbers shown are the ones the run actually produced. Only the
+    application status is read live - it is the one thing the user changes
+    afterwards.
+    """
+    job, match = item.job, item.match
+    details = dict(match.score_details or {})
+
+    return SearchResultOut(
+        job_id=job.id,
+        title=job.title,
+        company=job.company,
+        location=job.location,
+        work_mode=job.work_mode.value if job.work_mode else None,
+        posted_at=job.posted_at,
+        final_score=match.final_score,
+        ranking_score=match.ranking_score,
+        freshness_score=match.freshness_score,
+        qualified=match.qualified,
+        role_verdict=str((details.get("role") or {}).get("verdict", "")),
+        match_explanation=str((details.get("role") or {}).get("reason", "")),
+        positive_evidence=list(details.get("positive_evidence", ()) or ()),
+        portal_slugs=list(item.portal_slugs),
+        discovered_via="",
+        preferred_application_url=job.preferred_application_url,
+        preferred_url_kind=(
+            job.preferred_url_kind.value if job.preferred_url_kind else None
+        ),
+        application_status=statuses.get(job.id, ApplicationStatus.NOT_APPLIED),
+        is_new=False,
+    )
+
+
+def _results_out(run: SearchRun, outcome: SearchOutcome) -> SearchRunResultsOut:
+    return SearchRunResultsOut(
+        search_run_id=run.id,
+        resume_id=run.resume_id,
+        status=outcome.status,
+        requested_limit=outcome.requested_limit,
+        returned_count=outcome.returned_count,
+        min_score=outcome.min_score,
+        target_role=outcome.query_plan.role_display or None,
+        domain=outcome.query_plan.domain_key,
+        is_short=outcome.is_short,
+        results=[_result_out(item) for item in outcome.results],
+        portals=[_portal_out(leg) for leg in run.portals],
+        queries=[
+            ExecutedQueryOut(
+                query_text=executed.query_text,
+                window=executed.window,
+                result_count=executed.result_count,
+                portal=leg.portal_slug,
+            )
+            for leg in outcome.portals
+            for executed in leg.executed_queries
+        ],
+        warnings=list(outcome.warnings),
+        summary=dict(run.summary or {}),
+    )
+
+
 @router.post(
     "",
-    response_model=ResponseEnvelope[SearchRunOut],
+    response_model=ResponseEnvelope[SearchRunResultsOut],
     status_code=status.HTTP_201_CREATED,
-    summary="Create a search run",
+    summary="Find matches",
     description=(
-        "Records a search of one resume across the selected portals and "
-        "computes each portal's quota.\n\n"
-        "`requested_limit` accepts only 20, 50 or 100, and is a target for "
+        "Searches every selected portal for one resume and returns the "
+        "qualified jobs.\n\n"
+        "`requested_limit` accepts only 20, 50 or 100 and is a target for "
         "*qualified* jobs. It is split as evenly as possible over the selected "
         "portals; the remainder goes to the first portals listed. Every "
         "selected portal is searched - the run does not stop once one portal "
-        "has produced enough.\n\n"
-        "The 70% match threshold is locked and is not accepted as input.\n\n"
-        "**Not yet executed.** Portal adapters arrive in Phase 4 and the "
-        "background runner in Phase 7, so the run is created `pending` with "
-        "zero counters."
+        "has produced enough - and a portal short of qualified jobs releases "
+        "its unused slots to the others.\n\n"
+        "The 70% match threshold is locked, is not accepted as input, and is "
+        "never lowered to reach the requested count. If fewer jobs qualify, "
+        "the smaller set is returned and `is_short` is true.\n\n"
+        "Jobs already applied to **with this resume** are excluded before "
+        "quotas are filled. They remain in application history, and remain "
+        "available to your other resumes.\n\n"
+        "Runs synchronously: each portal has a request timeout and an overall "
+        "budget, so the response is bounded. One portal failing does not fail "
+        "the run - it finishes `completed_with_errors` and the failure is "
+        "reported in `warnings` and on that portal's row."
     ),
     responses={
         404: {"description": "Resume not found."},
         422: {
             "description": (
-                "Unknown or disabled portal, unanalyzed resume, no target "
-                "role, or an invalid limit."
+                "Unknown, disabled or unimplemented portal, unanalyzed "
+                "resume, no target role, or an invalid limit."
             )
         },
     },
@@ -101,28 +203,44 @@ async def create_search_run(
     session: DbSession,
     settings: AppSettings,
     user: CurrentUser,
-) -> ResponseEnvelope[SearchRunOut]:
+) -> ResponseEnvelope[SearchRunResultsOut]:
     resume = await resume_service.get_resume(
         session, resume_id=payload.resume_id, user_id=user.id
     )
 
-    run = await search_run_service.create_search_run(
+    prepared = await search_run_service.create_search_run(
         session,
         resume=resume,
         portal_ids=payload.selected_portal_ids,
         requested_limit=payload.requested_limit,
         min_score=settings.min_match_score,
     )
+
+    outcome = await execute_search_run(
+        session,
+        run=prepared.run,
+        legs=prepared.legs,
+        portals=prepared.portals,
+    )
     await session.commit()
 
     # Re-read so the portal legs come back with their portal rows attached.
-    created = await search_run_service.get_search_run(
-        session, search_run_id=run.id, user_id=user.id
+    completed = await search_run_service.get_search_run(
+        session, search_run_id=prepared.run.id, user_id=user.id
     )
 
-    return ResponseEnvelope[SearchRunOut](
-        data=_run_out(created),
-        message="Search run created. Collection runs in a later phase.",
+    if outcome.returned_count == 0:
+        message = "No jobs qualified at the locked 70% threshold."
+    elif outcome.is_short:
+        message = (
+            f"{outcome.returned_count} of {outcome.requested_limit} requested "
+            "jobs qualified. The threshold is never lowered to fill the count."
+        )
+    else:
+        message = f"{outcome.returned_count} qualified jobs found."
+
+    return ResponseEnvelope[SearchRunResultsOut](
+        data=_results_out(completed, outcome), message=message
     )
 
 
@@ -172,6 +290,68 @@ async def get_search_run(
         session, search_run_id=search_run_id, user_id=user.id
     )
     return ResponseEnvelope[SearchRunOut](data=_run_out(run))
+
+
+@router.get(
+    "/{search_run_id}/results",
+    response_model=ResponseEnvelope[SearchRunResultsOut],
+    summary="Get a search run's results",
+    description=(
+        "The qualified jobs a completed run returned, in the order it "
+        "returned them.\n\n"
+        "Membership and order are read back from what the run recorded, not "
+        "re-derived, so a later scoring change cannot reshuffle a run that has "
+        "already been shown. Application status is read live, so a job you "
+        "have since applied to shows its current status here."
+    ),
+    responses={404: {"description": "Search run not found."}},
+)
+async def get_search_run_results(
+    search_run_id: uuid.UUID,
+    session: DbSession,
+    user: CurrentUser,
+) -> ResponseEnvelope[SearchRunResultsOut]:
+    run = await search_run_service.get_search_run(
+        session, search_run_id=search_run_id, user_id=user.id
+    )
+    stored = await search_run_service.load_run_results(session, run=run)
+    statuses = await search_run_service.application_statuses(
+        session,
+        resume_id=run.resume_id,
+        job_ids=[item.job.id for item in stored],
+    )
+
+    summary = dict(run.summary or {})
+
+    return ResponseEnvelope[SearchRunResultsOut](
+        data=SearchRunResultsOut(
+            search_run_id=run.id,
+            resume_id=run.resume_id,
+            status=run.status,
+            requested_limit=run.requested_limit,
+            returned_count=len(stored),
+            min_score=run.min_score,
+            target_role=summary.get("target_role") or run.searched_target_role,
+            domain=summary.get("domain") or run.searched_domain,
+            is_short=len(stored) < run.requested_limit,
+            results=[
+                _stored_result_out(item, statuses) for item in stored
+            ],
+            portals=[_portal_out(leg) for leg in run.portals],
+            queries=[
+                ExecutedQueryOut(
+                    query_text=str(entry.get("query_text", "")),
+                    window=entry["window"],
+                    result_count=int(entry.get("result_count", 0)),
+                    portal=str(entry.get("portal", "")),
+                )
+                for entry in summary.get("queries", []) or []
+                if entry.get("window")
+            ],
+            warnings=list(summary.get("warnings", []) or []),
+            summary=summary,
+        )
+    )
 
 
 @router.get(

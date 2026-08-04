@@ -1,9 +1,13 @@
 """Search-run request and response schemas.
 
-``POST /search-runs`` records the run and its per-portal quotas. It does not
-collect anything: portal adapters arrive in Phase 4 and orchestration in Phase
-7, so a newly created run stays PENDING until then. The contract is fixed now
-so the frontend can be built against it.
+``POST /search-runs`` is the Find Matches endpoint: it records the run, then
+executes it - collect, canonicalise, deduplicate, exclude, score, allocate,
+order - and returns the qualified results synchronously.
+
+Nothing in these schemas exposes credentials, cookies, tokens or a portal's
+opaque adapter options. Raw portal payloads are stored for auditing but never
+serialised here: a listing's usable fields are returned, not the response that
+produced them.
 """
 
 from __future__ import annotations
@@ -16,6 +20,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from app.core.constants import (
     MIN_MATCH_SCORE_FLOOR,
+    ApplicationStatus,
     FreshnessWindow,
     PortalRunStatus,
     SearchRunStatus,
@@ -158,3 +163,88 @@ class SearchQueryOut(BaseModel):
     result_count: int
     executed_at: datetime | None = None
     duration_ms: int | None = None
+
+
+class ExecutedQueryOut(BaseModel):
+    """A query as executed during a run, without needing its stored row."""
+
+    query_text: str
+    window: FreshnessWindow
+    result_count: int
+    portal: str
+
+
+class SearchResultOut(BaseModel):
+    """One qualified job in a run's result set.
+
+    Every field the dashboard shows (CLAUDE.md section 10). There is no Easy
+    Apply flag, apply priority, form progress or submit result: the user opens
+    ``preferred_application_url`` and applies manually.
+    """
+
+    job_id: uuid.UUID
+    title: str
+    company: str | None = None
+    location: str | None = None
+    work_mode: str | None = None
+    posted_at: datetime | None = None
+
+    final_score: float = Field(description="Resume match, 0-100. Always >= 70 here.")
+    ranking_score: float = Field(
+        description="Match, freshness and source quality blended for sorting."
+    )
+    freshness_score: float
+    qualified: bool
+
+    role_verdict: str
+    match_explanation: str = Field(
+        description="Why this posting is the candidate's role."
+    )
+    positive_evidence: list[str] = Field(default_factory=list)
+
+    portal_slugs: list[str] = Field(
+        default_factory=list,
+        description="Every portal carrying this job, not only the first.",
+    )
+    discovered_via: str = Field(
+        description="The portal whose quota this job was counted against."
+    )
+
+    preferred_application_url: str | None = None
+    preferred_url_kind: str | None = None
+
+    application_status: ApplicationStatus = Field(
+        description="This resume's status for this job. Never auto-changed."
+    )
+    is_new: bool = Field(
+        description="First discovered in this run, rather than rediscovered."
+    )
+
+
+class SearchRunResultsOut(BaseModel):
+    """A run's outcome: what was searched, what came back, and what failed."""
+
+    search_run_id: uuid.UUID
+    resume_id: uuid.UUID
+    status: SearchRunStatus
+    requested_limit: int
+    returned_count: int
+    min_score: int = Field(
+        description=f"Locked at {MIN_MATCH_SCORE_FLOOR}. Never lowered to fill a count."
+    )
+
+    target_role: str | None = None
+    domain: str | None = None
+
+    is_short: bool = Field(
+        description="True when fewer jobs qualified than were requested."
+    )
+
+    results: list[SearchResultOut] = Field(default_factory=list)
+    portals: list[SearchRunPortalOut] = Field(default_factory=list)
+    queries: list[ExecutedQueryOut] = Field(default_factory=list)
+    warnings: list[str] = Field(
+        default_factory=list,
+        description="Portal failures and shortfalls, stated rather than hidden.",
+    )
+    summary: dict[str, Any] = Field(default_factory=dict)

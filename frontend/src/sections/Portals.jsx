@@ -393,29 +393,14 @@ function AdapterProbe({ portals }) {
  */
 function SearchPlaceholder({ portalCount }) {
   return (
-    <Card title="Job search" subtitle="Not yet available">
-      <div className="search-controls">
-        {[20, 50, 100].map((limit) => (
-          <Button key={limit} disabled title="Disabled until the portal adapters exist">
-            Find {limit}
-          </Button>
-        ))}
-        <span className="locked-threshold">
-          Minimum match: <strong>70%</strong> <Badge tone="neutral">locked</Badge>
-        </span>
-      </div>
-
-      <p className="notice notice-warn">
-        Real job search will be enabled after the Jobright and LinkedIn adapters are
-        implemented.
-      </p>
-
+    <Card title="Job search" subtitle="Moved to its own section">
       <p className="muted small">
         {portalCount === 0
           ? 'No portal is selectable yet, because no adapter has been implemented.'
           : `${portalCount} portal${portalCount === 1 ? '' : 's'} currently selectable.`}{' '}
-        The backend already records search runs and computes per-portal quotas; collection
-        is what is missing.
+        Searching lives under <strong>Find matches</strong>. This section stays
+        for adapter diagnostics: the probe and processing preview above read
+        from a portal without storing anything.
       </p>
     </Card>
   )

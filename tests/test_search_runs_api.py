@@ -1,5 +1,10 @@
 """Integration tests for the search-run endpoints.
 
+``POST /search-runs`` is the Find Matches endpoint: it creates the run and
+executes it synchronously. Portals are deterministic fakes registered on the
+process registry for the duration of one test, so nothing here reaches a
+network.
+
 Every test runs inside a transaction that is rolled back, so nothing is
 committed to resume_job_discovery. Records carry the pytest marker. Nothing
 here truncates, drops or resets anything.
@@ -8,18 +13,33 @@ here truncates, drops or resets anything.
 from __future__ import annotations
 
 import uuid
+from datetime import UTC, datetime
 
+import pytest
 from httpx import AsyncClient
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import Settings
+from app.core.constants import ApplicationStatus, Seniority, SkillKind
+from app.models.application import Application
+from app.models.profile import ResumeSkill
 from app.models.search import SearchRun
 from app.models.user import User
+from app.portals.exceptions import PortalBlockedError
+from app.portals.registry import registry
 from app.services.user_service import get_or_create_default_user
+from tests.conftest import TEST_RECORD_MARKER
 from tests.factories import make_portal, make_profile, make_resume, make_user
+from tests.fake_portals import (
+    build_fake_portal,
+    make_jobs,
+    make_raw_job,
+    temporary_registry,
+)
 
 BASE = "/api/v1/search-runs"
+NOW = datetime(2026, 8, 4, 12, 0, tzinfo=UTC)
 
 
 async def _acting_user(session: AsyncSession, settings: Settings) -> User:
@@ -28,129 +48,353 @@ async def _acting_user(session: AsyncSession, settings: Settings) -> User:
 
 
 async def _ready_resume(session: AsyncSession, settings: Settings) -> uuid.UUID:
-    """An analysed resume belonging to the acting user."""
+    """An analysed, scoreable resume belonging to the acting user."""
     user = await _acting_user(session, settings)
     resume = await make_resume(session, user=user)
-    await make_profile(session, resume=resume)
+    profile = await make_profile(session, resume=resume)
+    profile.years_experience = 5.0
+    profile.seniority = Seniority.MID
+    profile.education = ["Bachelor of Science in Finance"]
+
+    for key in ("excel", "sql", "forecasting", "budgeting", "financial modeling"):
+        session.add(
+            ResumeSkill(
+                profile_id=profile.id,
+                skill_key=key,
+                display=key.title(),
+                kind=SkillKind.SKILL,
+                occurrences=2,
+                confidence=0.9,
+            )
+        )
+
+    await session.flush()
     return resume.id
 
 
-# --- Creation ---------------------------------------------------------------
+async def _searchable_portal(
+    session: AsyncSession, *, slug: str, adapter_class
+):
+    """A portal row wired to a registered fake adapter."""
+    return await make_portal(
+        session, slug=slug, adapter_key=adapter_class.slug, options={}
+    )
 
 
-async def test_creating_a_run_splits_the_limit_evenly(
+# --- The Find Matches flow --------------------------------------------------
+
+
+async def test_a_search_returns_qualified_jobs(
     api_client: AsyncClient, db_session: AsyncSession, settings: Settings
 ) -> None:
     resume_id = await _ready_resume(db_session, settings)
-    first = await make_portal(db_session, slug="alpha")
-    second = await make_portal(db_session, slug="beta")
+    adapter = build_fake_portal("api-solo", jobs=make_jobs("api-solo", 6, now=NOW))
+    portal = await _searchable_portal(db_session, slug="solo", adapter_class=adapter)
 
-    response = await api_client.post(
-        BASE,
-        json={
-            "resume_id": str(resume_id),
-            "selected_portal_ids": [str(first.id), str(second.id)],
-            "requested_limit": 20,
-        },
-    )
+    with temporary_registry(registry, adapter):
+        response = await api_client.post(
+            BASE,
+            json={
+                "resume_id": str(resume_id),
+                "selected_portal_ids": [str(portal.id)],
+                "requested_limit": 20,
+            },
+        )
 
     assert response.status_code == 201, response.text
     body = response.json()
     assert body["success"] is True
     assert body["errors"] == []
 
-    run = body["data"]
-    assert run["requested_limit"] == 20
-    assert run["status"] == "pending"
-    assert [portal["target_quota"] for portal in run["portals"]] == [10, 10]
+    data = body["data"]
+    assert data["status"] == "completed"
+    assert data["requested_limit"] == 20
+    assert data["returned_count"] == 6
+    assert data["min_score"] == 70
+    assert len(data["results"]) == 6
 
 
-async def test_every_selected_portal_gets_a_row(
-    api_client: AsyncClient, db_session: AsyncSession, settings: Settings
-) -> None:
-    # A run must not stop at the first portal that could satisfy the limit.
-    resume_id = await _ready_resume(db_session, settings)
-    portals = [
-        await make_portal(db_session, slug=f"p{index}") for index in range(4)
-    ]
-
-    response = await api_client.post(
-        BASE,
-        json={
-            "resume_id": str(resume_id),
-            "selected_portal_ids": [str(portal.id) for portal in portals],
-            "requested_limit": 50,
-        },
-    )
-
-    assert response.status_code == 201, response.text
-    legs = response.json()["data"]["portals"]
-    assert len(legs) == 4
-    assert sum(leg["target_quota"] for leg in legs) == 50
-    assert {leg["target_quota"] for leg in legs} == {12, 13}
-
-
-async def test_the_threshold_is_locked_at_70(
+async def test_each_result_carries_what_the_dashboard_shows(
     api_client: AsyncClient, db_session: AsyncSession, settings: Settings
 ) -> None:
     resume_id = await _ready_resume(db_session, settings)
-    portal = await make_portal(db_session, slug="alpha")
+    adapter = build_fake_portal("api-cols", jobs=make_jobs("api-cols", 2, now=NOW))
+    portal = await _searchable_portal(db_session, slug="cols", adapter_class=adapter)
 
-    response = await api_client.post(
-        BASE,
-        json={
-            "resume_id": str(resume_id),
-            "selected_portal_ids": [str(portal.id)],
-            "requested_limit": 20,
-            # Ignored: the threshold is not client-settable.
-            "min_score": 40,
-        },
-    )
+    with temporary_registry(registry, adapter):
+        response = await api_client.post(
+            BASE,
+            json={
+                "resume_id": str(resume_id),
+                "selected_portal_ids": [str(portal.id)],
+                "requested_limit": 20,
+            },
+        )
 
-    assert response.status_code == 201, response.text
-    assert response.json()["data"]["min_score"] == 70
+    job = response.json()["data"]["results"][0]
+
+    # CLAUDE.md section 10's required columns.
+    assert job["title"]
+    assert job["company"]
+    assert job["location"]
+    assert job["portal_slugs"]
+    assert job["posted_at"]
+    assert job["final_score"] >= 70
+    assert job["qualified"] is True
+    assert job["preferred_application_url"]
+    assert job["application_status"] == "not_applied"
+    assert job["match_explanation"]
 
 
-async def test_the_run_snapshots_the_searched_role(
+async def test_a_short_result_set_is_reported_as_short(
     api_client: AsyncClient, db_session: AsyncSession, settings: Settings
 ) -> None:
-    # Re-analysing the resume later must not rewrite this run's history.
-    user = await _acting_user(db_session, settings)
-    resume = await make_resume(db_session, user=user)
-    await make_profile(db_session, resume=resume)
-    portal = await make_portal(db_session, slug="alpha")
+    resume_id = await _ready_resume(db_session, settings)
+    adapter = build_fake_portal("api-thin", jobs=make_jobs("api-thin", 2, now=NOW))
+    portal = await _searchable_portal(db_session, slug="thin", adapter_class=adapter)
 
-    response = await api_client.post(
-        BASE,
-        json={
-            "resume_id": str(resume.id),
-            "selected_portal_ids": [str(portal.id)],
-            "requested_limit": 20,
-        },
+    with temporary_registry(registry, adapter):
+        response = await api_client.post(
+            BASE,
+            json={
+                "resume_id": str(resume_id),
+                "selected_portal_ids": [str(portal.id)],
+                "requested_limit": 20,
+            },
+        )
+
+    body = response.json()
+    assert body["data"]["is_short"] is True
+    assert body["data"]["returned_count"] == 2
+    assert "never lowered" in body["message"]
+
+
+async def test_no_qualifying_jobs_is_stated_plainly(
+    api_client: AsyncClient, db_session: AsyncSession, settings: Settings
+) -> None:
+    resume_id = await _ready_resume(db_session, settings)
+    adapter = build_fake_portal(
+        "api-none", jobs=make_jobs("api-none", 4, title="Data Engineer", now=NOW)
     )
+    portal = await _searchable_portal(db_session, slug="none", adapter_class=adapter)
+
+    with temporary_registry(registry, adapter):
+        response = await api_client.post(
+            BASE,
+            json={
+                "resume_id": str(resume_id),
+                "selected_portal_ids": [str(portal.id)],
+                "requested_limit": 20,
+            },
+        )
+
+    body = response.json()
+    assert body["data"]["returned_count"] == 0
+    assert body["data"]["results"] == []
+    assert "70%" in body["message"]
+
+
+async def test_the_quota_is_split_across_selected_portals(
+    api_client: AsyncClient, db_session: AsyncSession, settings: Settings
+) -> None:
+    resume_id = await _ready_resume(db_session, settings)
+    first = build_fake_portal("api-a", jobs=make_jobs("api-a", 20, now=NOW))
+    second = build_fake_portal("api-b", jobs=make_jobs("api-b", 20, now=NOW))
+    left = await _searchable_portal(db_session, slug="a", adapter_class=first)
+    right = await _searchable_portal(db_session, slug="b", adapter_class=second)
+
+    with temporary_registry(registry, first, second):
+        response = await api_client.post(
+            BASE,
+            json={
+                "resume_id": str(resume_id),
+                "selected_portal_ids": [str(left.id), str(right.id)],
+                "requested_limit": 20,
+            },
+        )
 
     data = response.json()["data"]
-    assert data["searched_domain"] == "finance"
-    assert data["searched_target_role"] == "financial_analyst"
+    assert data["returned_count"] == 20
+    assert [leg["target_quota"] for leg in data["portals"]] == [10, 10]
+    assert sorted(leg["selected_count"] for leg in data["portals"]) == [10, 10]
 
 
-# --- Rejections -------------------------------------------------------------
+async def test_a_failing_portal_completes_the_run_with_errors(
+    api_client: AsyncClient, db_session: AsyncSession, settings: Settings
+) -> None:
+    # A blocked portal - LinkedIn's real state - is reported, not hidden.
+    resume_id = await _ready_resume(db_session, settings)
+    good = build_fake_portal("api-good", jobs=make_jobs("api-good", 5, now=NOW))
+    blocked = build_fake_portal(
+        "api-blocked",
+        error=PortalBlockedError("Access is not authorized.", portal="api-blocked"),
+    )
+    ok_portal = await _searchable_portal(db_session, slug="good", adapter_class=good)
+    bad_portal = await _searchable_portal(
+        db_session, slug="blocked", adapter_class=blocked
+    )
+
+    with temporary_registry(registry, good, blocked):
+        response = await api_client.post(
+            BASE,
+            json={
+                "resume_id": str(resume_id),
+                "selected_portal_ids": [str(ok_portal.id), str(bad_portal.id)],
+                "requested_limit": 20,
+            },
+        )
+
+    assert response.status_code == 201
+    data = response.json()["data"]
+    assert data["status"] == "completed_with_errors"
+    assert data["returned_count"] == 5
+    assert any("not authorized" in warning for warning in data["warnings"])
+
+    failed = [leg for leg in data["portals"] if leg["status"] == "failed"]
+    assert len(failed) == 1
+    assert failed[0]["error"]
+
+
+async def test_every_portal_failing_reports_a_failed_run(
+    api_client: AsyncClient, db_session: AsyncSession, settings: Settings
+) -> None:
+    resume_id = await _ready_resume(db_session, settings)
+    blocked = build_fake_portal(
+        "api-dead", error=PortalBlockedError("blocked", portal="api-dead")
+    )
+    portal = await _searchable_portal(db_session, slug="dead", adapter_class=blocked)
+
+    with temporary_registry(registry, blocked):
+        response = await api_client.post(
+            BASE,
+            json={
+                "resume_id": str(resume_id),
+                "selected_portal_ids": [str(portal.id)],
+                "requested_limit": 20,
+            },
+        )
+
+    assert response.status_code == 201
+    data = response.json()["data"]
+    assert data["status"] == "failed"
+    assert data["returned_count"] == 0
+    assert data["warnings"]
+
+
+async def test_an_applied_job_is_not_offered_again(
+    api_client: AsyncClient, db_session: AsyncSession, settings: Settings
+) -> None:
+    user = await _acting_user(db_session, settings)
+    resume_id = await _ready_resume(db_session, settings)
+    listing = make_raw_job(portal="api-hist", index=0, company="Hist Co", now=NOW)
+    adapter = build_fake_portal("api-hist", jobs=[listing])
+    portal = await _searchable_portal(db_session, slug="hist", adapter_class=adapter)
+
+    with temporary_registry(registry, adapter):
+        first = await api_client.post(
+            BASE,
+            json={
+                "resume_id": str(resume_id),
+                "selected_portal_ids": [str(portal.id)],
+                "requested_limit": 20,
+            },
+        )
+        job_id = first.json()["data"]["results"][0]["job_id"]
+
+        db_session.add(
+            Application(
+                user_id=user.id,
+                resume_id=resume_id,
+                job_id=uuid.UUID(job_id),
+                status=ApplicationStatus.APPLIED,
+                applied_at=NOW,
+                notes=TEST_RECORD_MARKER,
+            )
+        )
+        await db_session.commit()
+
+        second = await api_client.post(
+            BASE,
+            json={
+                "resume_id": str(resume_id),
+                "selected_portal_ids": [str(portal.id)],
+                "requested_limit": 20,
+            },
+        )
+
+    assert second.json()["data"]["returned_count"] == 0
+
+
+async def test_the_executed_queries_are_reported(
+    api_client: AsyncClient, db_session: AsyncSession, settings: Settings
+) -> None:
+    resume_id = await _ready_resume(db_session, settings)
+    adapter = build_fake_portal("api-q", jobs=make_jobs("api-q", 3, now=NOW))
+    portal = await _searchable_portal(db_session, slug="q", adapter_class=adapter)
+
+    with temporary_registry(registry, adapter):
+        response = await api_client.post(
+            BASE,
+            json={
+                "resume_id": str(resume_id),
+                "selected_portal_ids": [str(portal.id)],
+                "requested_limit": 20,
+            },
+        )
+
+    data = response.json()["data"]
+    assert data["queries"]
+    assert data["queries"][0]["query_text"] == "Financial Analyst"
+    assert data["target_role"] == "Financial Analyst"
+
+
+async def test_no_portal_configuration_is_exposed(
+    api_client: AsyncClient, db_session: AsyncSession, settings: Settings
+) -> None:
+    # Adapter options are opaque operator configuration, not user-facing data.
+    resume_id = await _ready_resume(db_session, settings)
+    adapter = build_fake_portal("api-secret", jobs=make_jobs("api-secret", 2, now=NOW))
+    portal = await make_portal(
+        db_session,
+        slug="secret",
+        adapter_key=adapter.slug,
+        options={"api_token": "super-secret-value", "access_authorized": False},
+    )
+
+    with temporary_registry(registry, adapter):
+        response = await api_client.post(
+            BASE,
+            json={
+                "resume_id": str(resume_id),
+                "selected_portal_ids": [str(portal.id)],
+                "requested_limit": 20,
+            },
+        )
+
+    assert "super-secret-value" not in response.text
+    assert "api_token" not in response.text
+    assert "raw_payload" not in response.text
+
+
+# --- Validation -------------------------------------------------------------
 
 
 async def test_an_unsupported_limit_is_rejected(
     api_client: AsyncClient, db_session: AsyncSession, settings: Settings
 ) -> None:
     resume_id = await _ready_resume(db_session, settings)
-    portal = await make_portal(db_session, slug="alpha")
+    adapter = build_fake_portal("api-v1", jobs=[])
+    portal = await _searchable_portal(db_session, slug="v1", adapter_class=adapter)
 
-    response = await api_client.post(
-        BASE,
-        json={
-            "resume_id": str(resume_id),
-            "selected_portal_ids": [str(portal.id)],
-            "requested_limit": 30,
-        },
-    )
+    with temporary_registry(registry, adapter):
+        response = await api_client.post(
+            BASE,
+            json={
+                "resume_id": str(resume_id),
+                "selected_portal_ids": [str(portal.id)],
+                "requested_limit": 30,
+            },
+        )
 
     assert response.status_code == 422
     body = response.json()
@@ -198,6 +442,7 @@ async def test_a_repeated_portal_is_rejected(
 async def test_more_than_eight_portals_is_rejected(
     api_client: AsyncClient, db_session: AsyncSession, settings: Settings
 ) -> None:
+    # CLAUDE.md section 4: at most 8 portals at one time.
     resume_id = await _ready_resume(db_session, settings)
 
     response = await api_client.post(
@@ -249,21 +494,44 @@ async def test_a_disabled_portal_is_rejected(
     assert response.json()["errors"][0]["code"] == "portal_disabled"
 
 
+async def test_a_portal_without_an_adapter_is_rejected(
+    api_client: AsyncClient, db_session: AsyncSession, settings: Settings
+) -> None:
+    # A portal row may exist before its adapter does. Selecting it would create
+    # a leg that can only fail, which reads as "broken" rather than "not built".
+    resume_id = await _ready_resume(db_session, settings)
+    portal = await make_portal(db_session, slug="planned")
+
+    response = await api_client.post(
+        BASE,
+        json={
+            "resume_id": str(resume_id),
+            "selected_portal_ids": [str(portal.id)],
+            "requested_limit": 20,
+        },
+    )
+
+    assert response.status_code == 422
+    assert response.json()["errors"][0]["code"] == "portal_not_implemented"
+
+
 async def test_an_unanalyzed_resume_cannot_be_searched(
     api_client: AsyncClient, db_session: AsyncSession, settings: Settings
 ) -> None:
     user = await _acting_user(db_session, settings)
     resume = await make_resume(db_session, user=user)
-    portal = await make_portal(db_session, slug="alpha")
+    adapter = build_fake_portal("api-v2", jobs=[])
+    portal = await _searchable_portal(db_session, slug="v2", adapter_class=adapter)
 
-    response = await api_client.post(
-        BASE,
-        json={
-            "resume_id": str(resume.id),
-            "selected_portal_ids": [str(portal.id)],
-            "requested_limit": 20,
-        },
-    )
+    with temporary_registry(registry, adapter):
+        response = await api_client.post(
+            BASE,
+            json={
+                "resume_id": str(resume.id),
+                "selected_portal_ids": [str(portal.id)],
+                "requested_limit": 20,
+            },
+        )
 
     assert response.status_code == 422
     assert response.json()["errors"][0]["code"] == "profile_missing"
@@ -289,58 +557,129 @@ async def test_another_users_resume_is_not_found(
     assert response.status_code == 404
 
 
-# --- Reading ----------------------------------------------------------------
+async def test_the_threshold_is_not_client_settable(
+    api_client: AsyncClient, db_session: AsyncSession, settings: Settings
+) -> None:
+    resume_id = await _ready_resume(db_session, settings)
+    adapter = build_fake_portal("api-lock", jobs=make_jobs("api-lock", 2, now=NOW))
+    portal = await _searchable_portal(db_session, slug="lock", adapter_class=adapter)
+
+    with temporary_registry(registry, adapter):
+        response = await api_client.post(
+            BASE,
+            json={
+                "resume_id": str(resume_id),
+                "selected_portal_ids": [str(portal.id)],
+                "requested_limit": 20,
+                # Ignored: the threshold is not part of the request contract.
+                "min_score": 40,
+            },
+        )
+
+    assert response.status_code == 201
+    assert response.json()["data"]["min_score"] == 70
+
+
+# --- Reading a run back -----------------------------------------------------
 
 
 async def test_a_run_can_be_read_back(
     api_client: AsyncClient, db_session: AsyncSession, settings: Settings
 ) -> None:
     resume_id = await _ready_resume(db_session, settings)
-    portal = await make_portal(db_session, slug="alpha")
+    adapter = build_fake_portal("api-read", jobs=make_jobs("api-read", 3, now=NOW))
+    portal = await _searchable_portal(db_session, slug="read", adapter_class=adapter)
 
-    created = (
-        await api_client.post(
-            BASE,
-            json={
-                "resume_id": str(resume_id),
-                "selected_portal_ids": [str(portal.id)],
-                "requested_limit": 20,
-            },
-        )
-    ).json()["data"]
+    with temporary_registry(registry, adapter):
+        created = (
+            await api_client.post(
+                BASE,
+                json={
+                    "resume_id": str(resume_id),
+                    "selected_portal_ids": [str(portal.id)],
+                    "requested_limit": 20,
+                },
+            )
+        ).json()["data"]
 
-    response = await api_client.get(f"{BASE}/{created['id']}")
+    response = await api_client.get(f"{BASE}/{created['search_run_id']}")
 
     assert response.status_code == 200
-    assert response.json()["data"]["id"] == created["id"]
+    assert response.json()["data"]["id"] == created["search_run_id"]
+    assert response.json()["data"]["status"] == "completed"
+
+
+async def test_the_results_endpoint_returns_the_same_order(
+    api_client: AsyncClient, db_session: AsyncSession, settings: Settings
+) -> None:
+    resume_id = await _ready_resume(db_session, settings)
+    adapter = build_fake_portal("api-order", jobs=make_jobs("api-order", 5, now=NOW))
+    portal = await _searchable_portal(db_session, slug="order", adapter_class=adapter)
+
+    with temporary_registry(registry, adapter):
+        created = (
+            await api_client.post(
+                BASE,
+                json={
+                    "resume_id": str(resume_id),
+                    "selected_portal_ids": [str(portal.id)],
+                    "requested_limit": 20,
+                },
+            )
+        ).json()["data"]
+
+    response = await api_client.get(
+        f"{BASE}/{created['search_run_id']}/results"
+    )
+
+    assert response.status_code == 200
+    stored = response.json()["data"]
+    assert [job["job_id"] for job in stored["results"]] == [
+        job["job_id"] for job in created["results"]
+    ]
+    assert [job["final_score"] for job in stored["results"]] == [
+        job["final_score"] for job in created["results"]
+    ]
+
+
+async def test_results_for_an_unknown_run_are_404(api_client: AsyncClient) -> None:
+    response = await api_client.get(f"{BASE}/{uuid.uuid4()}/results")
+
+    assert response.status_code == 404
+    assert response.json()["success"] is False
 
 
 async def test_progress_reports_per_portal(
     api_client: AsyncClient, db_session: AsyncSession, settings: Settings
 ) -> None:
     resume_id = await _ready_resume(db_session, settings)
-    portals = [await make_portal(db_session, slug=f"p{i}") for i in range(2)]
+    first = build_fake_portal("api-p0", jobs=make_jobs("api-p0", 3, now=NOW))
+    second = build_fake_portal("api-p1", jobs=make_jobs("api-p1", 3, now=NOW))
+    left = await _searchable_portal(db_session, slug="p0", adapter_class=first)
+    right = await _searchable_portal(db_session, slug="p1", adapter_class=second)
 
-    created = (
-        await api_client.post(
-            BASE,
-            json={
-                "resume_id": str(resume_id),
-                "selected_portal_ids": [str(p.id) for p in portals],
-                "requested_limit": 20,
-            },
-        )
-    ).json()["data"]
+    with temporary_registry(registry, first, second):
+        created = (
+            await api_client.post(
+                BASE,
+                json={
+                    "resume_id": str(resume_id),
+                    "selected_portal_ids": [str(left.id), str(right.id)],
+                    "requested_limit": 20,
+                },
+            )
+        ).json()["data"]
 
-    response = await api_client.get(f"{BASE}/{created['id']}/progress")
+    response = await api_client.get(
+        f"{BASE}/{created['search_run_id']}/progress"
+    )
 
     assert response.status_code == 200
     progress = response.json()["data"]
     assert progress["portal_count"] == 2
-    assert progress["portals_completed"] == 0
+    assert progress["portals_completed"] == 2
     assert progress["portals_failed"] == 0
-    assert progress["is_terminal"] is False
-    assert len(progress["portals"]) == 2
+    assert progress["is_terminal"] is True
 
 
 async def test_runs_are_listed_per_resume(
@@ -352,17 +691,20 @@ async def test_runs_are_listed_per_resume(
     await make_profile(db_session, resume=first)
     second = await make_resume(db_session, user=user)
     await make_profile(db_session, resume=second)
-    portal = await make_portal(db_session, slug="alpha")
 
-    for resume in (first, second):
-        await api_client.post(
-            BASE,
-            json={
-                "resume_id": str(resume.id),
-                "selected_portal_ids": [str(portal.id)],
-                "requested_limit": 20,
-            },
-        )
+    adapter = build_fake_portal("api-list", jobs=[])
+    portal = await _searchable_portal(db_session, slug="list", adapter_class=adapter)
+
+    with temporary_registry(registry, adapter):
+        for resume in (first, second):
+            await api_client.post(
+                BASE,
+                json={
+                    "resume_id": str(resume.id),
+                    "selected_portal_ids": [str(portal.id)],
+                    "requested_limit": 20,
+                },
+            )
 
     response = await api_client.get(BASE, params={"resume_id": str(first.id)})
 
@@ -379,30 +721,32 @@ async def test_an_unknown_run_is_404(api_client: AsyncClient) -> None:
     assert response.json()["success"] is False
 
 
-async def test_creating_a_run_does_not_start_collecting(
+async def test_a_second_search_leaves_the_first_run_intact(
     api_client: AsyncClient, db_session: AsyncSession, settings: Settings
 ) -> None:
-    # Phase 3 records the run only. Nothing contacts a portal until Phase 7.
     resume_id = await _ready_resume(db_session, settings)
-    portal = await make_portal(db_session, slug="alpha")
+    adapter = build_fake_portal("api-hist2", jobs=make_jobs("api-hist2", 3, now=NOW))
+    portal = await _searchable_portal(db_session, slug="hist2", adapter_class=adapter)
 
-    created = (
-        await api_client.post(
-            BASE,
-            json={
-                "resume_id": str(resume_id),
-                "selected_portal_ids": [str(portal.id)],
-                "requested_limit": 20,
-            },
-        )
-    ).json()["data"]
+    with temporary_registry(registry, adapter):
+        payload = {
+            "resume_id": str(resume_id),
+            "selected_portal_ids": [str(portal.id)],
+            "requested_limit": 20,
+        }
+        first = (await api_client.post(BASE, json=payload)).json()["data"]
+        second = (await api_client.post(BASE, json=payload)).json()["data"]
 
-    run = await db_session.scalar(
-        select(SearchRun).where(SearchRun.id == uuid.UUID(created["id"]))
+    assert first["search_run_id"] != second["search_run_id"]
+
+    earlier = await api_client.get(f"{BASE}/{first['search_run_id']}/results")
+    assert earlier.status_code == 200
+    assert [job["job_id"] for job in earlier.json()["data"]["results"]] == [
+        job["job_id"] for job in first["results"]
+    ]
+
+    runs = await db_session.scalar(
+        select(SearchRun).where(SearchRun.id == uuid.UUID(first["search_run_id"]))
     )
-
-    assert run is not None
-    assert run.started_at is None
-    assert run.completed_at is None
-    assert created["portals"][0]["raw_count"] == 0
-    assert created["portals"][0]["selected_count"] == 0
+    assert runs is not None
+    assert runs.completed_at is not None

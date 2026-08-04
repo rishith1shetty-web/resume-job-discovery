@@ -4,6 +4,7 @@ import { BASE_URL } from './api/client.js'
 import { Analysis } from './sections/Analysis.jsx'
 import { BackendStatus } from './sections/BackendStatus.jsx'
 import { DataFoundation } from './sections/DataFoundation.jsx'
+import { FindMatches } from './sections/FindMatches.jsx'
 import { Portals } from './sections/Portals.jsx'
 import { Resumes } from './sections/Resumes.jsx'
 import { ActiveResumeProvider, useActiveResume } from './state/ActiveResume.jsx'
@@ -12,7 +13,8 @@ const SECTIONS = [
   { id: 'status', label: 'Backend status', component: BackendStatus },
   { id: 'resumes', label: 'Resume management', component: Resumes },
   { id: 'analysis', label: 'Resume analysis', component: Analysis },
-  { id: 'portals', label: 'Portals & search', component: Portals },
+  { id: 'find', label: 'Find matches', component: FindMatches },
+  { id: 'portals', label: 'Portals & diagnostics', component: Portals },
   { id: 'data', label: 'Data foundation', component: DataFoundation },
 ]
 

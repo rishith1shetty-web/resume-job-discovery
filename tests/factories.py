@@ -16,7 +16,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.constants import JobUrlKind, ResumeStatus
 from app.models.job import Job, JobMatch, JobSource
-from app.models.portal import Portal
+from app.models.portal import Portal, PortalConfig
 from app.models.profile import ResumeProfile
 from app.models.resume import Resume
 from app.models.user import User
@@ -131,16 +131,38 @@ async def make_portal(
     display_name: str | None = None,
     is_enabled: bool = True,
     is_implemented: bool = False,
+    adapter_key: str | None = None,
+    options: dict | None = None,
 ) -> Portal:
+    """A portal row.
+
+    ``adapter_key`` is what the registry is asked for. Pass a fake adapter's
+    slug to make the portal searchable; leave it unset for a portal that exists
+    but has no adapter, which is the "not implemented yet" case.
+    """
     portal = Portal(
         slug=f"{TEST_RECORD_MARKER}-{slug}",
         display_name=display_name or f"{TEST_RECORD_MARKER} {slug}",
         is_enabled=is_enabled,
-        is_implemented=is_implemented,
+        is_implemented=is_implemented or adapter_key is not None,
+        adapter_key=adapter_key,
         notes=TEST_RECORD_MARKER,
     )
     session.add(portal)
     await session.flush()
+
+    if options is not None:
+        session.add(
+            PortalConfig(
+                portal_id=portal.id,
+                # No pacing in tests: the fakes make no network requests, and a
+                # real rate limit would add a real sleep to every test.
+                rate_limit_per_minute=0,
+                options=options,
+            )
+        )
+        await session.flush()
+
     return portal
 
 

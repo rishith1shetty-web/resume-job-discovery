@@ -18,9 +18,11 @@
  * Portals
  *   GET   /portals
  * Search runs
+ *   POST  /search-runs
  *   GET   /search-runs
  *   GET   /search-runs/{id}
  *   GET   /search-runs/{id}/progress
+ *   GET   /search-runs/{id}/results
  * Jobs
  *   GET   /jobs
  *   GET   /jobs/{id}
@@ -28,8 +30,11 @@
  *   GET   /applications
  *   GET   /application-history
  *
- * Deliberately NOT called: POST /search-runs and PATCH /applications/{job_id}.
- * Phase 3.5 is read-only beyond resume upload and profile correction.
+ * Deliberately NOT called: PATCH /applications/{job_id}. Editing an
+ * application's status is Phase 8; this dashboard only reads it.
+ *
+ * Nothing here opens, fills or submits an application. Job links are rendered
+ * for the user to open themselves.
  */
 
 import { request, requestEnvelope, requestWithMessage } from './client.js'
@@ -168,6 +173,33 @@ export function getSearchRun(searchRunId, signal) {
 
 export function getSearchRunProgress(searchRunId, signal) {
   return request(`/search-runs/${searchRunId}/progress`, { signal })
+}
+
+/**
+ * Find Matches: search every selected portal for one resume.
+ *
+ * Runs synchronously on the backend, so this request stays open for the whole
+ * search. Returns the run, its per-portal summary and the qualified jobs.
+ *
+ * `requested_limit` accepts only 20, 50 or 100. The 70% threshold is locked
+ * and is not part of the request: if fewer jobs qualify, the response reports
+ * `is_short` rather than padding the list.
+ */
+export function startSearchRun({ resumeId, portalIds, limit }, signal) {
+  return requestWithMessage('/search-runs', {
+    method: 'POST',
+    body: {
+      resume_id: resumeId,
+      selected_portal_ids: portalIds,
+      requested_limit: limit,
+    },
+    signal,
+  })
+}
+
+/** A completed run's results, in the order it returned them. */
+export function getSearchRunResults(searchRunId, signal) {
+  return request(`/search-runs/${searchRunId}/results`, { signal })
 }
 
 // --- Jobs ------------------------------------------------------------------
