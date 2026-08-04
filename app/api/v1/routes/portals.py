@@ -18,7 +18,11 @@ from app.schemas.portal import (
     PortalProbeResponse,
     PortalSummary,
 )
-from app.services import portal_probe
+from app.schemas.processing import (
+    ProcessingPreviewRequest,
+    ProcessingPreviewResponse,
+)
+from app.services import job_processing, portal_probe
 
 router = APIRouter(prefix="/portals", tags=["Portals"])
 
@@ -100,4 +104,61 @@ async def probe_portal(
 
     return ResponseEnvelope[PortalProbeResponse](
         data=PortalProbeResponse.from_result(result), message=message
+    )
+
+
+@router.post(
+    "/{slug}/processing-preview",
+    response_model=ResponseEnvelope[ProcessingPreviewResponse],
+    summary="Preview how collected listings would be processed",
+    description=(
+        "Collects a small sample from one portal and shows what normalisation "
+        "and deduplication would produce from it.\n\n"
+        "**Writes nothing.** Only SELECT statements are issued: no job, source, "
+        "search run or application row is created or modified. It answers "
+        "\"what would processing decide?\" so the decisions can be inspected "
+        "before anything is stored.\n\n"
+        "Each listing reports its normalised fields, the most direct usable "
+        "link for applying by hand, and the duplicate verdict with the evidence "
+        "behind it. Listings sharing a `group_index` would become one job; "
+        "`existing_job_id` means it would attach to a job already stored.\n\n"
+        "Scoring against a resume, the match threshold, ranking and quotas are "
+        "later phases and play no part here."
+    ),
+    responses={
+        404: {"description": "No portal registered with that slug."},
+        422: {"description": "Portal has no adapter, or no query was given."},
+    },
+)
+async def preview_processing(
+    slug: str,
+    payload: ProcessingPreviewRequest,
+    session: DbSession,
+) -> ResponseEnvelope[ProcessingPreviewResponse]:
+    probe = await portal_probe.probe_portal(
+        session,
+        slug=slug,
+        queries=payload.queries,
+        limit=payload.limit,
+        window=payload.window,
+        location=payload.location,
+    )
+
+    if not probe.ok:
+        return ResponseEnvelope[ProcessingPreviewResponse](
+            data=ProcessingPreviewResponse.from_results(probe=probe, preview=None),
+            message="The portal did not return listings. See error_message.",
+        )
+
+    preview = await job_processing.preview_raw_jobs(
+        session, portal_slug=slug, raw_jobs=probe.jobs
+    )
+
+    message = None
+    if not preview.jobs:
+        message = "The adapter ran but nothing survived normalisation."
+
+    return ResponseEnvelope[ProcessingPreviewResponse](
+        data=ProcessingPreviewResponse.from_results(probe=probe, preview=preview),
+        message=message,
     )

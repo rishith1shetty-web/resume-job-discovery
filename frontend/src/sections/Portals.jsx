@@ -1,6 +1,6 @@
 import { useState } from 'react'
 
-import { listPortals, probePortal } from '../api/endpoints.js'
+import { listPortals, previewProcessing, probePortal } from '../api/endpoints.js'
 import { useAsync } from '../hooks/useAsync.js'
 import {
   AsyncBlock,
@@ -113,8 +113,153 @@ export function Portals() {
 
       <AdapterProbe portals={items} />
 
+      <ProcessingPreview portals={items} />
+
       <SearchPlaceholder portalCount={items.filter((portal) => portal.is_selectable).length} />
     </div>
+  )
+}
+
+/**
+ * What normalisation and deduplication would do with a small live sample.
+ *
+ * Read-only, like the probe above: the backend stores nothing. It exists so the
+ * Phase 5 decisions can be seen — which link was chosen to apply through, and
+ * which listings would collapse into one job — before anything is saved.
+ */
+function ProcessingPreview({ portals }) {
+  const [slug, setSlug] = useState('')
+  const [queries, setQueries] = useState('Financial Analyst')
+  const [busy, setBusy] = useState(false)
+  const [result, setResult] = useState(null)
+  const [error, setError] = useState(null)
+
+  const implemented = portals.filter((portal) => portal.is_implemented)
+  const selected = slug || implemented[0]?.slug || ''
+
+  async function run(event) {
+    event.preventDefault()
+    setBusy(true)
+    setError(null)
+    setResult(null)
+    try {
+      setResult(
+        await previewProcessing(selected, {
+          queries: queries.split(',').map((q) => q.trim()).filter(Boolean).slice(0, 3),
+          limit: 5,
+        }),
+      )
+    } catch (previewError) {
+      setError(previewError)
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  if (implemented.length === 0) return null
+
+  return (
+    <Card
+      title="Processing preview"
+      subtitle="Normalisation, preferred URL and duplicate decisions. Reads only — nothing is stored."
+    >
+      <form className="form-row" onSubmit={run}>
+        <label className="input-group">
+          <span>Portal</span>
+          <select
+            value={selected}
+            onChange={(event) => setSlug(event.target.value)}
+            className="select"
+          >
+            {implemented.map((portal) => (
+              <option key={portal.id} value={portal.slug}>
+                {portal.display_name}
+              </option>
+            ))}
+          </select>
+        </label>
+
+        <label className="input-group">
+          <span>Search titles (comma separated, max 3)</span>
+          <input value={queries} onChange={(event) => setQueries(event.target.value)} />
+        </label>
+
+        <Button type="submit" disabled={busy || !queries.trim()}>
+          {busy ? 'Processing…' : 'Preview processing'}
+        </Button>
+      </form>
+
+      {error && <ErrorState error={error} />}
+
+      {result && !result.ok && (
+        <div className="notice notice-warn">
+          <strong>{result.portal_slug} did not return listings.</strong>
+          <div className="muted small">{result.error_code}</div>
+          <p className="small">{result.error_message}</p>
+        </div>
+      )}
+
+      {result && result.ok && (
+        <>
+          <p className="muted small">
+            {result.collected} listing{result.collected === 1 ? '' : 's'} would become{' '}
+            {result.canonical_groups} canonical job
+            {result.canonical_groups === 1 ? '' : 's'}.
+            {result.rejected.length > 0 &&
+              ` ${result.rejected.length} could not be normalised.`}
+          </p>
+          <Table
+            columns={['Group', 'Title', 'Company', 'Location', 'Preferred link', 'Duplicate of']}
+            rows={result.jobs}
+            renderRow={(job, index) => (
+              <tr key={job.external_id ?? index}>
+                <td className="mono small">{job.group_index}</td>
+                <td>
+                  <span className="strong">{job.title}</span>
+                  <div className="muted small">
+                    {job.work_mode ? `${job.work_mode} · ` : ''}
+                    {job.employment_type ?? '—'}
+                  </div>
+                </td>
+                <td>{orDash(job.company)}</td>
+                <td>{orDash(job.location)}</td>
+                <td>
+                  <a
+                    href={job.preferred_application_url}
+                    target="_blank"
+                    rel="noreferrer noopener"
+                  >
+                    Open
+                  </a>
+                  <div className="muted small">{job.preferred_url_kind}</div>
+                </td>
+                <td>
+                  {job.duplicate_of_index !== null ? (
+                    <Badge tone="warn">row {job.duplicate_of_index}</Badge>
+                  ) : job.existing_job_id ? (
+                    <Badge tone="warn">a saved job</Badge>
+                  ) : (
+                    <Badge tone="good">new</Badge>
+                  )}
+                  {job.verdict && (
+                    <div className="muted small">
+                      {job.verdict.kind} · {Math.round(job.verdict.confidence * 100)}%
+                    </div>
+                  )}
+                </td>
+              </tr>
+            )}
+            empty={<EmptyState title="Nothing survived normalisation." />}
+          />
+
+          {result.jobs.some((job) => job.verdict) && (
+            <p className="muted small">
+              {result.jobs.find((job) => job.verdict)?.verdict.signals.join('; ')}
+            </p>
+          )}
+        </>
+      )}
+    </Card>
   )
 }
 

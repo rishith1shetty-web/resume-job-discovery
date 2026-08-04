@@ -138,6 +138,21 @@ export function probePortal(slug, { queries, limit = 3 }, signal) {
   })
 }
 
+/**
+ * Show what normalisation and deduplication would do with a small sample.
+ *
+ * Read-only: the backend issues only SELECTs, so nothing is stored. Listings
+ * sharing a `group_index` would become one canonical job, and
+ * `existing_job_id` means it would attach to a job already saved.
+ */
+export function previewProcessing(slug, { queries, limit = 5 }, signal) {
+  return request(`/portals/${slug}/processing-preview`, {
+    method: 'POST',
+    body: { queries, limit },
+    signal,
+  })
+}
+
 // --- Search runs -----------------------------------------------------------
 
 export function listSearchRuns({ resumeId, page = 1, pageSize = 25 } = {}, signal) {
