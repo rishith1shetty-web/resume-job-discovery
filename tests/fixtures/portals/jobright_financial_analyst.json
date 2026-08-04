@@ -1,0 +1,426 @@
+{
+  "_note": "Captured from https://jobright.ai/jobs/financial-analyst (robots-allowed page). Trimmed to 3 records.",
+  "props": {
+    "pageProps": {
+      "jobList": [
+        {
+          "impId": "0_search_1785768881994_8843",
+          "jobResult": {
+            "jobId": "6a70aa44357dfc6ff2b3a355",
+            "jobTitle": "Senior Securities Operations Specialist - Wealth Client Performance Analytics",
+            "jobNlpTitle": "Senior Securities Operations Specialist - Wealth Client Performance Analytics",
+            "jobSeniority": "Senior Level",
+            "jobLocation": "Charlotte, NC",
+            "jobLocations": [
+              "Charlotte, NC"
+            ],
+            "isRemote": false,
+            "workModel": "Hybrid",
+            "publishTime": "2026-08-03 14:48:36",
+            "publishTimeDesc": "6 minutes ago",
+            "employmentType": "Full-time",
+            "jobSummary": "Wells Fargo is seeking a Senior Securities Operations Specialist as part of the Wealth Client Performance Analytics group within Wealth and Investment Management Operations. This role focuses on reconciling client data, analyzing portfolio performance returns, and resolving issues that may impact client reporting and financial results.",
+            "applicantsCount": 25,
+            "minYearsOfExperience": 4,
+            "coreResponsibilities": [
+              "Lead or participate in moderately complex lifecycle initiatives and support tasks and act as a participant in large-scale planning and deliverables; identify opportunity for process improvements within Securities Operations",
+              "Review and analyze moderately complex operational tasks or challenges that require an in-depth evaluation of variable factors",
+              "Independently resolve moderately complex issues on a full process within a trade environment while leveraging solid understanding of the function, policies, procedures, and compliance requirements; may lead team to meet deliverables",
+              "Collaborate and consult with peers, colleagues and mid-level managers to resolve issues and achieve goals; may lead projects, teams or serve as a mentor for lower level staff",
+              "Manage expertise in the following operational processes including client account onboarding, cash payments, customer service, funding operations, custodial operations, securities settlement services, structured loan operations, and general ledger reconciliation",
+              "Resolve moderately complex escalated issues within the scope of responsibility in Security Operations",
+              "Research moderately complex business risks, influence policies, enhance customer satisfaction, and review time sensitive documents and transaction requests",
+              "Exercise independent judgment in understanding trade settlement workflow controls to minimalize the effects of operational breakdowns",
+              "Contribute to overall effectiveness of the team according to plans; monitor daily securities and cash related production work",
+              "Lead or contribute to implementation of projects and new or revised processes and procedures that require coordination among operation teams and perform analysis for initiatives that support business strategies making decisions on matters with financial impact and risk"
+            ],
+            "recommendationTags": [
+              "No H1B"
+            ],
+            "jobTags": [
+              "Be an early applicant"
+            ],
+            "requirements": [
+              "4+ years of Securities Operations experience, or equivalent demonstrated through one or a combination of the following: work experience, training, military experience, education",
+              "4+ years of experience performing client data reconcilement functions between books and records system",
+              "2+ years of experience completing portfolio performance return analysis, detecting issues, and completing root cause analysis",
+              "2+ years of experience with portfolio performance systems like Black Diamond, Zephyr, Addepar, PARis, etc",
+              "2+ years of experience developing and/or completing data management audits",
+              "Strong knowledge of investments including complex asset groups (Alternatives, Real Assets, and Options) and understanding of impact to investment performance",
+              "Ability to identify performance calculation issues and execute independent research",
+              "Demonstrated experience with SEI/Trust 3000 and/or BETA",
+              "Demonstrated experience driving transformational change across operational functions while fulfilling the complex and sensitive needs of the client population",
+              "Knowledge and understanding of compliance controls, risk management, and loss prevention",
+              "High motivation with ability to successfully meet team objectives while maintaining personal performance",
+              "Ability to influence and build relationships across the Line of Business stakeholders",
+              "Strong verbal, written, and interpersonal communication skills",
+              "Continued drive to build process improvement and product knowledge skills",
+              "Experience using tools like Alteryx, Tableau, Power BI, and SQL Co-Pilot",
+              "Advanced Microsoft Office (Excel, Word, Outlook, PowerPoint) skills"
+            ],
+            "url": "https://jobright.ai/jobs/info/6a70aa44357dfc6ff2b3a355?utm_source=1014",
+            "applyLink": "https://jobright.ai/jobs/info/6a70aa44357dfc6ff2b3a355?utm_source=1014",
+            "h1BStatus": "Past Sponsorship",
+            "jdLogo": "https://media.licdn.com/dms/image/v2/C4D0BAQGLxWPpGqaVmw/company-logo_100_100/company-logo_100_100/0/1630471638964/wellsfargo_logo?e=2147483647&v=beta&t=D1e-PmlhlUZN0ekIYF0M9XadtGDukrr58ywiHYGlJ_Y",
+            "lat": 0,
+            "lng": 0,
+            "jobtargetEasyapply": false
+          },
+          "companyResult": {
+            "companyId": "5763468",
+            "mongoId": "64714011beedf3f09cd3895b",
+            "companyName": "Wells Fargo",
+            "companySize": "10001+ employees",
+            "companyDesc": "Wells Fargo & Company is a financial services firm that provides banking, insurance, investments, and mortgage services.",
+            "gptShortDescription": "Diversified financial services company offering banking, investment, mortgage products",
+            "companyCategories": "Finance,Banking,FinTech,Payments,Property & Casualty Insurance,Financial Services,Insurance",
+            "companyRecommendationTags": [],
+            "companyTwitterURL": "https://x.com/WellsFargo",
+            "companyLinkedinURL": "https://www.linkedin.com/company/1235",
+            "companyCrunchbaseURL": "https://www.crunchbase.com/organization/wells-fargo-bank",
+            "companyLogo": "https://media.licdn.com/dms/image/v2/C4D0BAQGLxWPpGqaVmw/company-logo_100_100/company-logo_100_100/0/1630471638964/wellsfargo_logo?e=2147483647&v=beta&t=D1e-PmlhlUZN0ekIYF0M9XadtGDukrr58ywiHYGlJ_Y",
+            "companyFoundYear": "1852",
+            "companyLocation": "San Francisco, California, USA",
+            "companyURL": "http://www.wellsfargo.com",
+            "fundraisingCurrentStage": "Public",
+            "fundraisingTotalFunding": "unknown",
+            "fundraisingStageWithFunding": "IPO\u2022unknown Raised",
+            "fundraisingLatestRounds": [
+              {
+                "investmentType": "IPO",
+                "announcedOn": "1978-10-06",
+                "postMoneyValuationUsd": "",
+                "investorCount": 0,
+                "leadInvestorName": ""
+              }
+            ],
+            "leadership": [
+              {
+                "pname": "Charlie Scharf",
+                "ptitle": "CEO",
+                "plinkedinUrl": "",
+                "plogoUrl": "https://images.crunchbase.com/image/upload/t_cb-default-original/ymkknnzlktfmjwqtgwa7"
+              },
+              {
+                "pname": "Fernando Rivas",
+                "ptitle": "CEO of Corporate & Investment Banking",
+                "plinkedinUrl": "https://www.linkedin.com/in/fernando-rivas-65684147",
+                "plogoUrl": "https://images.crunchbase.com/image/upload/t_cb-default-original/x1gvvvwvyyecoolzoumg"
+              }
+            ],
+            "pressReferences": [
+              {
+                "url": "https://www.worldconstructionnetwork.com/news/bxp-loan-manhattan-tower/",
+                "postedOn": "2026-07-30",
+                "title": "BXP closes $1.2bn loan for 343 Madison Avenue, New York City",
+                "publisher": "World Construction Network"
+              },
+              {
+                "url": "https://therealdeal.com/new-york/2026/07/29/bxp-lands-1-2b-construction-loan-at-343-madison/",
+                "postedOn": "2026-07-30",
+                "title": "BXP lands $1.2B construction loan at 343 Madison",
+                "publisher": "The Real Deal"
+              },
+              {
+                "url": "https://www.businesswire.com/news/home/20260728590441/en/BXP-Secures-%241.2-Billion-Construction-Loan-for-343-Madison-Avenue",
+                "postedOn": "2026-07-29",
+                "title": "BXP Secures $1.2 Billion Construction Loan for 343 Madison Avenue",
+                "publisher": "Business Wire"
+              },
+              {
+                "url": "https://www.businesswire.com/news/home/20260728089732/en/TPG-RE-Finance-Trust-Inc.-Reports-Operating-Results-for-the-Quarter-Ended-June-30-2026",
+                "postedOn": "2026-07-28",
+                "title": "TPG RE Finance Trust, Inc. Reports Operating Results for the Quarter Ended June 30, 2026",
+                "publisher": "Business Wire"
+              }
+            ],
+            "grating": {
+              "rating": "3.500000000000000e+00",
+              "url": "https://www.glassdoor.com/Overview/Working-at-Wells-Fargo-EI_IE8876.11,22.htm",
+              "count": 9400
+            }
+          },
+          "displayScore": 0,
+          "jobNotes": {
+            "boostedFactor": 1.8307,
+            "rankScore": 1.8307,
+            "notesMap": {
+              "company_scatter_demote": "1.0",
+              "freshness_weight": "1.2205",
+              "linkedin_job_id": "1400360693700",
+              "mix_rank_weight": "1.5",
+              "retrieve_score": "1.0",
+              "retriever": "titleTaxonomy",
+              "retriever_key": "titleTaxonomy",
+              "retriever_score": "1.00",
+              "taxonomy_ids": "14-02-01"
+            }
+          }
+        },
+        {
+          "impId": "0_search_1785768881994_8843",
+          "jobResult": {
+            "jobId": "6a70a84f357dfc6ff2b3a248",
+            "jobTitle": "Commercial Asset Management Analyst",
+            "jobNlpTitle": "Commercial Asset Management Analyst",
+            "jobSeniority": "Entry Level",
+            "jobLocation": "New York, NY",
+            "jobLocations": [
+              "New York, NY",
+              "Washington, DC",
+              "San Francisco, CA"
+            ],
+            "isRemote": false,
+            "workModel": "Onsite",
+            "publishTime": "2026-08-03 14:40:15",
+            "publishTimeDesc": "14 minutes ago",
+            "salaryDesc": "$125K/yr - $145K/yr",
+            "employmentType": "Full-time",
+            "jobSummary": "Cognisant is a leading global real estate investment and asset management firm, seeking a Commercial Asset Management Analyst to join its growing team. The role involves monitoring asset performance, supporting business plan execution, and evaluating investment opportunities within a diverse commercial real estate portfolio.",
+            "applicantsCount": 25,
+            "minYearsOfExperience": 1,
+            "coreResponsibilities": [
+              "Support the preparation and execution of property business plans, operating budgets, and capital expenditure programmes",
+              "Monitor asset performance against business plans and provide recommendations to enhance value and returns",
+              "Assist with leasing strategy, lease analysis, and evaluation of tenant proposals",
+              "Conduct market research and property-level analysis to identify opportunities and risks",
+              "Perform financial modelling, asset valuations, and investment return analyses",
+              "Support refinancing, hold-sell evaluations, and other strategic asset management initiatives",
+              "Work closely with joint venture partners, property managers, leasing teams, and external advisers",
+              "Assist with acquisition due diligence and disposition processes",
+              "Review development projects, capital programmes, and funding requests",
+              "Prepare investment memos, presentations, and reporting materials for senior stakeholders"
+            ],
+            "recommendationTags": [],
+            "jobTags": [
+              "Be an early applicant"
+            ],
+            "requirements": [
+              "Bachelor's degree in Real Estate, Finance, Business, Economics, or a related discipline",
+              "1-3 years of experience within real estate investment, asset management, acquisitions, valuation, finance, or a related field",
+              "Strong financial modelling and analytical capabilities",
+              "Advanced Excel skills",
+              "Experience evaluating commercial real estate investments",
+              "Intellectually curious",
+              "Commercially aware",
+              "Capable of working independently in a fast-paced, entrepreneurial environment",
+              "Excellent communication skills",
+              "Attention to detail",
+              "Genuine interest in commercial real estate investing",
+              "Exposure to ARGUS and cashflow modelling"
+            ],
+            "url": "https://jobright.ai/jobs/info/6a70a84f357dfc6ff2b3a248?utm_source=1014",
+            "applyLink": "https://jobright.ai/jobs/info/6a70a84f357dfc6ff2b3a248?utm_source=1014",
+            "h1BStatus": "Past Sponsorship",
+            "jdLogo": "https://media.licdn.com/dms/image/v2/D4E0BAQFWGpIVNU3g3g/company-logo_100_100/company-logo_100_100/0/1732792771294/cognisant_logo?e=2147483647&v=beta&t=_4OmQkEmKtB49WHBwm-A5xYoxlivPh3xwNKe00HSm2g",
+            "lat": 0,
+            "lng": 0,
+            "jobtargetEasyapply": false
+          },
+          "companyResult": {
+            "companyId": "33671002",
+            "mongoId": "6641d92409652e6699f556ad",
+            "companyName": "Cognisant",
+            "companySize": "2-10 employees",
+            "companyDesc": "Welcome to Cognisant, an executive recruitment consultancy connecting exceptional people with ambitious businesses across the residential development, mixed-use, commercial development and wider real estate sectors.",
+            "gptShortDescription": "Specialist executive recruitment consultancy for real estate and housebuilding",
+            "companyCategories": "Staffing & Recruiting",
+            "companyRecommendationTags": [],
+            "companyTwitterURL": "",
+            "companyLinkedinURL": "https://www.linkedin.com/company/75031332",
+            "companyLogo": "https://media.licdn.com/dms/image/v2/D4E0BAQFWGpIVNU3g3g/company-logo_100_100/company-logo_100_100/0/1732792771294/cognisant_logo?e=2147483647&v=beta&t=_4OmQkEmKtB49WHBwm-A5xYoxlivPh3xwNKe00HSm2g",
+            "companyFoundYear": "2020",
+            "companyLocation": "London, GB",
+            "companyURL": "https://www.cognisantsearch.com/",
+            "fundraisingCurrentStage": "Early Stage",
+            "fundraisingTotalFunding": "",
+            "fundraisingLatestRounds": [],
+            "leadership": [],
+            "pressReferences": []
+          },
+          "displayScore": 0,
+          "jobNotes": {
+            "boostedFactor": 1.8217,
+            "rankScore": 1.8217,
+            "notesMap": {
+              "company_scatter_demote": "1.0",
+              "freshness_weight": "1.2145",
+              "linkedin_job_id": "4446228349",
+              "mix_rank_weight": "1.5",
+              "retrieve_score": "1.0",
+              "retriever": "titleTaxonomy",
+              "retriever_key": "titleTaxonomy",
+              "retriever_score": "1.00",
+              "taxonomy_ids": "14-02-01"
+            }
+          }
+        },
+        {
+          "impId": "0_search_1785768881994_8843",
+          "jobResult": {
+            "jobId": "6a70a70702d93145bf88b4c0",
+            "jobTitle": "Financial Analyst",
+            "jobNlpTitle": "Financial Analyst",
+            "jobSeniority": "Mid Level",
+            "jobLocation": "Philadelphia, PA",
+            "jobLocations": [
+              "Philadelphia, PA"
+            ],
+            "isRemote": false,
+            "workModel": "Onsite",
+            "publishTime": "2026-08-03 14:34:47",
+            "publishTimeDesc": "19 minutes ago",
+            "employmentType": "Full-time",
+            "jobSummary": "Thomas Jefferson University is a nationally ranked institution dedicated to providing high-quality healthcare and education. They are seeking a Financial Analyst to provide financial and statistical information to management and external customers, ensuring compliance with internal and external requirements while maintaining financial records in accordance with GAAP.",
+            "applicantsCount": 25,
+            "minYearsOfExperience": 3,
+            "coreResponsibilities": [
+              "Assists and prepares, accurate, complete, and understandable financial information for timely distribution to internal and external users. Financial information includes, but is not limited to Inpatient, OBV, AO, and outpatient service line/business unit financial performance reports, payer financial performance reports, extensive use of decision support systems, including appropriate interpretation and presentation of data, net revenue/reimbursement computations, payer contract supporting computations, budget proposals, budget development, monthly actual/budget analysis, business plans, and look-back reviews",
+              "Assists in annual operating budget preparation of the hospitals and LVHS activities and monthly actual/budget analysis under direction of the Budget Manager",
+              "Maintains financial systems, decision support systems, and certain financial or statistical elements of related systems supporting budgeting, financial analysis, net revenue, and reimbursement. Participate in applying software and hardware upgrades to the systems as appropriate",
+              "Participates and assists in the monthly financial statement close and preparation of monthly financial statements as assigned under the direction of the Assistant Controller through determination of net revenue, analysis of expenses, valuation of accounts receivable and development of other supporting documentation as required",
+              "Reports, budgets, projects/forecasts volume utilization by program, physician, and clinical department as required",
+              "Serve as a resource to Finance management to assist in ad hoc projects and other duties as assigned",
+              "Analyses and other information that is provided to the customer is prepared in a concise, easy-to-understand manner",
+              "Information that is provided to the customer is prepared in a concise, easy-to-understand manner",
+              "Responds to customer inquiries ideally on the day they are received, but never later than the following day"
+            ],
+            "recommendationTags": [],
+            "jobTags": [
+              "Be an early applicant"
+            ],
+            "requirements": [
+              "Bachelor's Degree in Accounting or Finance",
+              "3 years experience as an accountant, financial analyst or the equivalent. Experience in budgeting, capital project financial analysis, net revenue and reimbursement computations, decision support, and financial reporting is desirable",
+              "Knowledge of hospital and physician payment methodologies",
+              "Proficiency in the use of personal computers operated in a Windows environment and ability to use various mainframe and PC-based software applications. Proficiency in Excel and Word is required",
+              "Must function cooperatively as part of the finance team and exhibit flexibility in response to changing demands and priorities",
+              "Work requires effective written and oral communication skills with a need for communications to be complete, concise and understandable. The target audience varies from department managers, other finance staff and external audiences"
+            ],
+            "url": "https://jobright.ai/jobs/info/6a70a70702d93145bf88b4c0?utm_source=1014",
+            "applyLink": "https://jobright.ai/jobs/info/6a70a70702d93145bf88b4c0?utm_source=1014",
+            "h1BStatus": "Past Sponsorship",
+            "jdLogo": "https://media.licdn.com/dms/image/v2/C4E0BAQHcbgAtCUA-tA/company-logo_100_100/company-logo_100_100/0/1677075570445/thomas_jefferson_university_logo?e=2147483647&v=beta&t=B-UlPUp41O7oEApkjEVjnJx8AJ3StPaZ0tbw3VUVxeo",
+            "lat": 0,
+            "lng": 0,
+            "jobtargetEasyapply": false
+          },
+          "companyResult": {
+            "companyId": "27023125",
+            "mongoId": "64714012beedf3f09cd5bb39",
+            "companyName": "Thomas Jefferson University",
+            "companySize": "10001+ employees",
+            "companyDesc": "Thomas Jefferson University is a university and healthcare system that offers academic programs in business, healthcare, and engineering.",
+            "gptShortDescription": "University offering undergraduate and graduate education programs",
+            "companyCategories": "Non Profit,Education,Healthcare,Continuing Education,EdTech,E-Learning,Higher Education,Medical,STEM Education,Training,Universities",
+            "companyRecommendationTags": [],
+            "companyTwitterURL": "https://x.com/JeffersonUniv",
+            "companyLinkedinURL": "https://www.linkedin.com/company/9390",
+            "companyCrunchbaseURL": "https://www.crunchbase.com/organization/thomas-jefferson-university",
+            "companyLogo": "https://media.licdn.com/dms/image/v2/C4E0BAQHcbgAtCUA-tA/company-logo_100_100/company-logo_100_100/0/1677075570445/thomas_jefferson_university_logo?e=2147483647&v=beta&t=B-UlPUp41O7oEApkjEVjnJx8AJ3StPaZ0tbw3VUVxeo",
+            "companyFoundYear": "1824",
+            "companyLocation": "Philadelphia, Pennsylvania, USA",
+            "companyURL": "http://www.jefferson.edu/",
+            "fundraisingCurrentStage": "Late Stage",
+            "fundraisingTotalFunding": "$0.46M",
+            "fundraisingStageWithFunding": "Grant\u2022$0.46M Raised",
+            "fundraisingLatestRounds": [
+              {
+                "investmentType": "Grant",
+                "announcedOn": "2025-07-30",
+                "raisedAmountUsd": "$0.46M",
+                "postMoneyValuationUsd": "",
+                "investorCount": 1,
+                "leadInvestorName": "Foundation for Opioid Response Efforts"
+              },
+              {
+                "investmentType": "Grant",
+                "announcedOn": "2022-06-29",
+                "postMoneyValuationUsd": "",
+                "investorCount": 1,
+                "leadInvestorName": "AARP"
+              },
+              {
+                "investmentType": "Grant",
+                "announcedOn": "2021-04-01",
+                "postMoneyValuationUsd": "",
+                "investorCount": 1,
+                "leadInvestorName": "Know Diabetes by Heart"
+              }
+            ],
+            "leadership": [
+              {
+                "pname": "Bruce Meyer",
+                "ptitle": "Senior Executive VP, Thomas Jefferson University and Chief Physician Executive",
+                "plinkedinUrl": "https://www.linkedin.com/pub/bruce-meyer/19/54/502",
+                "plogoUrl": "https://images.crunchbase.com/image/upload/t_cb-default-original/v1433590505/vsvrrf8jaqfoce5ehtcv.png"
+              }
+            ],
+            "pressReferences": [
+              {
+                "url": "https://www.prnewswire.com/news-releases/jefferson-releases-its-2025-community-impact-report-driven-to-improve-lives-302824872.html",
+                "postedOn": "2026-07-14",
+                "title": "Jefferson Releases its 2025 Community Impact Report: Driven to Improve Lives",
+                "publisher": "PR Newswire"
+              },
+              {
+                "url": "https://www.prnewswire.com/news-releases/thomas-jefferson-university-to-establish-regional-medical-college-campus-in-lehigh-valley-302823781.html",
+                "postedOn": "2026-07-13",
+                "title": "Thomas Jefferson University to Establish Regional Medical College Campus in Lehigh Valley",
+                "publisher": "PR Newswire"
+              },
+              {
+                "url": "https://www.einpresswire.com/article/917083522/grayson-middle-school-students-take-the-stage-with-artist-king-saladeen-at-national-neuroscience-conference",
+                "postedOn": "2026-06-03",
+                "title": "Grayson Middle School Students Take the Stage with Artist King Saladeen at National Neuroscience Conference",
+                "publisher": "EIN Presswire"
+              },
+              {
+                "url": "https://www.einpresswire.com/article/914668664/senolytic-drug-combination-delays-early-intervertebral-disc-degeneration-in-mice",
+                "postedOn": "2026-05-25",
+                "title": "Senolytic Drug Combination Delays Early Intervertebral Disc Degeneration in Mice",
+                "publisher": "EIN Presswire"
+              }
+            ],
+            "grating": {
+              "rating": "3.600000000000000e+00",
+              "url": "https://www.glassdoor.com/Overview/Working-at-Thomas-Jefferson-University-EI_IE29551.11,38.htm",
+              "count": 72
+            }
+          },
+          "displayScore": 0,
+          "jobNotes": {
+            "boostedFactor": 1.8161,
+            "rankScore": 1.8161,
+            "notesMap": {
+              "company_scatter_demote": "1.0",
+              "freshness_weight": "1.21075",
+              "linkedin_job_id": "1400361039908",
+              "mix_rank_weight": "1.5",
+              "retrieve_score": "1.0",
+              "retriever": "titleTaxonomy",
+              "retriever_key": "titleTaxonomy",
+              "retriever_score": "1.00",
+              "taxonomy_ids": "14-02-01"
+            }
+          }
+        }
+      ],
+      "totalJobs": 6547,
+      "query": {
+        "value": "Financial Analyst",
+        "country": "US",
+        "jobTaxonomyList": [
+          {
+            "taxonomyId": "14-02-01",
+            "title": "Financial Analyst"
+          }
+        ],
+        "locations": [],
+        "jobTypes": [],
+        "seniority": [],
+        "workModel": []
+      }
+    }
+  }
+}

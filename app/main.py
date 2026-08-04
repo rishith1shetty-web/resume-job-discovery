@@ -8,6 +8,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+import app.portals.adapters  # noqa: F401  - importing populates the registry
 from app.api.v1.router import api_router
 from app.core.config import Settings, get_settings
 from app.core.error_handlers import register_exception_handlers

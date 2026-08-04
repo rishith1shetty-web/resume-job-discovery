@@ -262,9 +262,18 @@ a {
   background: var(--surface);
 }
 
-.input-group input:focus {
+.input-group input:focus,
+.select:focus {
   outline: 2px solid var(--accent-soft);
   border-color: var(--accent);
+}
+
+.select {
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  font: inherit;
+  background: var(--surface);
 }
 
 .input-error {

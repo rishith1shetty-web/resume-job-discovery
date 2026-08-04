@@ -51,9 +51,13 @@ def empty_registry() -> PortalRegistry:
     return PortalRegistry()
 
 
-def test_phase_1_ships_no_adapters() -> None:
-    # app/portals/adapters/ is intentionally empty until Phase 4.
-    assert len(registry) == 0
+def test_the_global_registry_holds_only_the_approved_adapters() -> None:
+    # Phase 4 registers Jobright and LinkedIn, in the rollout order recorded in
+    # docs/DECISIONS.md (D-001). Further portals are added one at a time, so an
+    # unexpected slug here means that gate was skipped.
+    import app.portals.adapters  # noqa: F401  - registers the adapters
+
+    assert set(registry.slugs) == {"jobright", "linkedin"}
 
 
 def test_register_and_create(empty_registry: PortalRegistry) -> None:

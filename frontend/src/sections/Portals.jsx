@@ -1,4 +1,6 @@
-import { listPortals } from '../api/endpoints.js'
+import { useState } from 'react'
+
+import { listPortals, probePortal } from '../api/endpoints.js'
 import { useAsync } from '../hooks/useAsync.js'
 import {
   AsyncBlock,
@@ -6,6 +8,7 @@ import {
   Button,
   Card,
   EmptyState,
+  ErrorState,
   Table,
   orDash,
 } from '../components/ui.jsx'
@@ -108,8 +111,132 @@ export function Portals() {
         </AsyncBlock>
       </Card>
 
+      <AdapterProbe portals={items} />
+
       <SearchPlaceholder portalCount={items.filter((portal) => portal.is_selectable).length} />
     </div>
+  )
+}
+
+/**
+ * Exercise one adapter and show what it collected.
+ *
+ * The Phase 4 testing affordance: it calls the backend's read-only probe,
+ * which caps the result count and stores nothing. It is not the job search —
+ * that stays disabled below.
+ */
+function AdapterProbe({ portals }) {
+  const [slug, setSlug] = useState('')
+  const [queries, setQueries] = useState('Financial Analyst')
+  const [busy, setBusy] = useState(false)
+  const [result, setResult] = useState(null)
+  const [error, setError] = useState(null)
+
+  const implemented = portals.filter((portal) => portal.is_implemented)
+  const selected = slug || implemented[0]?.slug || ''
+
+  async function run(event) {
+    event.preventDefault()
+    setBusy(true)
+    setError(null)
+    setResult(null)
+    try {
+      setResult(
+        await probePortal(selected, {
+          queries: queries.split(',').map((q) => q.trim()).filter(Boolean).slice(0, 3),
+          limit: 3,
+        }),
+      )
+    } catch (probeError) {
+      setError(probeError)
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  if (implemented.length === 0) {
+    return (
+      <Card title="Adapter probe">
+        <EmptyState
+          title="No adapter is implemented yet."
+          hint="Seed the portals and register an adapter first."
+        />
+      </Card>
+    )
+  }
+
+  return (
+    <Card
+      title="Adapter probe"
+      subtitle="Runs one adapter against the live portal. Reads only — nothing is stored."
+    >
+      <form className="form-row" onSubmit={run}>
+        <label className="input-group">
+          <span>Portal</span>
+          <select
+            value={selected}
+            onChange={(event) => setSlug(event.target.value)}
+            className="select"
+          >
+            {implemented.map((portal) => (
+              <option key={portal.id} value={portal.slug}>
+                {portal.display_name}
+              </option>
+            ))}
+          </select>
+        </label>
+
+        <label className="input-group">
+          <span>Search titles (comma separated, max 3)</span>
+          <input value={queries} onChange={(event) => setQueries(event.target.value)} />
+        </label>
+
+        <Button type="submit" disabled={busy || !queries.trim()}>
+          {busy ? 'Probing…' : 'Probe adapter'}
+        </Button>
+      </form>
+
+      {error && <ErrorState error={error} />}
+
+      {result && !result.ok && (
+        <div className="notice notice-warn">
+          <strong>{result.portal_slug} did not return listings.</strong>
+          <div className="muted small">{result.error_code}</div>
+          <p className="small">{result.error_message}</p>
+        </div>
+      )}
+
+      {result && result.ok && (
+        <>
+          <p className="muted small">
+            Collected {result.collected} in {result.duration_ms} ms.
+          </p>
+          <Table
+            columns={['Title', 'Company', 'Location', 'Posted', 'Description', 'Link']}
+            rows={result.jobs}
+            renderRow={(job, index) => (
+              <tr key={job.external_id ?? index}>
+                <td className="strong">{job.title}</td>
+                <td>{orDash(job.company)}</td>
+                <td>{orDash(job.location)}</td>
+                <td>{orDash(job.posted_at ? new Date(job.posted_at).toLocaleString() : null)}</td>
+                <td>{job.description_chars ? `${job.description_chars} chars` : orDash(null)}</td>
+                <td>
+                  {job.application_url ? (
+                    <a href={job.application_url} target="_blank" rel="noreferrer noopener">
+                      Open
+                    </a>
+                  ) : (
+                    orDash(null)
+                  )}
+                </td>
+              </tr>
+            )}
+            empty={<EmptyState title="The adapter ran but the portal returned nothing." />}
+          />
+        </>
+      )}
+    </Card>
   )
 }
 

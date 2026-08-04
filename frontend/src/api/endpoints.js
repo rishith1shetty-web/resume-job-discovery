@@ -123,6 +123,21 @@ export function listPortals({ enabledOnly = false } = {}, signal) {
   })
 }
 
+/**
+ * Exercise one adapter against the live portal.
+ *
+ * A diagnostic, not a search: the backend caps the limit and writes nothing.
+ * A portal that refuses returns `ok: false` with the reason, rather than an
+ * error status.
+ */
+export function probePortal(slug, { queries, limit = 3 }, signal) {
+  return request(`/portals/${slug}/probe`, {
+    method: 'POST',
+    body: { queries, limit },
+    signal,
+  })
+}
+
 // --- Search runs -----------------------------------------------------------
 
 export function listSearchRuns({ resumeId, page = 1, pageSize = 25 } = {}, signal) {
