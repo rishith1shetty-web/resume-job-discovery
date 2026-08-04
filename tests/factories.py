@@ -203,6 +203,8 @@ async def make_job(
     posted_at: datetime | None = None,
     expired_at: datetime | None = None,
     preferred_application_url: str | None = None,
+    description: str | None = None,
+    location: str = "New York, NY",
 ) -> Job:
     job = Job(
         canonical_key=canonical_key or f"{TEST_RECORD_MARKER}:{uuid.uuid4().hex}",
@@ -210,7 +212,8 @@ async def make_job(
         normalized_title=title.lower(),
         company=company,
         normalized_company=company.lower(),
-        location="New York, NY",
+        location=location,
+        description=description,
         posted_at=posted_at,
         expired_at=expired_at,
         preferred_application_url=preferred_application_url,

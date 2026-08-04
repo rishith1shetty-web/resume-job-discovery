@@ -12,6 +12,7 @@ from app.api.v1.routes import (
     config,
     health,
     jobs,
+    matching,
     portals,
     resumes,
     search_runs,
@@ -21,6 +22,7 @@ api_router = APIRouter()
 api_router.include_router(health.router)
 api_router.include_router(config.router)
 api_router.include_router(resumes.router)
+api_router.include_router(matching.router)
 api_router.include_router(portals.router)
 api_router.include_router(search_runs.router)
 api_router.include_router(jobs.router)
