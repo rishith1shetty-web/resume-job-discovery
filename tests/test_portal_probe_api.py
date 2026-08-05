@@ -174,7 +174,7 @@ async def test_seeding_does_not_re_enable_a_portal_an_operator_disabled(
 
 def test_only_approved_portals_are_seeded() -> None:
     # Jobright and LinkedIn in Phase 4, Hiring Cafe in Phase 9A, ZipRecruiter
-    # in Phase 9B, SimplyHired in Phase 9C, Greenhouse in Phase 9D. Portals are added one at a time; an
+    # in Phase 9B, SimplyHired in Phase 9C, Greenhouse in Phase 9D, Scale.jobs in Phase 9E. Portals are added one at a time; an
     # unexpected slug means that gate was skipped.
     assert {seed.slug for seed in PORTAL_SEEDS} == {
         "jobright",
@@ -183,6 +183,7 @@ def test_only_approved_portals_are_seeded() -> None:
         "ziprecruiter",
         "simplyhired",
         "greenhouse",
+        "scalejobs",
     }
 
 

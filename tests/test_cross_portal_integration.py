@@ -38,6 +38,8 @@ from app.models.profile import ResumeSkill
 from app.portals.adapters.hiringcafe import HiringCafePortal
 from app.portals.adapters.greenhouse import GreenhousePortal
 from app.portals.adapters.jobright import JobrightPortal
+from app.portals.adapters.scalejobs import PAGE_SIZE as SCALEJOBS_PAGE_SIZE
+from app.portals.adapters.scalejobs import ScaleJobsPortal
 from app.portals.adapters.simplyhired import SimplyHiredPortal
 from app.portals.adapters.ziprecruiter import ZipRecruiterPortal
 from app.portals.exceptions import PortalParseError, PortalTimeoutError
@@ -51,6 +53,7 @@ JOBRIGHT_FIXTURE = FIXTURES / "jobright_financial_analyst.json"
 ZIPRECRUITER_FIXTURE = FIXTURES / "ziprecruiter_financial_analyst.json"
 SIMPLYHIRED_FIXTURE = FIXTURES / "simplyhired_financial_analyst.json"
 GREENHOUSE_FIXTURE = FIXTURES / "greenhouse_financial_analyst.json"
+SCALEJOBS_FIXTURE = FIXTURES / "scalejobs_financial_analyst.json"
 
 NOW = datetime(2026, 8, 4, 12, 0, tzinfo=UTC)
 TAXONOMY = frozenset({"financial-analyst"})
@@ -141,6 +144,13 @@ class OfflineGreenhouse(GreenhousePortal):
     failure: Exception | None = None
 
 
+class OfflineScaleJobs(ScaleJobsPortal):
+    """The real adapter, served from a canned search response."""
+
+    records: list[dict] = []
+    failure: Exception | None = None
+
+
 #: Page builder and fixture state per portal slug. The HTTP client knows which
 #: portal it belongs to, which is what lets one patch serve every adapter.
 _OFFLINE = {
@@ -153,6 +163,9 @@ _OFFLINE = {
 #: ZipRecruiter speaks JSON-RPC rather than serving pages, so it is stubbed at
 #: the other verb. Listed separately because the reset loop covers both.
 _OFFLINE_RPC = {"ziprecruiter": OfflineZipRecruiter}
+
+#: Scale.jobs GETs JSON from a search endpoint, a third verb again.
+_OFFLINE_JSON = {"scalejobs": OfflineScaleJobs}
 
 
 @pytest.fixture(autouse=True)
@@ -198,8 +211,39 @@ def offline_http(monkeypatch: pytest.MonkeyPatch) -> None:
             }
         }
 
+    async def fake_get_json(self, url, *, params=None):  # noqa: ANN001
+        adapter_class = _OFFLINE_JSON.get(self.portal)
+        if adapter_class is None:
+            raise AssertionError(f"unexpected request from {self.portal}: {url}")
+
+        if adapter_class.failure is not None:
+            raise adapter_class.failure
+
+        params = dict(params or {})
+        records = adapter_class.records
+
+        # Mirror the live endpoint's own filtering, so the freshness ladder and
+        # the pagination are genuinely exercised rather than short-circuited.
+        cutoff = params.get("dateFrom")
+        if cutoff:
+            records = [
+                record
+                for record in records
+                if str(record.get("datePosted") or "")[:10] >= cutoff
+            ]
+
+        skip = int(params.get("skip", 0))
+        take = int(params.get("take", SCALEJOBS_PAGE_SIZE))
+        page = records[skip : skip + take]
+        return {
+            "jobs": page,
+            "hasMore": len(records) > skip + take,
+            "totalCount": len(records),
+        }
+
     monkeypatch.setattr("app.portals.http.PortalHttpClient.get_text", fake_get_text)
     monkeypatch.setattr("app.portals.http.PortalHttpClient.post_json", fake_post_json)
+    monkeypatch.setattr("app.portals.http.PortalHttpClient.get_json", fake_get_json)
 
     yield
 
@@ -207,7 +251,7 @@ def offline_http(monkeypatch: pytest.MonkeyPatch) -> None:
     for adapter_class, _ in _OFFLINE.values():
         adapter_class.records = []
         adapter_class.failure = None
-    for adapter_class in _OFFLINE_RPC.values():
+    for adapter_class in (*_OFFLINE_RPC.values(), *_OFFLINE_JSON.values()):
         adapter_class.records = []
         adapter_class.failure = None
 
@@ -285,6 +329,20 @@ def build_greenhouse(
         options={"rate_limit_per_minute": 0, "board_tokens": ["fixture-board"]}
     )
     type(adapter).records = records if records is not None else greenhouse_records()
+    type(adapter).failure = failure
+    return adapter
+
+
+def scalejobs_records() -> list[dict]:
+    data = json.loads(SCALEJOBS_FIXTURE.read_text(encoding="utf-8"))
+    return data["Financial Analyst"][0]["jobs"]
+
+
+def build_scalejobs(
+    records: list[dict] | None = None, *, failure: Exception | None = None
+) -> OfflineScaleJobs:
+    adapter = OfflineScaleJobs(options={"rate_limit_per_minute": 0})
+    type(adapter).records = records if records is not None else scalejobs_records()
     type(adapter).failure = failure
     return adapter
 
@@ -2692,6 +2750,838 @@ async def test_an_applied_job_stays_excluded_when_greenhouse_finds_it(
         db_session,
         resume=resume,
         specs=[("gh-later", build_greenhouse([_mirror_as_greenhouse(shared)]))],
+    )
+
+    assert job_id not in {item.job_id for item in second.results}
+
+
+# --- Scale.jobs through the real pipeline ----------------------------------
+#
+# The captured fixture holds twenty real Scale.jobs listings. Six clear 70 for
+# the resume these tests build, and the twenty records collapse to fourteen
+# canonical jobs: the endpoint really does publish the same vacancy more than
+# once, so this portal exercises in-portal deduplication with real data rather
+# than a constructed pair.
+#
+# Descriptions here are the publisher's model-written summaries, not employer
+# prose, so they run to roughly 300-600 characters where Greenhouse's run to
+# thousands. That is stated in the adapter and asserted below rather than
+# glossed over.
+
+
+async def test_a_scalejobs_only_search_returns_its_jobs(
+    db_session: AsyncSession,
+) -> None:
+    _, resume = await analysed_resume(db_session)
+
+    prepared, outcome = await run_search(
+        db_session, resume=resume, specs=[("scalejobs", build_scalejobs())]
+    )
+
+    assert outcome.status is SearchRunStatus.COMPLETED
+    assert prepared.legs[0].raw_count == 20
+    assert prepared.legs[0].qualified_count == 6
+    assert outcome.results
+    assert all(item.final_score >= 70.0 for item in outcome.results)
+    assert all(carried_by(item, "scalejobs") for item in outcome.results)
+
+
+async def test_the_publisher_repeats_a_vacancy_and_it_becomes_one_job(
+    db_session: AsyncSession,
+) -> None:
+    """Twenty real listings, fourteen real vacancies.
+
+    The endpoint publishes the same requisition under more than one record.
+    Canonicalisation is what collapses them, not the adapter.
+    """
+    _, resume = await analysed_resume(db_session)
+
+    prepared, _ = await run_search(
+        db_session, resume=resume, specs=[("scalejobs", build_scalejobs())]
+    )
+
+    jobs = await jobs_of(db_session, prepared.run.id)
+    assert prepared.legs[0].raw_count == 20
+    assert len(jobs) == 14
+
+    keys = [job.canonical_key for job in jobs]
+    assert len(keys) == len(set(keys))
+
+
+async def test_scalejobs_listings_normalise_with_their_provenance(
+    db_session: AsyncSession,
+) -> None:
+    _, resume = await analysed_resume(db_session)
+
+    prepared, _ = await run_search(
+        db_session, resume=resume, specs=[("scalejobs", build_scalejobs())]
+    )
+
+    jobs = await jobs_of(db_session, prepared.run.id)
+    assert jobs
+    assert all(job.company for job in jobs)
+    assert all(job.posted_at is not None for job in jobs)
+
+    captures = list(
+        (
+            await db_session.scalars(
+                select(RawJobRecord).where(
+                    RawJobRecord.job_id.in_([job.id for job in jobs])
+                )
+            )
+        ).all()
+    )
+    assert captures
+    assert all(capture.source == "scalejobs" for capture in captures)
+    # The untouched publisher payload, kept for a later scoring version.
+    assert all("sourceType" in capture.raw_payload for capture in captures)
+
+
+async def test_descriptions_are_summaries_not_employer_prose(
+    db_session: AsyncSession,
+) -> None:
+    """Stated plainly: this portal's text is short, and that is what it is."""
+    _, resume = await analysed_resume(db_session)
+
+    prepared, _ = await run_search(
+        db_session, resume=resume, specs=[("scalejobs", build_scalejobs())]
+    )
+
+    described = [
+        job for job in await jobs_of(db_session, prepared.run.id) if job.description
+    ]
+    assert described
+    for job in described:
+        assert len(job.description or "") >= 200
+        assert "<p>" not in (job.description or "")
+
+
+async def test_a_listing_without_real_text_is_not_padded_to_qualify(
+    db_session: AsyncSession,
+) -> None:
+    """One captured listing carries too little text to be scoreable.
+
+    It must be rejected as unreadable rather than composed up to the floor.
+    """
+    _, resume = await analysed_resume(db_session)
+
+    prepared, _ = await run_search(
+        db_session, resume=resume, specs=[("scalejobs", build_scalejobs())]
+    )
+
+    jobs = await jobs_of(db_session, prepared.run.id)
+    undescribed = [job for job in jobs if not job.description]
+    assert len(undescribed) == 1
+
+    matches = await matches_of(db_session, prepared.run.id)
+    rejected = [
+        match
+        for match in matches
+        if match.job_id == undescribed[0].id and not match.qualified
+    ]
+    assert rejected
+    reasons = " ".join(
+        str(reason) for reason in (rejected[0].rejection_reasons or [])
+    ).lower()
+    assert "description" in reasons
+
+
+async def test_every_returned_scalejobs_job_links_to_the_employers_ats(
+    db_session: AsyncSession,
+) -> None:
+    """Scale.jobs publishes no per-job page, so the link is the real one."""
+    _, resume = await analysed_resume(db_session)
+
+    _, outcome = await run_search(
+        db_session, resume=resume, specs=[("scalejobs", build_scalejobs())]
+    )
+
+    assert outcome.results
+    for item in outcome.results:
+        assert item.preferred_application_url.startswith("http")
+        assert "scale.jobs" not in item.preferred_application_url
+        assert "linkedin.com" not in item.preferred_application_url
+
+
+async def test_the_ats_link_is_not_an_aggregator_hop(
+    db_session: AsyncSession,
+) -> None:
+    _, resume = await analysed_resume(db_session)
+
+    prepared, _ = await run_search(
+        db_session, resume=resume, specs=[("scalejobs", build_scalejobs())]
+    )
+
+    jobs = await jobs_of(db_session, prepared.run.id)
+    sources = list(
+        (
+            await db_session.scalars(
+                select(JobSource).where(JobSource.job_id.in_([j.id for j in jobs]))
+            )
+        ).all()
+    )
+    assert sources
+    # These point where the application is submitted, not at another board.
+    assert not any(
+        source.url_kind is JobUrlKind.AGGREGATOR_REDIRECT for source in sources
+    )
+
+
+async def test_the_freshness_ladder_widens_when_the_newest_window_is_thin(
+    db_session: AsyncSession,
+) -> None:
+    """This portal filters by date itself, so each window is a real request.
+
+    The fixture spans months, so the 24 hour window alone cannot fill a quota
+    and the ladder has to widen to collect the whole of it.
+    """
+    _, resume = await analysed_resume(db_session)
+    records = scalejobs_records()
+    recent = [
+        record
+        for record in records
+        if str(record.get("datePosted") or "")[:10] >= "2026-08-03"
+    ]
+    assert 0 < len(recent) < len(records)
+
+    prepared, _ = await run_search(
+        db_session, resume=resume, specs=[("scalejobs", build_scalejobs())], limit=100
+    )
+
+    assert prepared.legs[0].raw_count == len(records)
+
+
+# --- Scale.jobs beside each existing portal --------------------------------
+
+
+async def test_jobright_plus_scalejobs_merges_both_portals(
+    db_session: AsyncSession,
+) -> None:
+    _, resume = await analysed_resume(db_session)
+
+    prepared, outcome = await run_search(
+        db_session,
+        resume=resume,
+        specs=[("jobright", build_jobright()), ("scalejobs", build_scalejobs())],
+    )
+
+    assert outcome.status is SearchRunStatus.COMPLETED
+    assert len(prepared.legs) == 2
+    assert all(leg.raw_count > 0 for leg in prepared.legs)
+    assert any(carried_by(item, "scalejobs") for item in outcome.results)
+
+
+async def test_hiring_cafe_plus_scalejobs_merges_both_portals(
+    db_session: AsyncSession,
+) -> None:
+    _, resume = await analysed_resume(db_session)
+
+    _, outcome = await run_search(
+        db_session,
+        resume=resume,
+        specs=[("hiringcafe", build_hiringcafe()), ("scalejobs", build_scalejobs())],
+    )
+
+    assert outcome.status is SearchRunStatus.COMPLETED
+    assert any(carried_by(item, "hiringcafe") for item in outcome.results)
+    assert any(carried_by(item, "scalejobs") for item in outcome.results)
+
+
+async def test_simplyhired_plus_scalejobs_merges_both_portals(
+    db_session: AsyncSession,
+) -> None:
+    _, resume = await analysed_resume(db_session)
+
+    _, outcome = await run_search(
+        db_session,
+        resume=resume,
+        specs=[("simplyhired", build_simplyhired()), ("scalejobs", build_scalejobs())],
+        limit=50,
+    )
+
+    assert outcome.status is SearchRunStatus.COMPLETED
+    assert any(carried_by(item, "simplyhired") for item in outcome.results)
+    assert any(carried_by(item, "scalejobs") for item in outcome.results)
+
+
+async def test_greenhouse_plus_scalejobs_merges_both_portals(
+    db_session: AsyncSession,
+) -> None:
+    _, resume = await analysed_resume(db_session)
+
+    _, outcome = await run_search(
+        db_session,
+        resume=resume,
+        specs=[
+            (
+                "greenhouse",
+                build_greenhouse(qualifying_greenhouse(company="Northwind Trading")),
+            ),
+            ("scalejobs", build_scalejobs()),
+        ],
+    )
+
+    assert outcome.status is SearchRunStatus.COMPLETED
+    assert any(carried_by(item, "greenhouse") for item in outcome.results)
+    assert any(carried_by(item, "scalejobs") for item in outcome.results)
+
+
+async def test_existing_portals_are_unaffected_by_scalejobs_being_selected(
+    db_session: AsyncSession,
+) -> None:
+    """Adding a portal must not change what another one returns."""
+    _, resume = await analysed_resume(db_session)
+
+    alone, _ = await run_search(
+        db_session, resume=resume, specs=[("hc-alone", build_hiringcafe())]
+    )
+    together, _ = await run_search(
+        db_session,
+        resume=resume,
+        specs=[("hc-with", build_hiringcafe()), ("sj-with", build_scalejobs())],
+        limit=50,
+    )
+
+    assert alone.legs[0].raw_count == together.legs[0].raw_count
+    assert alone.legs[0].qualified_count == together.legs[0].qualified_count
+
+
+async def test_all_five_operational_portals_run_in_one_search(
+    db_session: AsyncSession,
+) -> None:
+    _, resume = await analysed_resume(db_session)
+
+    prepared, outcome = await run_search(
+        db_session,
+        resume=resume,
+        specs=[
+            ("jobright", build_jobright()),
+            ("hiringcafe", build_hiringcafe()),
+            ("simplyhired", build_simplyhired()),
+            (
+                "greenhouse",
+                build_greenhouse(qualifying_greenhouse(company="Northwind Trading")),
+            ),
+            ("scalejobs", build_scalejobs()),
+        ],
+        limit=50,
+    )
+
+    assert outcome.status is SearchRunStatus.COMPLETED
+    assert len(prepared.legs) == 5
+    assert all(leg.raw_count > 0 for leg in prepared.legs)
+    assert all(leg.status is PortalRunStatus.COMPLETED for leg in prepared.legs)
+
+
+async def test_quotas_are_shared_across_five_portals(
+    db_session: AsyncSession,
+) -> None:
+    """CLAUDE.md section 5: an approximately equal share per selected portal."""
+    _, resume = await analysed_resume(db_session)
+
+    prepared, _ = await run_search(
+        db_session,
+        resume=resume,
+        specs=[
+            ("jobright", build_jobright()),
+            ("hiringcafe", build_hiringcafe()),
+            ("simplyhired", build_simplyhired()),
+            (
+                "greenhouse",
+                build_greenhouse(qualifying_greenhouse(company="Northwind Trading")),
+            ),
+            ("scalejobs", build_scalejobs()),
+        ],
+        limit=20,
+    )
+
+    quotas = sorted(leg.target_quota for leg in prepared.legs)
+    assert quotas == [4, 4, 4, 4, 4]
+    assert sum(quotas) == 20
+
+
+async def test_the_five_portal_result_is_ranked_and_free_of_duplicates(
+    db_session: AsyncSession,
+) -> None:
+    _, resume = await analysed_resume(db_session)
+
+    _, outcome = await run_search(
+        db_session,
+        resume=resume,
+        specs=[
+            ("jobright", build_jobright()),
+            ("hiringcafe", build_hiringcafe()),
+            ("simplyhired", build_simplyhired()),
+            (
+                "greenhouse",
+                build_greenhouse(qualifying_greenhouse(company="Northwind Trading")),
+            ),
+            ("scalejobs", build_scalejobs()),
+        ],
+        limit=50,
+    )
+
+    scores = [item.final_score for item in outcome.results]
+    assert scores == sorted(scores, reverse=True)
+
+    job_ids = [item.job_id for item in outcome.results]
+    assert len(job_ids) == len(set(job_ids))
+    assert all(item.final_score >= 70.0 for item in outcome.results)
+
+
+# --- Cross-portal deduplication involving Scale.jobs -----------------------
+
+
+def _mirror_as_scalejobs(record: dict, *, job_id: str = "ext:mirror___000001") -> dict:
+    """Recast one Hiring Cafe listing as the same vacancy on Scale.jobs."""
+    processed = record["v5_processed_job_data"]
+    summary = processed.get("requirements_summary") or ""
+    activities = processed.get("role_activities") or []
+    tools = processed.get("technical_tools") or []
+
+    parts = [summary]
+    if tools:
+        parts.append("Technical Tools:\n" + ", ".join(tools))
+    if activities:
+        bullets = "\n".join(f"- {item}" for item in activities[:12])
+        parts.append("Responsibilities:\n" + bullets)
+
+    return {
+        "id": job_id,
+        "externalId": job_id,
+        "title": record["job_information"]["title"],
+        "organization": record["enriched_company_data"]["name"],
+        "url": "https://jobs.workable.com/view/mirror000001/financial-analyst",
+        "descriptionText": "\n\n".join(part for part in parts if part),
+        "datePosted": "2026-07-30T20:41:50.852Z",
+        "employmentType": "Full Time",
+        "aiEmploymentType": "Full Time",
+        "aiWorkArrangement": "Hybrid",
+        "aiExperienceLevel": "Mid Level",
+        "sourceType": "ats",
+        "source": "workable",
+        "jobLocations": [{"city": processed.get("formatted_workplace_location")}],
+    }
+
+
+async def test_one_vacancy_on_hiring_cafe_and_scalejobs_is_one_job(
+    db_session: AsyncSession,
+) -> None:
+    shared = hiringcafe_records()[0]
+    _, resume = await analysed_resume(db_session)
+
+    _, outcome = await run_search(
+        db_session,
+        resume=resume,
+        specs=[
+            ("hiringcafe", build_hiringcafe([shared])),
+            ("scalejobs", build_scalejobs([_mirror_as_scalejobs(shared)])),
+        ],
+    )
+
+    company = shared["enriched_company_data"]["name"]
+    jobs = [
+        job
+        for job in (await db_session.scalars(select(Job))).all()
+        if job.company == company
+    ]
+    assert len(jobs) == 1, [job.title for job in jobs]
+
+    sources = list(
+        (
+            await db_session.scalars(
+                select(JobSource).where(JobSource.job_id == jobs[0].id)
+            )
+        ).all()
+    )
+    assert len(sources) == 2
+
+    item = next(item for item in outcome.results if item.job_id == jobs[0].id)
+    assert carried_by(item, "hiringcafe")
+    assert carried_by(item, "scalejobs")
+
+
+async def test_one_vacancy_on_all_five_portals_is_still_one_job(
+    db_session: AsyncSession,
+) -> None:
+    """The requirement stated for Phase 9E, exercised directly.
+
+    One canonical job, five sources, provenance preserved for each.
+    """
+    shared = hiringcafe_records()[0]
+    _, resume = await analysed_resume(db_session)
+
+    _, outcome = await run_search(
+        db_session,
+        resume=resume,
+        specs=[
+            ("jobright", build_jobright([_mirror_as_jobright(shared)])),
+            ("hiringcafe", build_hiringcafe([shared])),
+            ("simplyhired", build_simplyhired([_mirror_as_simplyhired(shared)])),
+            ("greenhouse", build_greenhouse([_mirror_as_greenhouse(shared)])),
+            ("scalejobs", build_scalejobs([_mirror_as_scalejobs(shared)])),
+        ],
+    )
+
+    company = shared["enriched_company_data"]["name"]
+    jobs = [
+        job
+        for job in (await db_session.scalars(select(Job))).all()
+        if job.company == company
+    ]
+    assert len(jobs) == 1, [job.title for job in jobs]
+
+    sources = list(
+        (
+            await db_session.scalars(
+                select(JobSource).where(JobSource.job_id == jobs[0].id)
+            )
+        ).all()
+    )
+    assert len(sources) == 5
+
+    item = next(item for item in outcome.results if item.job_id == jobs[0].id)
+    assert len(item.portal_slugs) == 5
+    for slug in ("jobright", "hiringcafe", "simplyhired", "greenhouse", "scalejobs"):
+        assert carried_by(item, slug)
+
+
+async def test_a_duplicate_across_five_portals_takes_one_quota_slot(
+    db_session: AsyncSession,
+) -> None:
+    shared = hiringcafe_records()[0]
+    _, resume = await analysed_resume(db_session)
+
+    _, outcome = await run_search(
+        db_session,
+        resume=resume,
+        specs=[
+            ("jobright", build_jobright([_mirror_as_jobright(shared)])),
+            ("hiringcafe", build_hiringcafe([shared])),
+            ("simplyhired", build_simplyhired([_mirror_as_simplyhired(shared)])),
+            ("greenhouse", build_greenhouse([_mirror_as_greenhouse(shared)])),
+            ("scalejobs", build_scalejobs([_mirror_as_scalejobs(shared)])),
+        ],
+    )
+
+    # One vacancy, however many portals carried it.
+    assert len(outcome.results) == 1
+
+
+async def test_the_preferred_url_rules_still_decide_with_scalejobs_present(
+    db_session: AsyncSession,
+) -> None:
+    """Both links are direct; the existing preference order still chooses."""
+    shared = hiringcafe_records()[0]
+    _, resume = await analysed_resume(db_session)
+
+    _, outcome = await run_search(
+        db_session,
+        resume=resume,
+        specs=[
+            ("hiringcafe", build_hiringcafe([shared])),
+            ("scalejobs", build_scalejobs([_mirror_as_scalejobs(shared)])),
+        ],
+    )
+
+    assert len(outcome.results) == 1
+    chosen = outcome.results[0].preferred_application_url
+    assert chosen.startswith("http")
+    # Never a scale.jobs page - the portal publishes none.
+    assert "scale.jobs" not in chosen
+
+
+async def test_scoring_does_not_depend_on_scalejobs_finding_the_job(
+    db_session: AsyncSession,
+) -> None:
+    shared = hiringcafe_records()[0]
+    _, resume = await analysed_resume(db_session)
+
+    _, alone = await run_search(
+        db_session, resume=resume, specs=[("hc-only", build_hiringcafe([shared]))]
+    )
+    _, both = await run_search(
+        db_session,
+        resume=resume,
+        specs=[
+            ("hc-both", build_hiringcafe([shared])),
+            ("sj-both", build_scalejobs([_mirror_as_scalejobs(shared)])),
+        ],
+    )
+
+    assert alone.results and both.results
+    assert alone.results[0].final_score == both.results[0].final_score
+
+
+async def test_rediscovering_a_scalejobs_listing_creates_no_second_job(
+    db_session: AsyncSession,
+) -> None:
+    _, resume = await analysed_resume(db_session)
+    records = [_mirror_as_scalejobs(hiringcafe_records()[0])]
+
+    first, _ = await run_search(
+        db_session, resume=resume, specs=[("sj-first", build_scalejobs(records))]
+    )
+    before = list((await db_session.scalars(select(Job))).all())
+
+    second, _ = await run_search(
+        db_session, resume=resume, specs=[("sj-second", build_scalejobs(records))]
+    )
+    after = list((await db_session.scalars(select(Job))).all())
+
+    assert len(after) == len(before)
+    assert first.legs[0].raw_count == second.legs[0].raw_count
+
+
+async def test_repeating_a_scalejobs_search_is_exactly_stable(
+    db_session: AsyncSession,
+) -> None:
+    """This portal on its own is deterministic: same jobs, same scores."""
+    _, resume = await analysed_resume(db_session)
+
+    first_run, first = await run_search(
+        db_session, resume=resume, specs=[("sj-a", build_scalejobs())], limit=50
+    )
+    await db_session.commit()
+
+    second_run, second = await run_search(
+        db_session, resume=resume, specs=[("sj-b", build_scalejobs())], limit=50
+    )
+
+    assert [item.job_id for item in first.results] == [
+        item.job_id for item in second.results
+    ]
+    assert [item.final_score for item in first.results] == [
+        item.final_score for item in second.results
+    ]
+    assert first_run.legs[0].raw_count == second_run.legs[0].raw_count
+    assert first_run.legs[0].qualified_count == second_run.legs[0].qualified_count
+
+
+async def test_repeating_a_five_portal_search_keeps_ranking_stable(
+    db_session: AsyncSession,
+) -> None:
+    """Scores and order are stable; the *set* is not asserted, and here is why.
+
+    Scale.jobs republishes one requisition under more than one employer name -
+    the captured fixture carries the same Deaconess vacancy as "Deaconess" and
+    as "Deaconess Health System", which is also the name Hiring Cafe uses.
+    Canonicalisation keys on the normalised company, and it will not declare
+    two differently-named employers the same one on the strength of a shared
+    title: that is the conservative choice, and it is the right one.
+
+    The consequence is that when two portals carry that vacancy under two
+    names, which variant claims the plain canonical key depends on what is
+    already stored, so the exact set can differ by one row between runs. What
+    must not move is the ranking: every job present in both runs keeps its
+    score, and both runs are ordered by it. That is what this asserts.
+
+    Scale.jobs alone is exactly stable - see the test above. This is a
+    pre-existing property of Phase 5 canonicalisation meeting real duplicate
+    data, not something the adapter does.
+    """
+    _, resume = await analysed_resume(db_session)
+
+    def specs(tag: str):
+        return [
+            (f"jr-{tag}", build_jobright()),
+            (f"hc-{tag}", build_hiringcafe()),
+            (f"sh-{tag}", build_simplyhired()),
+            (
+                f"gh-{tag}",
+                build_greenhouse(qualifying_greenhouse(company="Northwind Trading")),
+            ),
+            (f"sj-{tag}", build_scalejobs()),
+        ]
+
+    _, first = await run_search(db_session, resume=resume, specs=specs("one"), limit=50)
+    await db_session.commit()
+
+    _, second = await run_search(db_session, resume=resume, specs=specs("two"), limit=50)
+
+    for outcome in (first, second):
+        scores = [item.final_score for item in outcome.results]
+        assert scores == sorted(scores, reverse=True)
+        ids = [item.job_id for item in outcome.results]
+        assert len(ids) == len(set(ids))
+        assert all(item.final_score >= 70.0 for item in outcome.results)
+
+    before = {item.job_id: item.final_score for item in first.results}
+    shared = [item for item in second.results if item.job_id in before]
+    assert shared, "the second run rediscovered nothing at all"
+    for item in shared:
+        assert item.final_score == before[item.job_id]
+
+
+async def test_one_employer_under_two_names_stays_two_jobs(
+    db_session: AsyncSession,
+) -> None:
+    """Documents the conservative rule above, with the real captured data.
+
+    Scale.jobs publishes this vacancy as "Deaconess" and Hiring Cafe as
+    "Deaconess Health System". Merging them would need evidence the two names
+    are one employer, which nothing here has, so both stand - each with its own
+    sources and its own score.
+    """
+    _, resume = await analysed_resume(db_session)
+
+    _, outcome = await run_search(
+        db_session,
+        resume=resume,
+        specs=[
+            ("hiringcafe", build_hiringcafe()),
+            ("scalejobs", build_scalejobs()),
+        ],
+        limit=50,
+    )
+
+    deaconess = [
+        item for item in outcome.results if "deaconess" in item.company.lower()
+    ]
+    assert len(deaconess) > 1
+    assert len({item.company for item in deaconess}) > 1
+    # Still one row per canonical job, and still ranked.
+    assert len({item.job_id for item in deaconess}) == len(deaconess)
+
+
+# --- Failure isolation, in every direction ---------------------------------
+
+
+async def test_scalejobs_failing_still_returns_the_other_portals_jobs(
+    db_session: AsyncSession,
+) -> None:
+    _, resume = await analysed_resume(db_session)
+
+    prepared, outcome = await run_search(
+        db_session,
+        resume=resume,
+        specs=[
+            ("hiringcafe", build_hiringcafe()),
+            (
+                "scalejobs",
+                build_scalejobs(
+                    failure=PortalTimeoutError("scalejobs down", portal="scalejobs")
+                ),
+            ),
+        ],
+    )
+
+    assert outcome.status is SearchRunStatus.COMPLETED_WITH_ERRORS
+    assert outcome.results
+    assert all(carried_by(item, "hiringcafe") for item in outcome.results)
+
+    failed = [leg for leg in prepared.legs if leg.status is PortalRunStatus.FAILED]
+    assert len(failed) == 1
+    assert failed[0].error
+
+
+async def test_another_portal_failing_does_not_stop_scalejobs(
+    db_session: AsyncSession,
+) -> None:
+    _, resume = await analysed_resume(db_session)
+
+    prepared, outcome = await run_search(
+        db_session,
+        resume=resume,
+        specs=[
+            (
+                "hiringcafe",
+                build_hiringcafe(
+                    failure=PortalParseError("hc down", portal="hiringcafe")
+                ),
+            ),
+            ("scalejobs", build_scalejobs()),
+        ],
+    )
+
+    assert outcome.status is SearchRunStatus.COMPLETED_WITH_ERRORS
+    assert outcome.results
+    assert all(carried_by(item, "scalejobs") for item in outcome.results)
+
+
+async def test_four_of_five_failing_still_completes_with_errors(
+    db_session: AsyncSession,
+) -> None:
+    """One surviving portal must still deliver a usable search."""
+    _, resume = await analysed_resume(db_session)
+
+    down = PortalTimeoutError("down", portal="x")
+    prepared, outcome = await run_search(
+        db_session,
+        resume=resume,
+        specs=[
+            ("jobright", build_jobright(failure=down)),
+            ("hiringcafe", build_hiringcafe(failure=down)),
+            ("simplyhired", build_simplyhired(failure=down)),
+            ("greenhouse", build_greenhouse(failure=down)),
+            ("scalejobs", build_scalejobs()),
+        ],
+        limit=50,
+    )
+
+    assert outcome.status is SearchRunStatus.COMPLETED_WITH_ERRORS
+    assert outcome.results
+    assert all(carried_by(item, "scalejobs") for item in outcome.results)
+
+    failed = [leg for leg in prepared.legs if leg.status is PortalRunStatus.FAILED]
+    assert len(failed) == 4
+
+
+async def test_all_five_failing_fails_the_run_with_every_error_recorded(
+    db_session: AsyncSession,
+) -> None:
+    _, resume = await analysed_resume(db_session)
+
+    down = PortalTimeoutError("down", portal="x")
+    prepared, outcome = await run_search(
+        db_session,
+        resume=resume,
+        specs=[
+            ("jobright", build_jobright(failure=down)),
+            ("hiringcafe", build_hiringcafe(failure=down)),
+            ("simplyhired", build_simplyhired(failure=down)),
+            ("greenhouse", build_greenhouse(failure=down)),
+            ("scalejobs", build_scalejobs(failure=down)),
+        ],
+    )
+
+    assert outcome.status is SearchRunStatus.FAILED
+    assert outcome.results == []
+    assert all(leg.status is PortalRunStatus.FAILED for leg in prepared.legs)
+    assert all(leg.error for leg in prepared.legs)
+
+
+# --- Eligibility is unchanged ----------------------------------------------
+
+
+async def test_an_applied_job_stays_excluded_when_scalejobs_finds_it(
+    db_session: AsyncSession,
+) -> None:
+    """CLAUDE.md section 9: rediscovery must not resurrect an applied job."""
+    shared = hiringcafe_records()[0]
+    user, resume = await analysed_resume(db_session)
+
+    _, outcome = await run_search(
+        db_session, resume=resume, specs=[("hc-first", build_hiringcafe([shared]))]
+    )
+    assert outcome.results
+    job_id = outcome.results[0].job_id
+
+    db_session.add(
+        Application(
+            user_id=user.id,
+            resume_id=resume.id,
+            job_id=job_id,
+            status=ApplicationStatus.APPLIED,
+            applied_at=NOW,
+        )
+    )
+    await db_session.flush()
+
+    _, second = await run_search(
+        db_session,
+        resume=resume,
+        specs=[("sj-later", build_scalejobs([_mirror_as_scalejobs(shared)]))],
     )
 
     assert job_id not in {item.job_id for item in second.results}

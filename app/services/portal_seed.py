@@ -100,6 +100,28 @@ PORTAL_SEEDS: tuple[PortalSeed, ...] = (
         ),
     ),
     PortalSeed(
+        slug="scalejobs",
+        website_url="https://scale.jobs/",
+        display_order=19,
+        is_enabled=True,
+        notes=(
+            "Collects from the public, self-documented, no-auth search "
+            "endpoint on jobhose-prod.scale.jobs, which is the host the site's "
+            "own client calls with userId=public-search. That host serves no "
+            "robots.txt; the scale.jobs site host is a different origin whose "
+            "robots.txt disallows /api/, and nothing on it is requested - its "
+            "job pages are client-rendered shells carrying no listing anyway. "
+            "excludeLinkedIn=true is sent on every request because this "
+            "project does not collect LinkedIn, and Easy Apply listings stay "
+            "excluded by the endpoint's own default. Only read-only GETs to "
+            "/api/search-jobs are issued; the host's administrative sync and "
+            "cron endpoints are never called. Real date filtering and real "
+            "pagination. Descriptions are the publisher's model-written "
+            "summaries, not the employer's verbatim posting; application "
+            "links point at the employer's own ATS."
+        ),
+    ),
+    PortalSeed(
         slug="ziprecruiter",
         website_url="https://www.ziprecruiter.com/",
         display_order=17,

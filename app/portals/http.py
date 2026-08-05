@@ -229,6 +229,16 @@ class PortalHttpClient:
         response = await self._send(lambda client: client.get(url, params=params))
         return response.text
 
+    async def get_json(self, url: str, *, params: dict | None = None) -> dict:
+        """GET a URL and return the decoded JSON object.
+
+        For portals that publish a read-only JSON search endpoint. Decoding
+        rules are shared with ``post_json`` so a malformed body is reported the
+        same way whichever verb fetched it.
+        """
+        response = await self._send(lambda client: client.get(url, params=params))
+        return self._decode_object(response)
+
     async def post_json(
         self,
         url: str,
@@ -250,6 +260,15 @@ class PortalHttpClient:
             lambda client: client.post(url, json=payload, headers=headers),
             headers=headers,
         )
+        return self._decode_object(response)
+
+    def _decode_object(self, response: httpx.Response) -> dict:
+        """Decode a response body that is expected to be a JSON object.
+
+        A body that is not valid JSON, or that is valid JSON but not an object,
+        is a ``PortalParseError`` rather than a crash: the run has to be able to
+        record it against this one portal and carry on with the others.
+        """
         body = response.text
         if "text/event-stream" in response.headers.get("content-type", ""):
             body = _first_sse_datum(body)

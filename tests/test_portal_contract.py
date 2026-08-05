@@ -36,7 +36,7 @@ REGISTERED_SLUGS = registry.slugs
 def test_only_approved_adapters_are_registered() -> None:
     # The rollout order in docs/DECISIONS.md D-001: Jobright and LinkedIn in
     # Phase 4, Hiring Cafe in Phase 9A, ZipRecruiter in Phase 9B, SimplyHired
-    # in Phase 9C, Greenhouse in Phase 9D. A slug appearing here that is not on this list means someone
+    # in Phase 9C, Greenhouse in Phase 9D, Scale.jobs in Phase 9E. A slug appearing here that is not on this list means someone
     # skipped the one-at-a-time rule.
     assert set(REGISTERED_SLUGS) == {
         "jobright",
@@ -45,6 +45,7 @@ def test_only_approved_adapters_are_registered() -> None:
         "ziprecruiter",
         "simplyhired",
         "greenhouse",
+        "scalejobs",
     }
 
 
@@ -117,9 +118,11 @@ def test_capabilities_are_declared_honestly(slug: str) -> None:
 def _cut_the_network(adapter) -> None:  # noqa: ANN001
     """Stub every verb an adapter might reach for.
 
-    Adapters do not all speak the same one - the page-scraped portals GET, the
-    ZipRecruiter one POSTs JSON-RPC - and a stub that misses the verb in use
-    lets a contract test issue a real request to a live portal.
+    Adapters do not all speak the same one - the page-scraped portals GET
+    text, the ZipRecruiter one POSTs JSON-RPC, the Scale.jobs one GETs JSON -
+    and a stub that misses the verb in use lets a contract test issue a real
+    request to a live portal. Adding a verb to ``PortalHttpClient`` means
+    adding it here too.
     """
 
     async def _no_head(_url: str) -> bool:
@@ -133,6 +136,7 @@ def _cut_the_network(adapter) -> None:  # noqa: ANN001
 
     adapter._http.head_ok = _no_head  # type: ignore[attr-defined]
     adapter._http.get_text = _no_get  # type: ignore[attr-defined]
+    adapter._http.get_json = _no_post  # type: ignore[attr-defined]
     adapter._http.post_json = _no_post  # type: ignore[attr-defined]
 
 
