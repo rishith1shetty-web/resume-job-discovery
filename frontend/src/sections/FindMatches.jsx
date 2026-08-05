@@ -225,6 +225,12 @@ function SearchOutcome({ outcome, resumeId }) {
             <dt>Threshold</dt>
             <dd>{run.min_score}%</dd>
           </div>
+          {/* Read-only statement of a fixed policy, not a control: this
+              product searches United States vacancies only. */}
+          <div>
+            <dt>Locations</dt>
+            <dd>United States only</dd>
+          </div>
         </dl>
 
         {run.is_short && (

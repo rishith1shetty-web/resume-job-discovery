@@ -43,6 +43,7 @@ from app.portals.adapters.scalejobs import ScaleJobsPortal
 from app.portals.adapters.simplyhired import SimplyHiredPortal
 from app.portals.adapters.ziprecruiter import ZipRecruiterPortal
 from app.portals.exceptions import PortalParseError, PortalTimeoutError
+from app.processing.normalize import RejectionReason
 from app.services import search_run_service
 from app.services.search_orchestrator import execute_search_run
 from tests.factories import make_portal, make_profile, make_resume, make_user
@@ -3585,3 +3586,278 @@ async def test_an_applied_job_stays_excluded_when_scalejobs_finds_it(
     )
 
     assert job_id not in {item.job_id for item in second.results}
+
+
+# --- US-only location filter (Phase 10) -------------------------------------
+#
+# The captured Greenhouse fixture is the useful one here: it holds twelve real
+# postings, five of which are outside the United States - Bengaluru, London,
+# Japan and two Canada-only remote roles. They were accepted before this phase
+# and are rejected now, which is what these tests pin down.
+#
+# The filter runs during normalisation, so a non-US listing is never scored,
+# never deduplicated and never occupies a portal's quota slot.
+
+#: Of the twelve captured postings, five are outside the United States.
+NON_US_IN_FIXTURE = 5
+US_IN_FIXTURE = 7
+
+#: Of those twelve, the adapter's title gate collects three for this resume's
+#: queries - "Financial Analyst, Business F&S" in Bengaluru, and the Retailer
+#: role posted twice, once US-remote and once Canada-only. Two of the three are
+#: therefore outside the US, which is what the pipeline tests below count.
+NON_US_COLLECTED = 2
+US_COLLECTED = 1
+
+
+def _greenhouse_locations() -> list[str]:
+    return [
+        (job.get("location") or {}).get("name") for job in greenhouse_records()
+    ]
+
+
+def test_the_greenhouse_fixture_really_does_carry_non_us_postings() -> None:
+    """Guards the premise of the tests below."""
+    from app.processing.us_locations import classify_us_location
+
+    verdicts = [classify_us_location(name) for name in _greenhouse_locations()]
+
+    assert sum(1 for v in verdicts if not v.is_us) == NON_US_IN_FIXTURE
+    assert sum(1 for v in verdicts if v.is_us) == US_IN_FIXTURE
+
+
+async def test_non_us_listings_are_dropped_before_they_are_scored(
+    db_session: AsyncSession,
+) -> None:
+    _, resume = await analysed_resume(db_session)
+
+    prepared, _ = await run_search(
+        db_session, resume=resume, specs=[("greenhouse", build_greenhouse())]
+    )
+
+    # Everything the portal returned is still counted as collected: the filter
+    # is not hidden by pretending the listings were never seen.
+    assert prepared.legs[0].raw_count == US_COLLECTED + NON_US_COLLECTED
+
+    jobs = await jobs_of(db_session, prepared.run.id)
+    assert len(jobs) == US_COLLECTED
+
+    from app.processing.us_locations import classify_us_location
+
+    for job in jobs:
+        assert classify_us_location(job.location).is_us, job.location
+
+
+async def test_a_dropped_listing_is_recorded_with_its_reason(
+    db_session: AsyncSession,
+) -> None:
+    """The audit trail has to say why, not merely that the job vanished."""
+    _, resume = await analysed_resume(db_session)
+
+    prepared, _ = await run_search(
+        db_session, resume=resume, specs=[("greenhouse", build_greenhouse())]
+    )
+
+    captures = list(
+        (
+            await db_session.scalars(
+                select(RawJobRecord).where(
+                    RawJobRecord.search_run_portal_id == prepared.legs[0].id
+                )
+            )
+        ).all()
+    )
+    non_us = [
+        capture
+        for capture in captures
+        if capture.rejection_reason == RejectionReason.NON_US_LOCATION
+    ]
+
+    assert len(non_us) == NON_US_COLLECTED
+    assert all(capture.job_id is None for capture in non_us)
+
+
+async def test_a_non_us_listing_never_takes_a_quota_slot(
+    db_session: AsyncSession,
+) -> None:
+    """A filtered job must not crowd out a US one."""
+    _, resume = await analysed_resume(db_session)
+
+    _, outcome = await run_search(
+        db_session,
+        resume=resume,
+        specs=[("greenhouse", build_greenhouse())],
+        limit=20,
+    )
+
+    from app.processing.us_locations import classify_us_location
+
+    for item in outcome.results:
+        assert classify_us_location(item.location).is_us, item.location
+
+
+@pytest.mark.parametrize(
+    "location",
+    ["London, United Kingdom", "Toronto, Canada", "Sydney, Australia",
+     "Bengaluru, India", "Berlin, Germany", "Remote", "Worldwide", None],
+)
+async def test_a_previously_acceptable_listing_is_now_filtered(
+    db_session: AsyncSession, location: str | None
+) -> None:
+    """The regression this phase exists to create.
+
+    Each of these would have become a job before Phase 10. The vacancy is
+    otherwise identical to one that qualifies, so only the location decides.
+    """
+    _, resume = await analysed_resume(db_session)
+
+    record = _mirror_as_greenhouse(hiringcafe_records()[0])
+    record["location"] = {"name": location}
+
+    prepared, outcome = await run_search(
+        db_session, resume=resume, specs=[("greenhouse", build_greenhouse([record]))]
+    )
+
+    assert prepared.legs[0].raw_count == 1
+    assert await jobs_of(db_session, prepared.run.id) == []
+    assert outcome.results == []
+
+
+@pytest.mark.parametrize(
+    "location",
+    ["Austin, TX", "Boston, Massachusetts", "Seattle", "Remote - United States",
+     "US Remote", "Chicago, IL, USA"],
+)
+async def test_the_same_listing_in_the_us_still_qualifies(
+    db_session: AsyncSession, location: str
+) -> None:
+    """The filter must not be quietly rejecting everything."""
+    _, resume = await analysed_resume(db_session)
+
+    record = _mirror_as_greenhouse(hiringcafe_records()[0])
+    record["location"] = {"name": location}
+
+    _, outcome = await run_search(
+        db_session, resume=resume, specs=[("greenhouse", build_greenhouse([record]))]
+    )
+
+    assert outcome.results, location
+    assert all(item.final_score >= 70.0 for item in outcome.results)
+
+
+# --- Every portal, individually and together --------------------------------
+
+
+@pytest.mark.parametrize(
+    ("slug", "builder", "recast"),
+    [
+        ("jobright", build_jobright, "_mirror_as_jobright"),
+        ("hiringcafe", build_hiringcafe, None),
+        ("simplyhired", build_simplyhired, "_mirror_as_simplyhired"),
+        ("greenhouse", build_greenhouse, "_mirror_as_greenhouse"),
+        ("scalejobs", build_scalejobs, "_mirror_as_scalejobs"),
+    ],
+)
+async def test_each_portal_filters_its_own_non_us_listings(
+    db_session: AsyncSession, slug: str, builder, recast: str | None
+) -> None:
+    """The filter is portal-agnostic: it runs once, for everyone."""
+    _, resume = await analysed_resume(db_session)
+
+    shared = hiringcafe_records()[0]
+    if recast is None:
+        record = json.loads(json.dumps(shared))
+        record["v5_processed_job_data"]["formatted_workplace_location"] = (
+            "London, United Kingdom"
+        )
+    else:
+        record = globals()[recast](shared)
+        if slug == "jobright":
+            record["jobResult"]["jobLocation"] = "London, United Kingdom"
+        elif slug == "simplyhired":
+            record["location"] = "London, United Kingdom"
+        elif slug == "greenhouse":
+            record["location"] = {"name": "London, United Kingdom"}
+        elif slug == "scalejobs":
+            record["jobLocations"] = [{"city": "London", "country": "GB"}]
+
+    prepared, outcome = await run_search(
+        db_session, resume=resume, specs=[(slug, builder([record]))]
+    )
+
+    assert prepared.legs[0].raw_count == 1
+    assert outcome.results == []
+    assert await jobs_of(db_session, prepared.run.id) == []
+
+
+async def test_a_combined_search_returns_only_us_jobs(
+    db_session: AsyncSession,
+) -> None:
+    """End to end, every operational portal, real fixtures."""
+    _, resume = await analysed_resume(db_session)
+
+    _, outcome = await run_search(
+        db_session,
+        resume=resume,
+        specs=[
+            ("jobright", build_jobright()),
+            ("hiringcafe", build_hiringcafe()),
+            ("simplyhired", build_simplyhired()),
+            ("greenhouse", build_greenhouse()),
+            ("scalejobs", build_scalejobs()),
+        ],
+        limit=50,
+    )
+
+    from app.processing.us_locations import classify_us_location
+
+    assert outcome.results
+    for item in outcome.results:
+        verdict = classify_us_location(item.location)
+        assert verdict.is_us, f"{item.company}: {item.location!r}"
+
+
+# --- What the run tells the user --------------------------------------------
+
+
+async def test_the_run_summary_records_the_us_only_policy(
+    db_session: AsyncSession,
+) -> None:
+    _, resume = await analysed_resume(db_session)
+
+    prepared, _ = await run_search(
+        db_session, resume=resume, specs=[("greenhouse", build_greenhouse())]
+    )
+
+    summary = prepared.run.summary
+    assert summary["location_policy"] == "united_states_only"
+    assert summary["non_us_excluded_count"] == NON_US_COLLECTED
+    assert summary["portals"][0]["non_us_excluded"] == NON_US_COLLECTED
+
+
+async def test_the_run_says_it_considered_only_us_jobs(
+    db_session: AsyncSession,
+) -> None:
+    """Stated on every run, whether or not anything was dropped."""
+    _, resume = await analysed_resume(db_session)
+
+    _, outcome = await run_search(
+        db_session, resume=resume, specs=[("greenhouse", build_greenhouse())]
+    )
+
+    notes = " ".join(outcome.warnings)
+    assert "Only United States jobs were considered." in notes
+    assert f"{NON_US_COLLECTED} listings outside the US were excluded" in notes
+
+
+async def test_the_policy_is_stated_even_when_nothing_was_excluded(
+    db_session: AsyncSession,
+) -> None:
+    _, resume = await analysed_resume(db_session)
+
+    _, outcome = await run_search(
+        db_session, resume=resume, specs=[("simplyhired", build_simplyhired())]
+    )
+
+    notes = " ".join(outcome.warnings)
+    assert "Only United States jobs were considered." in notes

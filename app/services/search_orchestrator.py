@@ -100,6 +100,7 @@ from app.search.collection import (
 )
 from app.search.freshness import freshness_score
 from app.search.queries import QueryPlan, build_query_plan
+from app.processing.normalize import RejectionReason
 from app.services.job_processing import process_raw_jobs
 from app.services.match_service import load_match_profile, score_jobs_for_resume
 
@@ -112,6 +113,11 @@ OVERFETCH_FACTOR = 4
 
 #: Ceiling on one portal's collection in one window, whatever the quota says.
 MAX_PER_WINDOW = 150
+
+#: Recorded on every run's summary. This product is locked to United States
+#: vacancies (Phase 10); the filter runs during normalisation, so a non-US
+#: listing is never scored and never occupies a quota slot.
+US_ONLY_POLICY = "united_states_only"
 
 #: Scoring is chunked so one very productive portal cannot exceed the scoring
 #: service's own per-call bound.
@@ -165,6 +171,10 @@ class PortalLegOutcome:
     target_quota: int
     collected_count: int = 0
     normalized_count: int = 0
+    #: Listings dropped by the US-only location filter (Phase 10). Counted
+    #: separately from other normalisation failures so the run can say plainly
+    #: how much of what a portal returned was outside the United States.
+    non_us_count: int = 0
     duplicate_count: int = 0
     excluded_count: int = 0
     evaluated_count: int = 0
@@ -436,6 +446,11 @@ async def _run_portal_leg(
                 now=moment,
             )
             result.normalized_count += len(processed.processed)
+            result.non_us_count += sum(
+                1
+                for rejected in processed.rejected
+                if rejected.reason == RejectionReason.NON_US_LOCATION
+            )
 
             # Jobs another portal already claimed in this run. Their source row
             # was still written above - the listing is never discarded, it just
@@ -627,6 +642,8 @@ async def _finish_without_collection(
         "warnings": [message],
         "threshold": run.min_score,
         "scoring_version": SCORING_VERSION,
+        "location_policy": US_ONLY_POLICY,
+        "non_us_excluded_count": 0,
     }
     await session.flush()
 
@@ -688,6 +705,18 @@ async def _finalise(
             f"{leg.portal_display_name} failed ({leg.error_kind.value if leg.error_kind else 'unknown'}): {leg.error}"
         )
 
+    # Say it on every run, not only when something was dropped: the user needs
+    # to know the search was US-only whether or not it changed the outcome.
+    excluded = sum(leg.non_us_count for leg in outcome.portals)
+    if run.status is not SearchRunStatus.FAILED:
+        note = "Only United States jobs were considered."
+        if excluded:
+            note += (
+                f" {excluded} listing{'s' if excluded != 1 else ''} outside the "
+                "US were excluded before scoring."
+            )
+        outcome.warnings.append(note)
+
     if outcome.is_short and run.status is not SearchRunStatus.FAILED:
         outcome.warnings.append(
             f"{outcome.returned_count} of {run.requested_limit} requested jobs "
@@ -730,6 +759,10 @@ def _summary(
         "scoring_version": SCORING_VERSION,
         "target_role": outcome.query_plan.role_display,
         "domain": outcome.query_plan.domain_key,
+        # This product considers United States vacancies only, and says so on
+        # every run rather than leaving the user to infer it from the results.
+        "location_policy": US_ONLY_POLICY,
+        "non_us_excluded_count": sum(leg.non_us_count for leg in outcome.portals),
         "collected_count": sum(leg.collected_count for leg in outcome.portals),
         "normalized_count": sum(leg.normalized_count for leg in outcome.portals),
         "duplicate_count": sum(leg.duplicate_count for leg in outcome.portals),
@@ -757,6 +790,7 @@ def _summary(
                 "qualified": leg.qualified_count,
                 "selected": leg.selected_count,
                 "shortfall": shortfall,
+                "non_us_excluded": leg.non_us_count,
                 "deepest_window": (
                     leg.deepest_window.value if leg.deepest_window else None
                 ),

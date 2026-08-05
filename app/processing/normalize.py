@@ -16,9 +16,11 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 
 from app.core.constants import JobUrlKind, WorkMode
+from app.core.logging import get_logger
 from app.portals.base import RawJob
 from app.processing.companies import NormalizedCompany, normalize_company
 from app.processing.locations import NormalizedLocation, normalize_location
+from app.processing.us_locations import NON_US_REJECTION, classify_us_location
 from app.processing.text import (
     clean_block_text,
     clean_display_text,
@@ -27,6 +29,8 @@ from app.processing.text import (
 )
 from app.processing.titles import NormalizedTitle, detect_work_mode, normalize_title
 from app.processing.urls import NormalizedUrl, normalize_and_classify
+
+logger = get_logger(__name__)
 
 #: Longest a title or company may be, matching the database columns.
 MAX_TITLE_LENGTH = 512
@@ -74,6 +78,10 @@ class RejectionReason:
 
     NO_TITLE = "no_usable_title"
     NO_SOURCE_URL = "no_valid_source_url"
+    #: Phase 10: this product is locked to United States vacancies. Applied
+    #: here, during normalisation, so a non-US listing is never scored, never
+    #: deduplicated and never takes a portal's quota slot.
+    NON_US_LOCATION = NON_US_REJECTION
 
 
 @dataclass(frozen=True, slots=True)
@@ -248,6 +256,27 @@ def normalize_raw_job(
 
     description = clean_block_text(raw.description)
     location = normalize_location(raw.location, extra_mode_text=title.display)
+
+    # US eligibility. Decided on the location the portal published, before any
+    # scoring, deduplication or quota accounting sees the listing, and decided
+    # conservatively: anything that cannot be confidently placed in the United
+    # States is rejected rather than guessed at (see ``us_locations``).
+    verdict = classify_us_location(location.display)
+    if not verdict.is_us:
+        logger.info(
+            "job_rejected_non_us",
+            portal=portal_slug,
+            external_id=raw.external_id,
+            location=location.display,
+            confidence=verdict.confidence.value,
+            detail=verdict.reason,
+        )
+        return RejectedJob(
+            portal_slug=portal_slug,
+            external_id=raw.external_id,
+            title=title.display,
+            reason=RejectionReason.NON_US_LOCATION,
+        )
 
     # Work mode is read from the location first, then the title, then the
     # description. All three are the portal's own words; none of it is inferred

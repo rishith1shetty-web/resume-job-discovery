@@ -447,11 +447,19 @@ def test_a_naive_timestamp_is_treated_as_utc() -> None:
 @pytest.mark.parametrize(
     ("record", "expected"),
     [
+        # The ISO country code is resolved to a name, and the copy of it that
+        # trails the city and state strings is dropped.
         ({"jobLocations": [{"city": "Evansville, Indiana, US",
                             "state": "Indiana, US", "country": "US"}]},
-         "Evansville, Indiana, US"),
-        ({"jobLocations": [{"city": "Dublin", "country": "IE"}]}, "Dublin, IE"),
-        ({"jobLocations": [{"country": "RO"}]}, "RO"),
+         "Evansville, Indiana, United States"),
+        ({"jobLocations": [{"city": "Dublin", "country": "IE"}]},
+         "Dublin, Ireland"),
+        ({"jobLocations": [{"country": "RO"}]}, "Romania"),
+        ({"jobLocations": [{"city": "Cascais, Lisbon, PT",
+                            "state": "Lisbon, PT", "country": "PT"}]},
+         "Cascais, Lisbon, Portugal"),
+        # An unknown code is passed through rather than invented into a name.
+        ({"jobLocations": [{"country": "ZZ"}]}, "ZZ"),
         ({"jobLocations": [], "locationsAltRaw": ["Romania or Europe"]},
          "Romania or Europe"),
         ({"jobLocations": None, "locationsRaw": "Austin, TX"}, "Austin, TX"),
@@ -463,6 +471,27 @@ def test_a_naive_timestamp_is_treated_as_utc() -> None:
 )
 def test_location_reads_whichever_field_carries_one(record, expected) -> None:
     assert ScaleJobsPortal._location(record) == expected
+
+
+@pytest.mark.parametrize(
+    ("code", "country"),
+    [("MT", "Malta"), ("CA", "Canada"), ("IN", "India"), ("DE", "Germany"),
+     ("MA", "Morocco"), ("PA", "Panama"), ("ME", "Montenegro")],
+)
+def test_a_country_code_that_is_also_a_state_is_spelled_out(
+    code: str, country: str
+) -> None:
+    """This endpoint really does publish ``{"country": "MT"}`` for Malta.
+
+    Left as a bare code it would reach the US filter looking like Montana, so
+    it is resolved here, where the field is known to be a country.
+    """
+    from app.processing.us_locations import classify_us_location
+
+    location = ScaleJobsPortal._location({"jobLocations": [{"country": code}]})
+
+    assert location == country
+    assert not classify_us_location(location).is_us
 
 
 @pytest.mark.parametrize(
@@ -561,7 +590,7 @@ def test_the_description_adds_facts_the_summary_does_not_state() -> None:
     assert "Minimum experience: 3 years" in text
     assert "Compensation: USD 80,000 - 120,000 per year" in text
     assert "Visa sponsorship: stated as available" in text
-    assert "Location: Austin, US" in text
+    assert "Location: Austin, United States" in text
 
 
 def test_sponsorship_is_only_stated_when_it_is_offered() -> None:

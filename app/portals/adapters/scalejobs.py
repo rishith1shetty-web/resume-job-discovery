@@ -103,6 +103,7 @@ from app.portals.base import (
 )
 from app.portals.exceptions import PortalParseError
 from app.portals.http import HttpPolicy, PortalHttpClient
+from app.processing.us_locations import COUNTRY_NAMES_BY_CODE
 from app.search.freshness import cutoff_for
 
 logger = get_logger(__name__)
@@ -405,21 +406,42 @@ class ScaleJobsPortal(BasePortal):
 
         ``jobLocations`` is structured and preferred; the raw alternatives are
         used only when it is absent.
+
+        The country arrives as an ISO alpha-2 code, and the city and state
+        strings carry it as a suffix ("Cascais, Lisbon, PT"). Those codes are
+        resolved to names here, at the one place that knows the field is a
+        country: half of them are also US state abbreviations - this endpoint
+        really does publish ``{"country": "MT"}`` for a job in Malta - and a
+        bare code reaching the US filter would read as Montana.
         """
         entries = record.get("jobLocations")
         if isinstance(entries, list):
             for entry in entries:
                 if not isinstance(entry, dict):
                     continue
-                parts = [
-                    cleaned
-                    for key in ("city", "state", "country")
-                    if (cleaned := cls._clean(entry.get(key)))
-                ]
+
+                code = (cls._clean(entry.get("country")) or "").upper()
+                country = COUNTRY_NAMES_BY_CODE.get(code)
+                suffix = f", {code}"
+
+                parts: list[str] = []
+                for key in ("city", "state"):
+                    cleaned = cls._clean(entry.get(key))
+                    if not cleaned:
+                        continue
+                    if country and cleaned.upper().endswith(suffix.upper()):
+                        # Drop the code; the resolved name is appended below.
+                        cleaned = cleaned[: -len(suffix)].strip().rstrip(",")
+                    if cleaned:
+                        parts.append(cleaned)
+
+                parts.append(country or cls._clean(entry.get("country")) or "")
+                parts = [part for part in parts if part]
                 if not parts:
                     continue
-                # "Evansville, Indiana, US" already contains its state and
-                # country, so drop any part another part already spells out.
+
+                # "Evansville, Indiana" already contains its state, so drop any
+                # part another part already spells out.
                 kept: list[str] = []
                 for part in parts:
                     if not any(part in existing for existing in kept):

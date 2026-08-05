@@ -656,6 +656,11 @@ def test_a_repeat_opening_keeps_its_own_key_when_the_first_holds_the_shared_one(
     meet, the insert used to fail on uq_jobs_canonical_key - Stripe had three
     "Risk Operations Analyst, Financial Crimes" openings, two in Dublin 250
     days apart.
+
+    Phase 10 rejects Dublin outright, so the same pair is exercised here in a
+    US city. The defect was never about the place: it needed only two openings
+    that agree on employer, title and location, which Stripe's Chicago
+    requisitions do just as well.
     """
     from app.portals.base import RawJob
     from app.processing.normalize import normalize_raw_job
@@ -668,7 +673,7 @@ def test_a_repeat_opening_keeps_its_own_key_when_the_first_holds_the_shared_one(
                 source="greenhouse",
                 title="Risk Operations Analyst, Financial Crimes",
                 company="Stripe",
-                location="Dublin",
+                location="Chicago, IL",
                 description="x" * 400,
                 source_url=f"https://boards.greenhouse.io/stripe/jobs/{external_id}",
                 application_url=None,
