@@ -53,9 +53,9 @@ def empty_registry() -> PortalRegistry:
 
 def test_the_global_registry_holds_only_the_approved_adapters() -> None:
     # Phase 4 registered Jobright and LinkedIn, in the rollout order recorded
-    # in docs/DECISIONS.md (D-001); Phase 9A added Hiring Cafe and Phase 9B
-    # ZipRecruiter. Portals are added one at a time, so an unexpected slug here
-    # means that gate was skipped.
+    # in docs/DECISIONS.md (D-001); Phase 9A added Hiring Cafe, Phase 9B
+    # ZipRecruiter and Phase 9C SimplyHired. Portals are added one at a time,
+    # so an unexpected slug here means that gate was skipped.
     import app.portals.adapters  # noqa: F401  - registers the adapters
 
     assert set(registry.slugs) == {
@@ -63,6 +63,7 @@ def test_the_global_registry_holds_only_the_approved_adapters() -> None:
         "linkedin",
         "hiringcafe",
         "ziprecruiter",
+        "simplyhired",
     }
 
 

@@ -67,6 +67,22 @@ PORTAL_SEEDS: tuple[PortalSeed, ...] = (
         ),
     ),
     PortalSeed(
+        slug="simplyhired",
+        website_url="https://www.simplyhired.com/",
+        display_order=16,
+        is_enabled=True,
+        notes=(
+            "Collects from the robots-allowed /search pages and reads full "
+            "posting text from /job/<jobKey>. The private /c/jobs-api/ "
+            "surface and the /out?r= click redirect are both disallowed by "
+            "robots.txt and are not used, so listings link to the site's own "
+            "crawler-facing job URL. Real cursor pagination, capped at two "
+            "pages per query. Descriptions used for scoring are composed from "
+            "the search page's structured fields; the employer's full text is "
+            "fetched on demand."
+        ),
+    ),
+    PortalSeed(
         slug="ziprecruiter",
         website_url="https://www.ziprecruiter.com/",
         display_order=17,

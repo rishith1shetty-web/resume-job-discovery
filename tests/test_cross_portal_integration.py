@@ -37,6 +37,7 @@ from app.models.job import Job, JobMatch, JobSource, RawJobRecord
 from app.models.profile import ResumeSkill
 from app.portals.adapters.hiringcafe import HiringCafePortal
 from app.portals.adapters.jobright import JobrightPortal
+from app.portals.adapters.simplyhired import SimplyHiredPortal
 from app.portals.adapters.ziprecruiter import ZipRecruiterPortal
 from app.portals.exceptions import PortalParseError, PortalTimeoutError
 from app.services import search_run_service
@@ -47,6 +48,7 @@ FIXTURES = Path(__file__).parent / "fixtures" / "portals"
 HIRINGCAFE_FIXTURE = FIXTURES / "hiringcafe_financial_analyst.json"
 JOBRIGHT_FIXTURE = FIXTURES / "jobright_financial_analyst.json"
 ZIPRECRUITER_FIXTURE = FIXTURES / "ziprecruiter_financial_analyst.json"
+SIMPLYHIRED_FIXTURE = FIXTURES / "simplyhired_financial_analyst.json"
 
 NOW = datetime(2026, 8, 4, 12, 0, tzinfo=UTC)
 TAXONOMY = frozenset({"financial-analyst"})
@@ -57,6 +59,24 @@ TAXONOMY = frozenset({"financial-analyst"})
 
 def _hiringcafe_html(records: list[dict]) -> str:
     payload = {"props": {"pageProps": {"ssrHits": records}}}
+    return (
+        '<script id="__NEXT_DATA__" type="application/json">'
+        + json.dumps(payload)
+        + "</script>"
+    )
+
+
+def _simplyhired_html(records: list[dict]) -> str:
+    # One page only: no cursor for a page two, so the adapter stops.
+    payload = {
+        "props": {
+            "pageProps": {
+                "jobs": records,
+                "pageCursors": {"1": "page-one"},
+                "currentPageNumber": 1,
+            }
+        }
+    }
     return (
         '<script id="__NEXT_DATA__" type="application/json">'
         + json.dumps(payload)
@@ -100,11 +120,19 @@ class OfflineZipRecruiter(ZipRecruiterPortal):
     failure: Exception | None = None
 
 
+class OfflineSimplyHired(SimplyHiredPortal):
+    """The real adapter, served from a canned search page."""
+
+    records: list[dict] = []
+    failure: Exception | None = None
+
+
 #: Page builder and fixture state per portal slug. The HTTP client knows which
 #: portal it belongs to, which is what lets one patch serve every adapter.
 _OFFLINE = {
     "hiringcafe": (OfflineHiringCafe, _hiringcafe_html),
     "jobright": (OfflineJobright, _jobright_html),
+    "simplyhired": (OfflineSimplyHired, _simplyhired_html),
 }
 
 #: ZipRecruiter speaks JSON-RPC rather than serving pages, so it is stubbed at
@@ -207,6 +235,24 @@ def build_ziprecruiter(
 ) -> OfflineZipRecruiter:
     adapter = OfflineZipRecruiter(options={"rate_limit_per_minute": 0})
     type(adapter).records = records if records is not None else ziprecruiter_records()
+    type(adapter).failure = failure
+    return adapter
+
+
+def simplyhired_records() -> list[dict]:
+    data = json.loads(SIMPLYHIRED_FIXTURE.read_text(encoding="utf-8"))
+    return data["searches"]["financial analyst"][0]["jobs"]
+
+
+def simplyhired_detail() -> dict:
+    return json.loads(SIMPLYHIRED_FIXTURE.read_text(encoding="utf-8"))["detail"]
+
+
+def build_simplyhired(
+    records: list[dict] | None = None, *, failure: Exception | None = None
+) -> OfflineSimplyHired:
+    adapter = OfflineSimplyHired(options={"rate_limit_per_minute": 0})
+    type(adapter).records = records if records is not None else simplyhired_records()
     type(adapter).failure = failure
     return adapter
 
@@ -1311,3 +1357,595 @@ async def test_all_three_failing_fails_the_run_with_every_error_recorded(
     assert outcome.results == []
     assert all(leg.failed for leg in outcome.portals)
     assert all(leg.error for leg in outcome.portals)
+
+
+# --- SimplyHired through the real pipeline ---------------------------------
+
+
+async def test_a_simplyhired_only_search_returns_its_jobs(
+    db_session: AsyncSession,
+) -> None:
+    _, resume = await analysed_resume(db_session)
+
+    prepared, outcome = await run_search(
+        db_session, resume=resume, specs=[("simplyhired", build_simplyhired())]
+    )
+
+    assert outcome.status is SearchRunStatus.COMPLETED
+    assert prepared.legs[0].raw_count > 0
+    assert outcome.results, "the composed descriptions qualified nothing at all"
+    assert all(item.final_score >= 70.0 for item in outcome.results)
+    assert all(carried_by(item, "simplyhired") for item in outcome.results)
+
+
+async def test_simplyhired_listings_normalise_with_their_provenance(
+    db_session: AsyncSession,
+) -> None:
+    _, resume = await analysed_resume(db_session)
+
+    prepared, _ = await run_search(
+        db_session, resume=resume, specs=[("simplyhired", build_simplyhired())]
+    )
+
+    jobs = await jobs_of(db_session, prepared.run.id)
+    assert jobs
+    assert all(job.company for job in jobs)
+    assert all(job.posted_at is not None for job in jobs)
+
+    captures = list(
+        (
+            await db_session.scalars(
+                select(RawJobRecord).where(
+                    RawJobRecord.job_id.in_([job.id for job in jobs])
+                )
+            )
+        ).all()
+    )
+    assert captures
+    assert all(capture.source == "simplyhired" for capture in captures)
+    # Fields the shared contract has no room for are kept verbatim.
+    assert any("salaryInfo" in capture.raw_payload for capture in captures)
+    assert any("remoteAttributes" in capture.raw_payload for capture in captures)
+
+
+async def test_every_returned_simplyhired_job_gives_the_user_a_usable_link(
+    db_session: AsyncSession,
+) -> None:
+    # The disallowed /out?r= redirect must never reach the dashboard.
+    _, resume = await analysed_resume(db_session)
+
+    _, outcome = await run_search(
+        db_session, resume=resume, specs=[("simplyhired", build_simplyhired())]
+    )
+
+    assert outcome.results
+    for item in outcome.results:
+        assert item.preferred_application_url.startswith("http")
+        assert "/out?r=" not in item.preferred_application_url
+
+
+async def test_a_remote_listing_keeps_its_work_mode(
+    db_session: AsyncSession,
+) -> None:
+    """The site puts "Remote" in the location field, so normalisation reads it.
+
+    No adapter-side invention needed, and the location key stays clean for
+    cross-portal grouping.
+    """
+    _, resume = await analysed_resume(db_session)
+
+    prepared, _ = await run_search(
+        db_session, resume=resume, specs=[("simplyhired", build_simplyhired())]
+    )
+
+    jobs = await jobs_of(db_session, prepared.run.id)
+
+    assert any(job.work_mode is not None for job in jobs)
+
+
+# --- SimplyHired beside each existing portal -------------------------------
+
+
+async def test_jobright_plus_simplyhired_merges_both_portals(
+    db_session: AsyncSession,
+) -> None:
+    _, resume = await analysed_resume(db_session)
+
+    prepared, outcome = await run_search(
+        db_session,
+        resume=resume,
+        specs=[
+            ("jobright", build_jobright()),
+            ("simplyhired", build_simplyhired()),
+        ],
+    )
+
+    assert outcome.status is SearchRunStatus.COMPLETED
+    assert len(prepared.legs) == 2
+    assert all(leg.raw_count > 0 for leg in prepared.legs)
+    assert any(carried_by(item, "simplyhired") for item in outcome.results)
+
+
+async def test_hiring_cafe_plus_simplyhired_merges_both_portals(
+    db_session: AsyncSession,
+) -> None:
+    _, resume = await analysed_resume(db_session)
+
+    _, outcome = await run_search(
+        db_session,
+        resume=resume,
+        specs=[
+            ("hiringcafe", build_hiringcafe()),
+            ("simplyhired", build_simplyhired()),
+        ],
+    )
+
+    assert outcome.status is SearchRunStatus.COMPLETED
+    assert any(carried_by(item, "hiringcafe") for item in outcome.results)
+    assert any(carried_by(item, "simplyhired") for item in outcome.results)
+
+
+async def test_hiring_cafe_is_unaffected_by_simplyhired_being_selected(
+    db_session: AsyncSession,
+) -> None:
+    _, resume = await analysed_resume(db_session)
+
+    _, alone = await run_search(
+        db_session, resume=resume, specs=[("hc-alone", build_hiringcafe())]
+    )
+    _, together = await run_search(
+        db_session,
+        resume=resume,
+        specs=[
+            ("hc-together", build_hiringcafe()),
+            ("sh-together", build_simplyhired()),
+        ],
+        limit=50,
+    )
+
+    alone_scores = {i.job_id: i.final_score for i in alone.results}
+    together_scores = {i.job_id: i.final_score for i in together.results}
+    overlap = set(alone_scores) & set(together_scores)
+
+    assert overlap
+    assert all(alone_scores[j] == together_scores[j] for j in overlap)
+
+
+async def test_all_operational_portals_run_in_one_search(
+    db_session: AsyncSession,
+) -> None:
+    _, resume = await analysed_resume(db_session)
+
+    prepared, outcome = await run_search(
+        db_session,
+        resume=resume,
+        specs=[
+            ("jobright", build_jobright()),
+            ("hiringcafe", build_hiringcafe()),
+            ("simplyhired", build_simplyhired()),
+        ],
+        limit=20,
+    )
+
+    assert outcome.status is SearchRunStatus.COMPLETED
+    assert len(prepared.legs) == 3
+    # Every selected portal is searched; none is skipped once another fills up.
+    assert all(leg.raw_count > 0 for leg in prepared.legs)
+
+
+async def test_quotas_are_shared_across_the_three_operational_portals(
+    db_session: AsyncSession,
+) -> None:
+    _, resume = await analysed_resume(db_session)
+
+    _, outcome = await run_search(
+        db_session,
+        resume=resume,
+        specs=[
+            ("jobright", build_jobright()),
+            ("hiringcafe", build_hiringcafe()),
+            ("simplyhired", build_simplyhired()),
+        ],
+        limit=20,
+    )
+
+    quotas = sorted(leg.target_quota for leg in outcome.portals)
+
+    assert sum(quotas) == 20
+    assert quotas == [6, 7, 7]
+
+
+async def test_the_three_portal_result_is_ranked_and_free_of_duplicates(
+    db_session: AsyncSession,
+) -> None:
+    _, resume = await analysed_resume(db_session)
+
+    _, outcome = await run_search(
+        db_session,
+        resume=resume,
+        specs=[
+            ("jobright", build_jobright()),
+            ("hiringcafe", build_hiringcafe()),
+            ("simplyhired", build_simplyhired()),
+        ],
+    )
+
+    scores = [item.final_score for item in outcome.results]
+    assert scores == sorted(scores, reverse=True)
+
+    job_ids = [item.job_id for item in outcome.results]
+    assert len(job_ids) == len(set(job_ids))
+    assert all(item.final_score >= 70.0 for item in outcome.results)
+
+
+# --- Cross-portal deduplication involving SimplyHired ----------------------
+
+
+def _mirror_as_simplyhired(record: dict, *, key: str = "shMirrorKey000001") -> dict:
+    """Recast one Hiring Cafe listing as the same vacancy on SimplyHired."""
+    processed = record["v5_processed_job_data"]
+    summary = processed.get("requirements_summary") or ""
+    return {
+        "jobKey": key,
+        "title": record["job_information"]["title"],
+        "company": record["enriched_company_data"]["name"],
+        "location": processed.get("formatted_workplace_location"),
+        "snippet": summary[:150],
+        "requirements": list(processed.get("technical_tools") or [])[:8],
+        "jobTypes": ["Full-time"],
+        "benefits": ["Health insurance"],
+        "remoteAttributes": [],
+        "uncategorized": list(processed.get("role_activities") or [])[:20],
+        "salaryInfo": "$80,000 - $95,000 a year",
+        "dateOnIndeed": 1784922724873,
+        "botUrl": f"/job/{key}",
+    }
+
+
+async def test_one_vacancy_on_hiring_cafe_and_simplyhired_is_one_job(
+    db_session: AsyncSession,
+) -> None:
+    shared = hiringcafe_records()[0]
+    _, resume = await analysed_resume(db_session)
+
+    _, outcome = await run_search(
+        db_session,
+        resume=resume,
+        specs=[
+            ("hiringcafe", build_hiringcafe([shared])),
+            ("simplyhired", build_simplyhired([_mirror_as_simplyhired(shared)])),
+        ],
+    )
+
+    company = shared["enriched_company_data"]["name"]
+    jobs = [
+        job
+        for job in (await db_session.scalars(select(Job))).all()
+        if job.company == company
+    ]
+    assert len(jobs) == 1, [job.title for job in jobs]
+
+    sources = list(
+        (
+            await db_session.scalars(
+                select(JobSource).where(JobSource.job_id == jobs[0].id)
+            )
+        ).all()
+    )
+    assert len(sources) == 2
+
+    item = next(item for item in outcome.results if item.job_id == jobs[0].id)
+    assert carried_by(item, "hiringcafe")
+    assert carried_by(item, "simplyhired")
+
+
+async def test_one_vacancy_on_all_three_portals_is_still_one_job(
+    db_session: AsyncSession,
+) -> None:
+    """The requirement stated for Phase 9C, exercised directly.
+
+    One canonical job, three sources, provenance preserved for each.
+    """
+    shared = hiringcafe_records()[0]
+    _, resume = await analysed_resume(db_session)
+
+    _, outcome = await run_search(
+        db_session,
+        resume=resume,
+        specs=[
+            ("jobright", build_jobright([_mirror_as_jobright(shared)])),
+            ("hiringcafe", build_hiringcafe([shared])),
+            ("simplyhired", build_simplyhired([_mirror_as_simplyhired(shared)])),
+        ],
+    )
+
+    company = shared["enriched_company_data"]["name"]
+    jobs = [
+        job
+        for job in (await db_session.scalars(select(Job))).all()
+        if job.company == company
+    ]
+    assert len(jobs) == 1, [job.title for job in jobs]
+
+    sources = list(
+        (
+            await db_session.scalars(
+                select(JobSource).where(JobSource.job_id == jobs[0].id)
+            )
+        ).all()
+    )
+    assert len(sources) == 3
+
+    item = next(item for item in outcome.results if item.job_id == jobs[0].id)
+    assert len(item.portal_slugs) == 3
+    for slug in ("jobright", "hiringcafe", "simplyhired"):
+        assert carried_by(item, slug)
+
+
+async def test_the_employer_url_wins_over_the_simplyhired_listing(
+    db_session: AsyncSession,
+) -> None:
+    # CLAUDE.md section 9: employer career page, then ATS, then portal listing.
+    shared = hiringcafe_records()[0]
+    _, resume = await analysed_resume(db_session)
+
+    _, outcome = await run_search(
+        db_session,
+        resume=resume,
+        specs=[
+            ("hiringcafe", build_hiringcafe([shared])),
+            ("simplyhired", build_simplyhired([_mirror_as_simplyhired(shared)])),
+        ],
+    )
+
+    assert outcome.results
+    item = outcome.results[0]
+    assert "simplyhired.com" not in item.preferred_application_url
+    assert item.preferred_url_kind in {
+        JobUrlKind.ATS.value,
+        JobUrlKind.EMPLOYER_CAREER.value,
+    }
+
+
+async def test_a_duplicate_across_three_portals_takes_one_quota_slot(
+    db_session: AsyncSession,
+) -> None:
+    shared = hiringcafe_records()[0]
+    _, resume = await analysed_resume(db_session)
+
+    _, outcome = await run_search(
+        db_session,
+        resume=resume,
+        specs=[
+            ("jobright", build_jobright([_mirror_as_jobright(shared)])),
+            ("hiringcafe", build_hiringcafe([shared])),
+            ("simplyhired", build_simplyhired([_mirror_as_simplyhired(shared)])),
+        ],
+    )
+
+    # One vacancy, however many portals carried it.
+    assert len(outcome.results) == 1
+
+
+async def test_rediscovering_a_simplyhired_listing_creates_no_second_job(
+    db_session: AsyncSession,
+) -> None:
+    _, resume = await analysed_resume(db_session)
+    record = _mirror_as_simplyhired(hiringcafe_records()[0])
+    company = record["company"]
+
+    async def stored_for_this_company() -> list[Job]:
+        return list(
+            (
+                await db_session.scalars(select(Job).where(Job.company == company))
+            ).all()
+        )
+
+    await run_search(
+        db_session,
+        resume=resume,
+        specs=[("sh-first", build_simplyhired([record]))],
+    )
+    after_first = await stored_for_this_company()
+
+    await run_search(
+        db_session,
+        resume=resume,
+        specs=[("sh-second", build_simplyhired([dict(record)]))],
+    )
+    after_second = await stored_for_this_company()
+
+    assert len(after_first) == 1
+    assert len(after_second) == 1
+    assert after_first[0].id == after_second[0].id
+
+
+async def test_repeating_a_three_portal_search_is_stable(
+    db_session: AsyncSession,
+) -> None:
+    _, resume = await analysed_resume(db_session)
+
+    _, first = await run_search(
+        db_session,
+        resume=resume,
+        specs=[
+            ("jr-1", build_jobright()),
+            ("hc-1", build_hiringcafe()),
+            ("sh-1", build_simplyhired()),
+        ],
+    )
+    await db_session.commit()
+
+    _, second = await run_search(
+        db_session,
+        resume=resume,
+        specs=[
+            ("jr-2", build_jobright()),
+            ("hc-2", build_hiringcafe()),
+            ("sh-2", build_simplyhired()),
+        ],
+    )
+
+    assert [i.job_id for i in second.results] == [i.job_id for i in first.results]
+    assert [i.final_score for i in second.results] == [
+        i.final_score for i in first.results
+    ]
+
+
+# --- Failure isolation, in every direction ---------------------------------
+
+
+async def test_simplyhired_failing_still_returns_the_other_portals_jobs(
+    db_session: AsyncSession,
+) -> None:
+    _, resume = await analysed_resume(db_session)
+
+    _, outcome = await run_search(
+        db_session,
+        resume=resume,
+        specs=[
+            ("hiringcafe", build_hiringcafe()),
+            (
+                "simplyhired",
+                build_simplyhired(
+                    failure=PortalTimeoutError("timed out", portal="simplyhired")
+                ),
+            ),
+        ],
+    )
+
+    assert outcome.status is SearchRunStatus.COMPLETED_WITH_ERRORS
+    assert outcome.results
+    assert all(carried_by(item, "hiringcafe") for item in outcome.results)
+
+    failed = [leg for leg in outcome.portals if leg.failed]
+    assert len(failed) == 1
+    assert failed[0].portal_slug.endswith("simplyhired")
+    assert failed[0].error
+
+
+async def test_another_portal_failing_does_not_stop_simplyhired(
+    db_session: AsyncSession,
+) -> None:
+    _, resume = await analysed_resume(db_session)
+
+    _, outcome = await run_search(
+        db_session,
+        resume=resume,
+        specs=[
+            (
+                "hiringcafe",
+                build_hiringcafe(
+                    failure=PortalParseError("bad page", portal="hiringcafe")
+                ),
+            ),
+            ("simplyhired", build_simplyhired()),
+        ],
+    )
+
+    assert outcome.status is SearchRunStatus.COMPLETED_WITH_ERRORS
+    assert outcome.results
+    assert all(carried_by(item, "simplyhired") for item in outcome.results)
+
+    by_slug = {leg.portal_slug.rsplit("-", 1)[-1]: leg for leg in outcome.portals}
+    assert by_slug["hiringcafe"].failed
+    assert not by_slug["simplyhired"].failed
+
+
+async def test_two_of_three_failing_still_completes_with_errors(
+    db_session: AsyncSession,
+) -> None:
+    _, resume = await analysed_resume(db_session)
+
+    _, outcome = await run_search(
+        db_session,
+        resume=resume,
+        specs=[
+            (
+                "jobright",
+                build_jobright(failure=PortalTimeoutError("t", portal="jobright")),
+            ),
+            (
+                "hiringcafe",
+                build_hiringcafe(failure=PortalParseError("p", portal="hiringcafe")),
+            ),
+            ("simplyhired", build_simplyhired()),
+        ],
+    )
+
+    assert outcome.status is SearchRunStatus.COMPLETED_WITH_ERRORS
+    # The surviving portal still delivers.
+    assert outcome.results
+    assert len([leg for leg in outcome.portals if leg.failed]) == 2
+
+
+async def test_all_three_failing_fails_the_run_with_every_error_recorded(
+    db_session: AsyncSession,
+) -> None:
+    _, resume = await analysed_resume(db_session)
+
+    _, outcome = await run_search(
+        db_session,
+        resume=resume,
+        specs=[
+            (
+                "jobright",
+                build_jobright(failure=PortalTimeoutError("t", portal="jobright")),
+            ),
+            (
+                "hiringcafe",
+                build_hiringcafe(failure=PortalParseError("p", portal="hiringcafe")),
+            ),
+            (
+                "simplyhired",
+                build_simplyhired(
+                    failure=PortalTimeoutError("t", portal="simplyhired")
+                ),
+            ),
+        ],
+    )
+
+    assert outcome.status is SearchRunStatus.FAILED
+    assert outcome.results == []
+    assert all(leg.failed for leg in outcome.portals)
+    assert all(leg.error for leg in outcome.portals)
+
+
+# --- Eligibility is unchanged ----------------------------------------------
+
+
+async def test_an_applied_job_stays_excluded_when_simplyhired_finds_it(
+    db_session: AsyncSession,
+) -> None:
+    """Applied status is keyed to the canonical job, not to the portal.
+
+    A new portal rediscovering a vacancy must not resurface it as a fresh
+    opportunity.
+    """
+    shared = hiringcafe_records()[0]
+    user, resume = await analysed_resume(db_session)
+
+    _, first = await run_search(
+        db_session, resume=resume, specs=[("hc-first", build_hiringcafe([shared]))]
+    )
+    assert first.results
+    job_id = first.results[0].job_id
+
+    db_session.add(
+        Application(
+            user_id=user.id,
+            resume_id=resume.id,
+            job_id=job_id,
+            status=ApplicationStatus.APPLIED,
+            applied_at=datetime.now(UTC),
+        )
+    )
+    await db_session.flush()
+
+    _, second = await run_search(
+        db_session,
+        resume=resume,
+        specs=[("sh-later", build_simplyhired([_mirror_as_simplyhired(shared)]))],
+    )
+
+    assert job_id not in {item.job_id for item in second.results}
