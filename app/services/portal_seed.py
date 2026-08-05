@@ -67,6 +67,23 @@ PORTAL_SEEDS: tuple[PortalSeed, ...] = (
         ),
     ),
     PortalSeed(
+        slug="greenhouse",
+        website_url="https://boards-api.greenhouse.io/",
+        display_order=18,
+        is_enabled=True,
+        notes=(
+            "Collects from Greenhouse's public, documented, no-auth Job Board "
+            "API (/v1/boards/<token>/jobs?content=true); its robots.txt "
+            "disallows only /embed/, which is never touched. Greenhouse is an "
+            "ATS, not a job board: it publishes NO cross-company search, so "
+            "coverage is exactly the employers listed in this portal's "
+            "board_tokens option and no wider. Add or remove employers there "
+            "without a deployment. Each board returns the employer's complete "
+            "posting text in one request, and application links point at the "
+            "employer's own careers page where they host one."
+        ),
+    ),
+    PortalSeed(
         slug="simplyhired",
         website_url="https://www.simplyhired.com/",
         display_order=16,

@@ -45,6 +45,7 @@ from app.processing.normalize import (
     RejectedJob,
     normalize_raw_job,
 )
+from app.processing.text import stable_hash
 from app.processing.titles import normalize_title
 from app.processing.urls import canonical_url
 
@@ -344,7 +345,29 @@ async def _process_one(
     changed: tuple[str, ...] = ()
 
     if match is None:
-        job = _new_job(normalized, moment=moment)
+        job = _new_job(
+            normalized,
+            moment=moment,
+            # Two rules can legitimately disagree here. ``build_canonical_key``
+            # is deliberately date-free, so one employer's repeat opening for
+            # the same role and place produces the same key - while ``compare``
+            # refuses to merge probable duplicates more than
+            # PROBABLE_DUPLICATE_WINDOW apart, treating them as separate
+            # advertisements. Both are intended, and where they meet the insert
+            # used to fail on uq_jobs_canonical_key.
+            #
+            # Found live on Greenhouse, whose boards carry a company's open
+            # requisitions with their true original publish dates: Stripe had
+            # three "Risk Operations Analyst, Financial Crimes" openings, two
+            # in Dublin 250 days apart.
+            #
+            # The deduplication verdict is what stands - these are different
+            # vacancies - so the newcomer takes a distinguished key instead of
+            # colliding. Nothing merges that did not merge before, and such a
+            # job is still reachable for future comparison through its employer
+            # and fingerprint (see ``_load_candidates``).
+            taken_keys={view.canonical_key for view in views},
+        )
         session.add(job)
         # Flush so the job has an id for the source row's foreign key.
         await session.flush()
@@ -397,9 +420,36 @@ async def _process_one(
     )
 
 
-def _new_job(normalized: NormalizedJob, *, moment: datetime) -> Job:
+def _available_key(
+    normalized: NormalizedJob, taken_keys: frozenset[str] | set[str]
+) -> str:
+    """The canonical key for a new job, distinguished only if it is taken.
+
+    Returns ``normalized.canonical_key`` unchanged in every ordinary case, so
+    grouping is exactly as before. It only differs when deduplication has
+    already decided this listing is *not* the job that holds that key, which
+    is the one situation where storing it unchanged is impossible.
+
+    The suffix uses the portal and its own listing id, so the same repeat
+    opening rediscovered later resolves to the same distinguished key rather
+    than accumulating a new row on every search.
+    """
+    key = normalized.canonical_key
+    if key not in taken_keys:
+        return key
+
+    discriminator = normalized.external_id or normalized.source_url.canonical
+    return stable_hash(key, normalized.portal_slug, discriminator)
+
+
+def _new_job(
+    normalized: NormalizedJob,
+    *,
+    moment: datetime,
+    taken_keys: frozenset[str] | set[str] = frozenset(),
+) -> Job:
     return Job(
-        canonical_key=normalized.canonical_key,
+        canonical_key=_available_key(normalized, taken_keys),
         title=normalized.title.display,
         normalized_title=normalized.title.key,
         company=normalized.company.display if normalized.company else None,
