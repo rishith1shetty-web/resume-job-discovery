@@ -199,6 +199,12 @@ const RUN_TONES = {
 function SearchOutcome({ outcome, resumeId }) {
   const run = outcome.data ?? outcome
   const results = run.results ?? []
+  const summary = run.summary ?? {}
+  // Phase 12 records how deep each portal went in the run summary. The leg
+  // rows themselves carry no column for it, so they are joined by slug here.
+  const depthBySlug = Object.fromEntries(
+    (summary.portals ?? []).map((leg) => [leg.portal, leg]),
+  )
 
   return (
     <div className="stack">
@@ -233,6 +239,46 @@ function SearchOutcome({ outcome, resumeId }) {
           </div>
         </dl>
 
+        {/* How the returned set was arrived at. Every portal searches to its
+            own depth and everything qualified competes in one pool, so these
+            narrow from what was collected to what came back. */}
+        <dl className="facts">
+          <div>
+            <dt>Collected</dt>
+            <dd>{summary.collected_count ?? 0}</dd>
+          </div>
+          <div>
+            <dt>Outside the US</dt>
+            <dd>{summary.non_us_excluded_count ?? 0}</dd>
+          </div>
+          <div>
+            <dt>Duplicates merged</dt>
+            <dd>{summary.duplicate_count ?? 0}</dd>
+          </div>
+          <div>
+            <dt>Candidate pool</dt>
+            <dd>{summary.candidate_pool_size ?? 0}</dd>
+          </div>
+          <div>
+            <dt>Returned</dt>
+            <dd>{run.returned_count}</dd>
+          </div>
+          <div>
+            <dt>Portals exhausted</dt>
+            <dd>
+              {summary.portals_exhausted ?? 0} of {(run.portals ?? []).length}
+            </dd>
+          </div>
+        </dl>
+
+        {(summary.portals_limited ?? []).length > 0 && (
+          <p className="notice notice-warn small">
+            Some portals stopped before running out of listings (
+            {summary.portals_limited.map(humanize).join(', ')}). More matches may
+            exist than were collected.
+          </p>
+        )}
+
         {run.is_short && (
           <p className="notice notice-warn">
             {run.returned_count} of {run.requested_limit} requested jobs qualified.
@@ -247,7 +293,15 @@ function SearchOutcome({ outcome, resumeId }) {
         ))}
 
         <Table
-          columns={['Portal', 'Status', 'Quota', 'Collected', 'Qualified', 'Selected', 'Window']}
+          columns={[
+            'Portal',
+            'Status',
+            'Collected',
+            'Qualified',
+            'Returned',
+            'Depth',
+            'Window',
+          ]}
           rows={run.portals ?? []}
           renderRow={(leg) => (
             <tr key={leg.id}>
@@ -268,10 +322,25 @@ function SearchOutcome({ outcome, resumeId }) {
                   {humanize(leg.status)}
                 </Badge>
               </td>
-              <td>{leg.target_quota}</td>
               <td>{leg.raw_count}</td>
               <td>{leg.qualified_count}</td>
               <td>{leg.selected_count}</td>
+              <td className="small">
+                {(() => {
+                  const depth = depthBySlug[leg.portal_slug]
+                  if (!depth) return '—'
+                  return (
+                    <>
+                      <Badge tone={depth.exhausted ? 'good' : 'warn'}>
+                        {humanize(depth.exhaustion ?? 'unknown')}
+                      </Badge>
+                      <div className="muted small">
+                        {depth.requests} request(s), {depth.pages} page(s)
+                      </div>
+                    </>
+                  )
+                })()}
+              </td>
               <td className="small">{orDash(leg.deepest_window && humanize(leg.deepest_window))}</td>
             </tr>
           )}

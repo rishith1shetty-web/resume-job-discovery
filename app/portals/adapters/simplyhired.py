@@ -74,6 +74,17 @@ from app.portals.http import HttpPolicy, PortalHttpClient
 
 logger = get_logger(__name__)
 
+
+def _positive_int(value: Any, default: int) -> int:
+    """A configured positive integer, or the default.
+
+    A missing, non-numeric or non-positive value falls back rather than
+    disabling the bound: a misconfigured row must not create an endless search.
+    """
+    if isinstance(value, bool) or not isinstance(value, int):
+        return default
+    return value if value > 0 else default
+
 BASE_URL = "https://www.simplyhired.com"
 SEARCH_PATH = f"{BASE_URL}/search"
 JOB_PATH = f"{BASE_URL}/job"
@@ -85,8 +96,10 @@ _NEXT_DATA_RE = re.compile(
 _TAG_RE = re.compile(r"<[^>]+>")
 _BLANK_RUN_RE = re.compile(r"\n{3,}")
 
-#: Twenty cards per page. Two pages is enough for any quota this product
-#: allocates, and stops one portal from spending the whole run's budget.
+#: Twenty cards per page. Phase 12 searches deeply rather than to a quota, so
+#: this is the *default* page count rather than a ceiling: raise the portal's
+#: ``max_pages`` option to collect further without a deployment. The collector's
+#: own request, runtime and job limits still bound the leg.
 MAX_PAGES = 2
 
 #: Below this the composed text is not worth returning: the matching layer
@@ -110,6 +123,7 @@ class SimplyHiredPortal(BasePortal):
         self._http = PortalHttpClient(
             portal=self.slug, policy=HttpPolicy.from_options(self.options)
         )
+        self._max_pages = _positive_int(self.options.get("max_pages"), MAX_PAGES)
 
     @property
     def capabilities(self) -> PortalCapabilities:
@@ -142,7 +156,7 @@ class SimplyHiredPortal(BasePortal):
                 break
 
             cursor: str | None = None
-            for _ in range(MAX_PAGES):
+            for _ in range(self._max_pages):
                 if len(jobs) >= request.limit:
                     break
 

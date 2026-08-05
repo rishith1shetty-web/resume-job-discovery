@@ -194,9 +194,14 @@ async def test_no_qualifying_jobs_is_stated_plainly(
     assert "70%" in body["message"]
 
 
-async def test_the_quota_is_split_across_selected_portals(
+async def test_the_api_returns_the_top_n_of_one_combined_pool(
     api_client: AsyncClient, db_session: AsyncSession, settings: Settings
 ) -> None:
+    """Phase 12: the request is no longer divided between portals.
+
+    Both portals here collect everything they have; the returned twenty are
+    the best of the combined forty, and the summary says so.
+    """
     resume_id = await _ready_resume(db_session, settings)
     first = build_fake_portal("api-a", jobs=make_jobs("api-a", 20, now=NOW))
     second = build_fake_portal("api-b", jobs=make_jobs("api-b", 20, now=NOW))
@@ -215,8 +220,14 @@ async def test_the_quota_is_split_across_selected_portals(
 
     data = response.json()["data"]
     assert data["returned_count"] == 20
-    assert [leg["target_quota"] for leg in data["portals"]] == [10, 10]
-    assert sorted(leg["selected_count"] for leg in data["portals"]) == [10, 10]
+    assert sum(leg["selected_count"] for leg in data["portals"]) == 20
+    # Both portals searched fully rather than to a share of the request.
+    assert [leg["raw_count"] for leg in data["portals"]] == [20, 20]
+
+    summary = data["summary"]
+    assert summary["search_strategy"] == "deep_unified"
+    assert summary["candidate_pool_size"] == 40
+    assert summary["portals_exhausted"] == 2
 
 
 async def test_a_failing_portal_completes_the_run_with_errors(

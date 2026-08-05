@@ -1,48 +1,69 @@
-"""The complete Find Matches workflow (Phase 7).
+"""The complete Find Matches workflow (Phase 7, deepened in Phase 12).
 
     selected resume
       -> validate its analysed profile
       -> validate the selected portals
       -> generate same-role queries
-      -> collect listings, newest window first
-      -> normalise, canonicalise and deduplicate
+      -> collect from every portal concurrently, each to its own depth
+      -> normalise, apply the US-only filter, canonicalise and deduplicate
       -> exclude jobs this resume has already applied with
       -> score every remaining canonical job
       -> keep only qualified jobs scoring >= 70
-      -> allocate a fair share per portal, redistributing genuine shortages
-      -> order deterministically
-      -> persist the run and return up to the requested count
+      -> rank the whole candidate pool together
+      -> persist the run and return the best ``requested_limit``
 
 Everything above the persistence layer is decided by ``app.search`` and
 ``app.matching``; this module supplies the inputs, isolates failures and writes
 the outcome.
 
+# What Phase 12 changed, and what it deliberately did not
+
+Before, each portal was given a quota - the requested limit divided by the
+portal count - and stopped collecting the moment it had filled it. Two things
+were wrong with that. A portal stopped early because of *how many other portals
+were selected*, which is not a fact about that portal; and a portal holding
+strong matches lost them to a weaker portal's reserved slots.
+
+Now every portal searches independently until it is genuinely finished or hits
+one of its own configured limits (``app.search.depth``), everything qualified
+lands in one pool, and the pool is ranked together. A portal that finds thirty
+good jobs contributes thirty.
+
+**The ranking itself is untouched.** ``order_candidates`` and ``sort_key`` are
+the same functions the quota engine used, and scoring, the 70 threshold,
+canonicalisation, deduplication and the US filter are all unchanged. Only *when*
+jobs reach the ranking moved.
+
 # Guarantees this module exists to keep
 
 * **The threshold never moves.** Only candidates that already qualified reach
-  allocation. There is no code path that admits a job below 70 to reach a
+  the pool. There is no code path that admits a job below 70 to reach a
   requested count - a short result set is returned instead (CLAUDE.md s18).
-* **One portal failure is not a run failure.** Each leg runs inside its own
-  savepoint. A failed leg is recorded against ``search_run_portals`` and
-  ``portal_errors`` and the run continues; only an all-portal failure fails the
-  run.
-* **A canonical job takes one slot.** The first portal to surface a job in this
+* **One portal failure is not a run failure.** Each leg is collected
+  independently and persisted inside its own savepoint. A failed leg is recorded
+  against ``search_run_portals`` and ``portal_errors`` and the run continues;
+  only an all-portal failure fails the run.
+* **A canonical job takes one place.** The first portal to surface a job in this
   run owns it. Later portals still get their ``job_sources`` row - the source is
   never discarded - but the job is not scored or counted twice.
-* **Exclusions are applied before allocation.** A job already applied to with
-  this resume is dropped after deduplication and before quotas are filled, so
-  it cannot consume a portal's share (Phase 6 ``eligibility``).
+* **Exclusions are applied before ranking.** A job already applied to with this
+  resume is dropped after deduplication, so it cannot occupy a place in the
+  returned set (Phase 6 ``eligibility``).
 * **Runs do not overwrite each other.** Match rows carry ``search_run_id``, so
   each run keeps its own membership and scores, and earlier runs stay intact.
 
-# Why this is synchronous
+# Concurrency, and why it stops where it does
 
-Redis and background workers are explicitly out of scope for Phase 7, so a run
-executes inside the request. Every adapter call has a timeout and every portal
-has an overall budget, so the request is bounded rather than open-ended. Portals
-run one after another: they share one ``AsyncSession``, which is not safe for
-concurrent use, and a sequential order is also what makes attribution - and
-therefore the result set - reproducible.
+Collection is network-bound and touches no database, so all portals collect at
+once and the run costs roughly the slowest portal rather than the sum of them.
+Persistence is not concurrent: the legs share one ``AsyncSession``, which is not
+safe for concurrent use, and processing them in the user's selection order is
+what keeps attribution - and therefore the result set - reproducible. So the
+work is split in two: gather in parallel, write in order.
+
+Redis and background workers remain out of scope, so a run still executes inside
+the request. Every adapter call has a timeout and every portal has a depth
+budget, so the request stays bounded rather than open-ended.
 
 # On ``job_matches`` uniqueness
 
@@ -55,6 +76,7 @@ migration is needed for this phase.
 
 from __future__ import annotations
 
+import asyncio
 import uuid
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -91,13 +113,13 @@ from app.portals.exceptions import (
     PortalTimeoutError,
 )
 from app.portals.registry import registry
-from app.search.allocation import AllocationResult, Candidate, allocate
-from app.search.collection import (
-    DEFAULT_PORTAL_BUDGET_SECONDS,
-    DEFAULT_QUERY_TIMEOUT_SECONDS,
-    ExecutedQuery,
-    PortalCollector,
+from app.search.allocation import (
+    Candidate,
+    GlobalSelection,
+    select_global_top,
 )
+from app.search.collection import DeepCollection, ExecutedQuery, PortalCollector
+from app.search.depth import ExhaustionReason, SearchDepth
 from app.search.freshness import freshness_score
 from app.search.queries import QueryPlan, build_query_plan
 from app.processing.normalize import RejectionReason
@@ -106,18 +128,19 @@ from app.services.match_service import load_match_profile, score_jobs_for_resume
 
 logger = get_logger(__name__)
 
-#: How much more to collect than a portal's quota. Most collected listings are
-#: rejected by the role gate - a live Jobright sample qualified roughly one in
-#: four - so collecting exactly the quota would guarantee a shortfall.
-OVERFETCH_FACTOR = 4
-
-#: Ceiling on one portal's collection in one window, whatever the quota says.
-MAX_PER_WINDOW = 150
+#: Listings handed to the processing layer at once. Collection now gathers a
+#: whole portal before anything is written, so the batch that reaches
+#: ``process_raw_jobs`` is bounded here rather than by the collector's window.
+PROCESSING_CHUNK = 50
 
 #: Recorded on every run's summary. This product is locked to United States
 #: vacancies (Phase 10); the filter runs during normalisation, so a non-US
-#: listing is never scored and never occupies a quota slot.
+#: listing is never scored and never reaches the candidate pool.
 US_ONLY_POLICY = "united_states_only"
+
+#: Recorded on every run's summary. Phase 12: portals search independently and
+#: to their own depth, and the returned set is the Top N of one combined pool.
+DEEP_UNIFIED_STRATEGY = "deep_unified"
 
 #: Scoring is chunked so one very productive portal cannot exceed the scoring
 #: service's own per-call bound.
@@ -181,6 +204,14 @@ class PortalLegOutcome:
     qualified_count: int = 0
     selected_count: int = 0
     deepest_window: FreshnessWindow | None = None
+    #: Why this portal stopped collecting (Phase 12). EXHAUSTED means it had
+    #: nothing further to give; anything else means a configured limit or a
+    #: failure ended the leg early, which the summary reports rather than hides.
+    exhaustion: ExhaustionReason | None = None
+    #: Depth actually reached, for the run summary.
+    requests: int = 0
+    pages: int = 0
+    collection_seconds: float = 0.0
     error: str | None = None
     error_kind: PortalErrorKind | None = None
     executed_queries: list[ExecutedQuery] = field(default_factory=list)
@@ -228,7 +259,7 @@ class SearchOutcome:
     results: list[SearchResultItem] = field(default_factory=list)
     portals: list[PortalLegOutcome] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
-    allocation: AllocationResult | None = None
+    selection: GlobalSelection | None = None
 
     @property
     def returned_count(self) -> int:
@@ -283,8 +314,8 @@ async def execute_search_run(
     portals: list[Portal],
     adapters: dict[uuid.UUID, BasePortal] | None = None,
     now: datetime | None = None,
-    query_timeout_seconds: float = DEFAULT_QUERY_TIMEOUT_SECONDS,
-    portal_budget_seconds: float = DEFAULT_PORTAL_BUDGET_SECONDS,
+    query_timeout_seconds: float | None = None,
+    portal_budget_seconds: float | None = None,
 ) -> SearchOutcome:
     """Run the complete Find Matches workflow for one already-created run.
 
@@ -326,28 +357,58 @@ async def execute_search_run(
             ),
         )
 
-    # One query, once per run, before any allocation (Phase 6 eligibility).
+    # One query, once per run, before any selection (Phase 6 eligibility).
     excluded = await ineligible_job_ids(session, resume_id=run.resume_id)
 
-    #: canonical job id -> index of the portal that owns it in this run.
-    attribution: dict[uuid.UUID, int] = {}
-
+    # --- Stage 1: read everything the concurrent stage will need ------------
+    # Adapter options come off the ORM session, so they are resolved here,
+    # sequentially, before anything runs in parallel.
+    plans: list[_LegPlan] = []
     for index, (leg, portal) in enumerate(zip(legs, portals, strict=True)):
-        adapter = (adapters or {}).get(portal.id)
-        leg_outcome = await _run_portal_leg(
+        leg.status = PortalRunStatus.RUNNING
+        leg.started_at = moment
+        options = adapter_options(portal)
+        plans.append(
+            _LegPlan(
+                index=index,
+                leg=leg,
+                portal=portal,
+                adapter=(adapters or {}).get(portal.id),
+                options=options,
+                depth=SearchDepth.from_options(options),
+            )
+        )
+    await session.flush()
+
+    # --- Stage 2: collect from every portal, concurrently -------------------
+    # Nothing in here touches the session. Portals no longer wait on each
+    # other, and none of them stops because another already had enough.
+    collections = await asyncio.gather(
+        *(
+            _collect_leg(
+                leg_plan,
+                queries=plan.queries,
+                moment=moment,
+                query_timeout_seconds=query_timeout_seconds,
+                portal_budget_seconds=portal_budget_seconds,
+            )
+            for leg_plan in plans
+        )
+    )
+
+    # --- Stage 3: persist and score, one portal at a time -------------------
+    # Back on a single session, in the user's selection order, so attribution -
+    # and therefore the result - is reproducible.
+    attribution: dict[uuid.UUID, int] = {}
+    for leg_plan, collected in zip(plans, collections, strict=True):
+        leg_outcome = await _process_leg(
             session,
             run=run,
-            leg=leg,
-            portal=portal,
-            index=index,
-            adapter=adapter,
-            profile=profile,
-            plan=plan,
+            plan=leg_plan,
+            collected=collected,
             excluded=excluded,
             attribution=attribution,
             moment=moment,
-            query_timeout_seconds=query_timeout_seconds,
-            portal_budget_seconds=portal_budget_seconds,
         )
         outcome.portals.append(leg_outcome)
 
@@ -362,28 +423,90 @@ async def execute_search_run(
 # ---------------------------------------------------------------------------
 
 
-async def _run_portal_leg(
+@dataclass(slots=True)
+class _LegPlan:
+    """Everything one portal's leg needs, read off the session up front."""
+
+    index: int
+    leg: SearchRunPortal
+    portal: Portal
+    adapter: BasePortal | None
+    options: dict[str, Any]
+    depth: SearchDepth
+
+
+async def _collect_leg(
+    plan: _LegPlan,
+    *,
+    queries: tuple[str, ...],
+    moment: datetime,
+    query_timeout_seconds: float | None,
+    portal_budget_seconds: float | None,
+) -> DeepCollection:
+    """Collect one portal's listings. No database, safe to run concurrently.
+
+    Builds the adapter here rather than earlier so a portal whose adapter
+    cannot be resolved fails as a portal failure - isolated to its own leg -
+    instead of taking down the whole run before collection starts.
+    """
+    if plan.adapter is None:
+        try:
+            adapter = build_adapter(plan.portal)
+        except Exception as exc:  # noqa: BLE001 - isolation is the point
+            collected = DeepCollection(portal_slug=plan.portal.slug)
+            collected.reason = ExhaustionReason.ERROR
+            collected.error = exc
+            return collected
+    else:
+        adapter = plan.adapter
+
+    collector = PortalCollector(
+        adapter,
+        queries=queries,
+        # Depth is now the portal's own configuration. It is deliberately not
+        # derived from the requested limit or the portal count: what one portal
+        # collects must not depend on how many others were selected. An explicit
+        # argument still wins, so a caller can bound a run tightly.
+        per_window_limit=plan.depth.per_request_limit,
+        query_timeout_seconds=(
+            query_timeout_seconds
+            if query_timeout_seconds is not None
+            else plan.depth.query_timeout_seconds
+        ),
+        budget_seconds=(
+            portal_budget_seconds
+            if portal_budget_seconds is not None
+            else plan.depth.max_runtime_seconds
+        ),
+    )
+
+    try:
+        return await collector.collect(now=moment, depth=plan.depth)
+    except Exception as exc:  # noqa: BLE001 - a broken adapter stays isolated
+        collected = DeepCollection(portal_slug=plan.portal.slug)
+        collected.reason = ExhaustionReason.ERROR
+        collected.error = exc
+        return collected
+
+
+async def _process_leg(
     session: AsyncSession,
     *,
     run: SearchRun,
-    leg: SearchRunPortal,
-    portal: Portal,
-    index: int,
-    adapter: BasePortal | None,
-    profile: ResumeMatchProfile,
-    plan: QueryPlan,
+    plan: _LegPlan,
+    collected: DeepCollection,
     excluded: frozenset[uuid.UUID],
     attribution: dict[uuid.UUID, int],
     moment: datetime,
-    query_timeout_seconds: float,
-    portal_budget_seconds: float,
 ) -> PortalLegOutcome:
-    """Collect, process and score one portal, isolated from the others.
+    """Persist and score one portal's collection, isolated from the others.
 
     Every failure path ends with this leg marked FAILED and the run carrying
     on. The savepoint means a partially written leg cannot leave the run's own
     bookkeeping inconsistent.
     """
+    leg, portal, index = plan.leg, plan.portal, plan.index
+
     result = PortalLegOutcome(
         portal_id=portal.id,
         portal_slug=portal.slug,
@@ -391,57 +514,43 @@ async def _run_portal_leg(
         index=index,
         status=PortalRunStatus.RUNNING,
         target_quota=leg.target_quota,
+        deepest_window=collected.deepest_window,
+        exhaustion=collected.reason,
+        requests=collected.requests,
+        pages=collected.pages,
+        collection_seconds=collected.elapsed_seconds,
     )
-
-    leg.status = PortalRunStatus.RUNNING
-    leg.started_at = moment
-    await session.flush()
 
     savepoint = await session.begin_nested()
     try:
-        if adapter is None:
-            adapter = build_adapter(portal)
+        if collected.error is not None:
+            # Collection produced nothing usable. Raised here so this leg takes
+            # the same failure path as a processing error.
+            raise collected.error
 
-        collector = PortalCollector(
-            adapter,
-            queries=plan.queries,
-            per_window_limit=min(
-                max(leg.target_quota * OVERFETCH_FACTOR, OVERFETCH_FACTOR),
-                MAX_PER_WINDOW,
-            ),
-            query_timeout_seconds=query_timeout_seconds,
-            budget_seconds=portal_budget_seconds,
-        )
-
-        async for batch in collector.windows(now=moment):
-            result.deepest_window = batch.window
-
-            for executed in batch.executed:
-                result.executed_queries.append(executed)
-                session.add(
-                    SearchQuery(
-                        search_run_portal_id=leg.id,
-                        query_text=executed.query_text[:256],
-                        window=executed.window,
-                        page=executed.page,
-                        result_count=executed.result_count,
-                        executed_at=executed.executed_at,
-                        duration_ms=executed.duration_ms,
-                    )
+        for executed in collected.executed:
+            result.executed_queries.append(executed)
+            session.add(
+                SearchQuery(
+                    search_run_portal_id=leg.id,
+                    query_text=executed.query_text[:256],
+                    window=executed.window,
+                    page=executed.page,
+                    result_count=executed.result_count,
+                    executed_at=executed.executed_at,
+                    duration_ms=executed.duration_ms,
                 )
+            )
 
-            if not batch.jobs:
-                await session.flush()
-                if _quota_met(result, leg):
-                    break
-                continue
+        result.collected_count = len(collected.jobs)
 
-            result.collected_count += len(batch.jobs)
+        for start in range(0, len(collected.jobs), PROCESSING_CHUNK):
+            batch = collected.jobs[start : start + PROCESSING_CHUNK]
 
             processed = await process_raw_jobs(
                 session,
                 portal=portal,
-                raw_jobs=batch.jobs,
+                raw_jobs=batch,
                 search_run_portal=leg,
                 now=moment,
             )
@@ -454,7 +563,7 @@ async def _run_portal_leg(
 
             # Jobs another portal already claimed in this run. Their source row
             # was still written above - the listing is never discarded, it just
-            # does not take a second slot.
+            # is not scored or counted twice.
             fresh_ids: list[uuid.UUID] = []
             for job_id in processed.canonical_job_ids:
                 if job_id in attribution:
@@ -462,8 +571,8 @@ async def _run_portal_leg(
                     continue
                 fresh_ids.append(job_id)
 
-            # Applied-with-this-resume jobs leave before allocation, so they
-            # cannot consume this portal's share.
+            # Applied-with-this-resume jobs leave before ranking, so they
+            # cannot occupy a place in the returned set.
             eligible_ids = [job_id for job_id in fresh_ids if job_id not in excluded]
             result.excluded_count += len(fresh_ids) - len(eligible_ids)
 
@@ -480,9 +589,6 @@ async def _run_portal_leg(
 
             await session.flush()
 
-            if _quota_met(result, leg):
-                break
-
         result.status = PortalRunStatus.COMPLETED
         await savepoint.commit()
 
@@ -497,6 +603,10 @@ async def _run_portal_leg(
         result.candidates = []
         result.collected_count = 0
         result.normalized_count = 0
+        # Reset with the rest: a failed leg that reported "1 listing outside the
+        # US" alongside "0 collected" is a contradiction the summary should not
+        # print.
+        result.non_us_count = 0
         result.duplicate_count = 0
         result.excluded_count = 0
         result.evaluated_count = 0
@@ -547,16 +657,6 @@ async def _run_portal_leg(
     )
 
     return result
-
-
-def _quota_met(result: PortalLegOutcome, leg: SearchRunPortal) -> bool:
-    """Whether this portal has enough qualified jobs to stop widening.
-
-    CLAUDE.md section 6: widen only when the current windows have not produced
-    enough qualified jobs. A quota of zero - possible only if the limit is
-    smaller than the portal count - never stops collection early.
-    """
-    return leg.target_quota > 0 and len(result.candidates) >= leg.target_quota
 
 
 async def _score_and_collect(
@@ -644,6 +744,11 @@ async def _finish_without_collection(
         "scoring_version": SCORING_VERSION,
         "location_policy": US_ONLY_POLICY,
         "non_us_excluded_count": 0,
+        "search_strategy": DEEP_UNIFIED_STRATEGY,
+        "candidate_pool_size": 0,
+        "portals_exhausted": 0,
+        "portals_limited": [],
+        "total_requests": 0,
     }
     await session.flush()
 
@@ -660,30 +765,38 @@ async def _finalise(
     outcome: SearchOutcome,
     moment: datetime,
 ) -> None:
-    """Allocate slots, order the results and record the run's outcome."""
+    """Rank the whole candidate pool and record the run's outcome.
+
+    Phase 12: there are no per-portal quotas here. Every qualified job from
+    every portal is ranked together and the best ``requested_limit`` are
+    returned, so a portal that found thirty strong matches contributes thirty
+    and one that found two contributes two.
+    """
     candidates = [
         candidate for leg in outcome.portals for candidate in leg.candidates
     ]
-    quotas = [leg.target_quota for leg in legs]
 
-    allocation = allocate(
-        candidates, quotas=quotas, requested_limit=run.requested_limit
+    selection = select_global_top(
+        candidates,
+        portal_count=len(legs),
+        requested_limit=run.requested_limit,
     )
-    outcome.allocation = allocation
+    outcome.selection = selection
 
-    for leg, leg_outcome, final_quota, selected in zip(
+    for leg, leg_outcome, selected in zip(
         legs,
         outcome.portals,
-        allocation.final_quotas,
-        allocation.per_portal_selected,
+        selection.per_portal_selected,
         strict=True,
     ):
-        leg.final_quota = final_quota
+        # No quota gates anything now; the column records what this portal
+        # actually contributed to the returned set.
+        leg.final_quota = selected
         leg.selected_count = selected
         leg_outcome.selected_count = selected
 
     outcome.results = await _build_results(
-        session, run=run, allocation=allocation, outcome=outcome, moment=moment
+        session, run=run, selection=selection, outcome=outcome, moment=moment
     )
 
     failed = [leg for leg in outcome.portals if leg.failed]
@@ -725,7 +838,7 @@ async def _finalise(
         )
 
     run.completed_at = datetime.now(UTC)
-    run.summary = _summary(run=run, outcome=outcome, allocation=allocation)
+    run.summary = _summary(run=run, outcome=outcome, selection=selection)
     await session.flush()
 
     logger.info(
@@ -743,7 +856,7 @@ def _summary(
     *,
     run: SearchRun,
     outcome: SearchOutcome,
-    allocation: AllocationResult,
+    selection: GlobalSelection,
 ) -> dict[str, Any]:
     """The run's own record of what happened.
 
@@ -769,8 +882,23 @@ def _summary(
         "excluded_count": sum(leg.excluded_count for leg in outcome.portals),
         "evaluated_count": sum(leg.evaluated_count for leg in outcome.portals),
         "qualified_count": sum(leg.qualified_count for leg in outcome.portals),
-        "redistributed": allocation.redistributed,
-        "total_shortfall": allocation.total_shortfall,
+        # Phase 12: every qualified job from every portal competes in one pool
+        # on the same ranking. There are no per-portal quotas to redistribute.
+        "search_strategy": DEEP_UNIFIED_STRATEGY,
+        "candidate_pool_size": selection.pool_size,
+        "portals_exhausted": sum(
+            1
+            for leg in outcome.portals
+            if leg.exhaustion is not None and leg.exhaustion.is_complete
+        ),
+        "portals_limited": sorted(
+            {
+                leg.exhaustion.value
+                for leg in outcome.portals
+                if leg.exhaustion is not None and not leg.exhaustion.is_complete
+            }
+        ),
+        "total_requests": sum(leg.requests for leg in outcome.portals),
         "queries": [
             {
                 "query_text": executed.query_text,
@@ -785,21 +913,29 @@ def _summary(
             {
                 "portal": leg.portal_slug,
                 "status": leg.status.value,
-                "target_quota": leg.target_quota,
                 "collected": leg.collected_count,
+                "normalized": leg.normalized_count,
                 "qualified": leg.qualified_count,
                 "selected": leg.selected_count,
-                "shortfall": shortfall,
                 "non_us_excluded": leg.non_us_count,
+                "duplicates": leg.duplicate_count,
+                # How deep this portal actually went, and why it stopped.
+                "exhaustion": (
+                    leg.exhaustion.value if leg.exhaustion else None
+                ),
+                "exhausted": (
+                    leg.exhaustion.is_complete if leg.exhaustion else False
+                ),
+                "requests": leg.requests,
+                "pages": leg.pages,
+                "collection_seconds": leg.collection_seconds,
                 "deepest_window": (
                     leg.deepest_window.value if leg.deepest_window else None
                 ),
                 "error": leg.error,
                 "error_kind": leg.error_kind.value if leg.error_kind else None,
             }
-            for leg, shortfall in zip(
-                outcome.portals, allocation.shortfalls, strict=True
-            )
+            for leg in outcome.portals
         ],
         "selected_job_ids": [str(item.job_id) for item in outcome.results],
         "warnings": list(outcome.warnings),
@@ -810,15 +946,15 @@ async def _build_results(
     session: AsyncSession,
     *,
     run: SearchRun,
-    allocation: AllocationResult,
+    selection: GlobalSelection,
     outcome: SearchOutcome,
     moment: datetime,
 ) -> list[SearchResultItem]:
     """Assemble the returned rows, and finish each match's ranking score."""
-    if not allocation.selected:
+    if not selection.selected:
         return []
 
-    job_ids = [candidate.job_id for candidate in allocation.selected]
+    job_ids = [candidate.job_id for candidate in selection.selected]
 
     jobs = {
         job.id: job
@@ -854,7 +990,7 @@ async def _build_results(
 
     items: list[SearchResultItem] = []
 
-    for candidate in allocation.selected:
+    for candidate in selection.selected:
         job = jobs.get(candidate.job_id)
         if job is None:  # pragma: no cover - defensive
             continue
@@ -938,8 +1074,9 @@ async def portal_slugs_for_jobs(
 
 
 __all__ = [
-    "MAX_PER_WINDOW",
-    "OVERFETCH_FACTOR",
+    "DEEP_UNIFIED_STRATEGY",
+    "PROCESSING_CHUNK",
+    "US_ONLY_POLICY",
     "PortalLegOutcome",
     "SearchOutcome",
     "SearchResultItem",

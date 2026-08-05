@@ -108,6 +108,70 @@ def order_candidates(candidates: Sequence[Candidate]) -> list[Candidate]:
     return sorted(candidates, key=sort_key)
 
 
+@dataclass(frozen=True, slots=True)
+class GlobalSelection:
+    """The Top N of one combined candidate pool (Phase 12).
+
+    Replaces per-portal quotas as the way a run decides what to return. Every
+    qualified job from every portal competes in one pool on the same ranking,
+    so a portal that found thirty good jobs contributes thirty if they are the
+    best thirty - and a portal that found two contributes two, without holding
+    slots that it cannot fill.
+    """
+
+    selected: tuple[Candidate, ...]
+    #: Qualified candidates each portal contributed to the pool, by index.
+    per_portal_available: tuple[int, ...]
+    #: How many of each portal's candidates survived into the Top N.
+    per_portal_selected: tuple[int, ...]
+    pool_size: int
+
+    @property
+    def returned_count(self) -> int:
+        return len(self.selected)
+
+
+def select_global_top(
+    candidates: Sequence[Candidate],
+    *,
+    portal_count: int,
+    requested_limit: int,
+) -> GlobalSelection:
+    """Rank the whole pool together and take the best ``requested_limit``.
+
+    The ranking itself is unchanged: this calls the same ``order_candidates``
+    the quota engine did. What changed is only *when* jobs reach it - all of
+    them, from every portal, at once, rather than the survivors of a per-portal
+    cut made before the comparison.
+
+    Passing the same candidates in a different order returns the same result:
+    ``sort_key`` ends on the canonical key and the job id, so the order is
+    total and no database load order can leak in.
+    """
+    if portal_count < 0:
+        raise ValueError("portal_count cannot be negative.")
+
+    ordered = order_candidates(candidates)
+    selected = ordered[: max(requested_limit, 0)]
+
+    available = [0] * portal_count
+    for candidate in ordered:
+        if 0 <= candidate.portal_index < portal_count:
+            available[candidate.portal_index] += 1
+
+    taken = [0] * portal_count
+    for candidate in selected:
+        if 0 <= candidate.portal_index < portal_count:
+            taken[candidate.portal_index] += 1
+
+    return GlobalSelection(
+        selected=tuple(selected),
+        per_portal_available=tuple(available),
+        per_portal_selected=tuple(taken),
+        pool_size=len(ordered),
+    )
+
+
 def allocate(
     candidates: Sequence[Candidate],
     *,
@@ -171,7 +235,9 @@ __all__ = [
     "ROLE_RANK",
     "AllocationResult",
     "Candidate",
+    "GlobalSelection",
     "allocate",
     "order_candidates",
+    "select_global_top",
     "sort_key",
 ]

@@ -39,7 +39,12 @@ from datetime import UTC, datetime
 from app.core.constants import FRESHNESS_ESCALATION, FreshnessWindow
 from app.core.logging import get_logger
 from app.portals.base import BasePortal, PortalSearchRequest, RawJob
-from app.portals.exceptions import PortalError, PortalTimeoutError
+from app.portals.exceptions import (
+    PortalError,
+    PortalRateLimitedError,
+    PortalTimeoutError,
+)
+from app.search.depth import ExhaustionReason, SearchDepth
 from app.search.freshness import within_window
 
 logger = get_logger(__name__)
@@ -83,6 +88,32 @@ class WindowBatch:
         return bool(self.executed)
 
 
+@dataclass(slots=True)
+class DeepCollection:
+    """Everything one portal produced in a run, and why it stopped.
+
+    Holds no database state and touches no session, which is what lets portals
+    collect concurrently: the writing happens afterwards, one portal at a time,
+    in the user's selection order.
+    """
+
+    portal_slug: str
+    jobs: list[RawJob] = field(default_factory=list)
+    executed: list[ExecutedQuery] = field(default_factory=list)
+    deepest_window: FreshnessWindow | None = None
+    reason: ExhaustionReason = ExhaustionReason.EXHAUSTED
+    requests: int = 0
+    pages: int = 0
+    elapsed_seconds: float = 0.0
+    #: Raised when the portal produced nothing at all. The caller marks the leg
+    #: failed; a portal that failed *after* collecting keeps what it collected.
+    error: Exception | None = None
+
+    @property
+    def is_complete(self) -> bool:
+        return self.error is None and self.reason.is_complete
+
+
 def _identity(job: RawJob) -> str:
     """Stable per-portal identity for a collected listing.
 
@@ -121,6 +152,13 @@ class PortalCollector:
         self._pool: list[RawJob] = []
         self._pool_loaded = False
         self._started_at = 0.0
+        #: Adapter calls made. The closest proxy this layer has to load placed
+        #: on the portal, and one of the limits that bounds a deep search.
+        self._requests = 0
+
+    @property
+    def requests(self) -> int:
+        return self._requests
 
     @property
     def budget_exhausted(self) -> bool:
@@ -136,9 +174,11 @@ class PortalCollector:
     ) -> AsyncIterator[WindowBatch]:
         """Yield one batch per window, newest first.
 
-        The caller decides when to stop - typically as soon as the portal's
-        quota is filled with qualified jobs, which is what keeps the search
-        from widening unnecessarily (CLAUDE.md section 6).
+        The caller decides when to stop. Since Phase 12 that caller is
+        ``collect``, which walks the whole ladder and stops only on one of the
+        portal's own depth limits - never because some number of jobs has been
+        reached. Newest-first still matters: it is the order listings enter the
+        pool, and it is what a portal cut short by a limit will have collected.
         """
         self._started_at = time.monotonic()
 
@@ -162,6 +202,98 @@ class PortalCollector:
                 batch = await self._from_pool(window, now=now)
 
             yield batch
+
+    async def collect(
+        self,
+        *,
+        now: datetime,
+        depth: SearchDepth,
+        windows: Sequence[FreshnessWindow] = FRESHNESS_ESCALATION,
+    ) -> DeepCollection:
+        """Collect everything this portal has, bounded only by its own limits.
+
+        This is the Phase 12 entry point. It walks the whole freshness ladder
+        rather than stopping once some number of jobs has been found: how many
+        the run finally returns is decided globally, afterwards, from the
+        combined pool. A portal that stops early here is a portal that hit one
+        of its *own* limits, never one that was told another portal had enough.
+
+        Nothing here writes to the database, so several of these may run at
+        once.
+
+        A portal that fails partway keeps what it already collected and records
+        why it stopped. A portal that fails having collected nothing raises
+        through ``error``, and the caller marks that leg failed - losing forty
+        good listings because the forty-first request was rate-limited would be
+        the wrong trade.
+        """
+        collected = DeepCollection(portal_slug=self._adapter.slug)
+        started = time.monotonic()
+        total_windows = len(windows)
+        visited = 0
+
+        try:
+            async for batch in self.windows(windows=windows, now=now):
+                visited += 1
+                collected.deepest_window = batch.window
+                collected.executed.extend(batch.executed)
+                collected.requests = self._requests
+
+                if batch.fetched:
+                    collected.pages += 1
+
+                truncated = False
+                for job in batch.jobs:
+                    if depth.job_budget_reached(len(collected.jobs)):
+                        truncated = True
+                        break
+                    collected.jobs.append(job)
+
+                if truncated:
+                    collected.reason = ExhaustionReason.MAX_JOBS
+                    break
+
+                # A limit only ended the leg early if there was more to do.
+                # Walking the whole freshness ladder is not "hit the page cap";
+                # it is the portal having nothing further to give.
+                if visited >= total_windows:
+                    break
+
+                if collected.pages >= depth.max_pages:
+                    collected.reason = ExhaustionReason.MAX_PAGES
+                    break
+                if depth.request_budget_reached(self._requests):
+                    collected.reason = ExhaustionReason.MAX_REQUESTS
+                    break
+                if self.budget_exhausted:
+                    collected.reason = ExhaustionReason.TIMEOUT
+                    break
+
+        except PortalError as exc:
+            collected.reason = _reason_for(exc)
+            collected.requests = self._requests
+            if not collected.jobs:
+                # Nothing survived, so there is no partial result to protect.
+                collected.error = exc
+
+        collected.elapsed_seconds = round(time.monotonic() - started, 3)
+        collected.requests = self._requests
+
+        logger.info(
+            "portal_collection_finished",
+            portal=self._adapter.slug,
+            collected=len(collected.jobs),
+            requests=collected.requests,
+            pages=collected.pages,
+            reason=collected.reason.value,
+            deepest_window=(
+                collected.deepest_window.value if collected.deepest_window else None
+            ),
+            elapsed_seconds=collected.elapsed_seconds,
+            failed=collected.error is not None,
+        )
+
+        return collected
 
     # --- Strategies --------------------------------------------------------
 
@@ -230,6 +362,7 @@ class PortalCollector:
             queries=(query,), window=window, limit=self._per_window_limit
         )
 
+        self._requests += 1
         started = time.monotonic()
 
         try:
@@ -282,9 +415,19 @@ class PortalCollector:
         return True
 
 
+def _reason_for(exc: PortalError) -> ExhaustionReason:
+    """Which stopping condition a failure represents."""
+    if isinstance(exc, PortalRateLimitedError):
+        return ExhaustionReason.RATE_LIMITED
+    if isinstance(exc, PortalTimeoutError):
+        return ExhaustionReason.TIMEOUT
+    return ExhaustionReason.ERROR
+
+
 __all__ = [
     "DEFAULT_PORTAL_BUDGET_SECONDS",
     "DEFAULT_QUERY_TIMEOUT_SECONDS",
+    "DeepCollection",
     "ExecutedQuery",
     "PortalCollector",
     "WindowBatch",

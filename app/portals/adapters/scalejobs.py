@@ -108,6 +108,17 @@ from app.search.freshness import cutoff_for
 
 logger = get_logger(__name__)
 
+
+def _positive_int(value: Any, default: int) -> int:
+    """A configured positive integer, or the default.
+
+    A missing, non-numeric or non-positive value falls back rather than
+    disabling the bound: a misconfigured row must not create an endless search.
+    """
+    if isinstance(value, bool) or not isinstance(value, int):
+        return default
+    return value if value > 0 else default
+
 #: The publisher's own search host. Not scale.jobs itself, whose /api/ is
 #: disallowed and whose job pages carry no data.
 API_BASE = "https://jobhose-prod.scale.jobs"
@@ -119,8 +130,10 @@ PUBLIC_USER_ID = "public-search"
 #: Listings per request. The endpoint's own client uses 20.
 PAGE_SIZE = 20
 
-#: Two pages per query per window is enough for any quota this product
-#: allocates, and stops one portal from spending the whole run's budget.
+#: Default pages per query per window. Phase 12 searches deeply rather than to
+#: a quota, so this is the *default* rather than a ceiling: raise the portal's
+#: ``max_pages`` option to collect further without a deployment. The collector's
+#: own request, runtime and job limits still bound the leg.
 MAX_PAGES = 2
 
 #: Floor applied to the publisher's summary alone. Below this there is no real
@@ -140,6 +153,7 @@ class ScaleJobsPortal(BasePortal):
         self._http = PortalHttpClient(
             portal=self.slug, policy=HttpPolicy.from_options(self.options)
         )
+        self._max_pages = _positive_int(self.options.get("max_pages"), MAX_PAGES)
 
     @property
     def capabilities(self) -> PortalCapabilities:
@@ -171,7 +185,7 @@ class ScaleJobsPortal(BasePortal):
             if len(jobs) >= request.limit:
                 break
 
-            for page in range(MAX_PAGES):
+            for page in range(self._max_pages):
                 if len(jobs) >= request.limit:
                     break
 

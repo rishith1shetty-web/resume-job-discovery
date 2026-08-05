@@ -34,6 +34,7 @@ from app.models.profile import ResumeSkill
 from app.models.search import PortalError as PortalErrorRow
 from app.models.search import SearchQuery
 from app.portals.exceptions import PortalBlockedError, PortalParseError
+from app.search.depth import ExhaustionReason, SearchDepth
 from app.services import search_run_service
 from app.services.search_orchestrator import execute_search_run
 from tests.conftest import TEST_RECORD_MARKER
@@ -369,7 +370,15 @@ async def test_a_failed_leg_reports_no_results_it_did_not_keep(
 # --- Fair allocation across portals -----------------------------------------
 
 
-async def test_two_portals_split_the_request(db_session: AsyncSession) -> None:
+async def test_two_portals_are_not_given_a_share_each(
+    db_session: AsyncSession,
+) -> None:
+    """Phase 12: the requested limit is no longer divided between portals.
+
+    Both portals here hold equally good jobs, so the Top 20 is drawn from the
+    combined pool of 40 rather than ten reserved slots each. What each portal
+    contributes is an outcome of the ranking, not an input to it.
+    """
     _, resume = await analysed_resume(db_session)
     left = build_fake_portal("left", jobs=make_jobs("left", 20, now=NOW))
     right = build_fake_portal("right", jobs=make_jobs("right", 20, now=NOW))
@@ -380,10 +389,17 @@ async def test_two_portals_split_the_request(db_session: AsyncSession) -> None:
     outcome = await run_search(db_session, prepared, adapters)
 
     assert outcome.returned_count == 20
-    assert [leg.selected_count for leg in prepared.legs] == [10, 10]
+    # The pool held everything both portals qualified, not two capped shares.
+    assert outcome.selection is not None
+    assert outcome.selection.pool_size == 40
+    assert sum(leg.selected_count for leg in prepared.legs) == 20
+    # No leg was capped at limit / portal_count.
+    assert [leg.target_quota for leg in prepared.legs] == [20, 20]
 
 
-async def test_four_portals_split_fifty_within_one(db_session: AsyncSession) -> None:
+async def test_four_portals_contribute_by_rank_not_by_share(
+    db_session: AsyncSession,
+) -> None:
     _, resume = await analysed_resume(db_session)
     specs = [
         (f"q{index}", build_fake_portal(f"q{index}", jobs=make_jobs(f"q{index}", 20, now=NOW)))
@@ -395,12 +411,21 @@ async def test_four_portals_split_fifty_within_one(db_session: AsyncSession) -> 
     )
     outcome = await run_search(db_session, prepared, adapters)
 
-    counts = sorted(leg.selected_count for leg in prepared.legs)
-    assert counts == [12, 12, 13, 13]
     assert outcome.returned_count == 50
+    assert outcome.selection is not None
+    assert outcome.selection.pool_size == 80
+    assert sum(leg.selected_count for leg in prepared.legs) == 50
 
 
-async def test_a_short_portal_releases_its_slots(db_session: AsyncSession) -> None:
+async def test_one_strong_portal_may_supply_most_of_the_result(
+    db_session: AsyncSession,
+) -> None:
+    """The change that matters: good jobs are no longer left behind.
+
+    Under quotas the deep portal was held to its share while the thin portal's
+    unfilled slots had to be redistributed. Now the deep portal simply
+    contributes what ranks.
+    """
     _, resume = await analysed_resume(db_session)
     thin = build_fake_portal("small", jobs=make_jobs("small", 2, now=NOW))
     deep = build_fake_portal("large", jobs=make_jobs("large", 40, now=NOW))
@@ -410,10 +435,14 @@ async def test_a_short_portal_releases_its_slots(db_session: AsyncSession) -> No
     )
     outcome = await run_search(db_session, prepared, adapters)
 
-    assert [leg.selected_count for leg in prepared.legs] == [2, 18]
     assert outcome.returned_count == 20
-    assert outcome.allocation is not None
-    assert outcome.allocation.redistributed == 8
+    assert outcome.selection is not None
+    assert outcome.selection.pool_size == 42
+
+    contributed = [leg.selected_count for leg in prepared.legs]
+    assert sum(contributed) == 20
+    # The deep portal is not capped at half the request.
+    assert contributed[1] > 10
 
 
 async def test_a_duplicate_job_does_not_consume_two_slots(
@@ -423,7 +452,7 @@ async def test_a_duplicate_job_does_not_consume_two_slots(
     shared = [
         make_raw_job(
             portal="alpha",
-            index=0,
+            index=99,
             company="Shared Employer",
             description=FINANCE_DESCRIPTION,
             now=NOW,
@@ -432,7 +461,7 @@ async def test_a_duplicate_job_does_not_consume_two_slots(
     mirrored = [
         make_raw_job(
             portal="beta",
-            index=0,
+            index=99,
             company="Shared Employer",
             description=FINANCE_DESCRIPTION,
             now=NOW,
@@ -989,9 +1018,15 @@ async def test_an_older_listing_is_not_rejected_for_its_age(
     assert outcome.returned_count == 3
 
 
-async def test_collection_stops_widening_once_the_quota_is_met(
+async def test_collection_no_longer_stops_once_the_request_is_covered(
     db_session: AsyncSession,
 ) -> None:
+    """Phase 12: a portal searches its whole ladder, not up to a quota.
+
+    Under quotas this portal stopped at the newest window the moment it had 20
+    qualified jobs, and everything older went uncollected. Now it walks the
+    ladder to the end, so the ranking chooses from everything the portal has.
+    """
     _, resume = await analysed_resume(db_session)
     adapter_class = build_fake_portal(
         "stop", jobs=make_jobs("stop", 40, age_days=0.2, now=NOW), date_filter=True
@@ -1000,11 +1035,488 @@ async def test_collection_stops_widening_once_the_quota_is_met(
         db_session, resume=resume, specs=[("stop", adapter_class)], limit=20
     )
 
-    await run_search(db_session, prepared, adapters)
+    outcome = await run_search(db_session, prepared, adapters)
     adapter = adapters[prepared.portals[0].id]
 
-    # The first window already produced the whole quota, so the ladder never
-    # widens: every request this portal received names the newest window.
     windows = {call.window for call in adapter.calls}
-    assert windows == {FreshnessWindow.LAST_24H}
-    assert prepared.legs[0].deepest_window is FreshnessWindow.LAST_24H
+    assert len(windows) > 1, "the ladder stopped early"
+    assert FreshnessWindow.OLDER_ACTIVE in windows
+    assert prepared.legs[0].deepest_window is FreshnessWindow.OLDER_ACTIVE
+
+    # Ran out of listings rather than hitting a configured limit.
+    assert outcome.portals[0].exhaustion is ExhaustionReason.EXHAUSTED
+    assert outcome.returned_count == 20
+
+
+# --- The deep unified engine, end to end (Phase 12) -------------------------
+#
+# Every test below drives the real orchestrator against fake portals. What they
+# pin down is the change of shape: portals search independently and deeply,
+# everything qualified lands in one pool, and the returned set is the Top N of
+# that pool. Scoring, the threshold, the US filter, canonicalisation,
+# deduplication and the ranking function itself are unchanged, and several of
+# these assert exactly that.
+
+
+async def test_the_run_reports_the_deep_unified_strategy(
+    db_session: AsyncSession,
+) -> None:
+    _, resume = await analysed_resume(db_session)
+    adapter = build_fake_portal("strat", jobs=make_jobs("strat", 6, now=NOW))
+    prepared, adapters = await build_run(
+        db_session, resume=resume, specs=[("strat", adapter)]
+    )
+
+    await run_search(db_session, prepared, adapters)
+    summary = prepared.run.summary
+
+    assert summary["search_strategy"] == "deep_unified"
+    assert summary["candidate_pool_size"] == 6
+    assert summary["portals_exhausted"] == 1
+    assert summary["portals_limited"] == []
+    assert summary["total_requests"] > 0
+
+
+async def test_the_summary_reports_depth_per_portal(
+    db_session: AsyncSession,
+) -> None:
+    _, resume = await analysed_resume(db_session)
+    adapter = build_fake_portal("depth", jobs=make_jobs("depth", 8, now=NOW))
+    prepared, adapters = await build_run(
+        db_session, resume=resume, specs=[("depth", adapter)]
+    )
+
+    await run_search(db_session, prepared, adapters)
+    leg = prepared.run.summary["portals"][0]
+
+    assert leg["exhausted"] is True
+    assert leg["exhaustion"] == "exhausted"
+    assert leg["requests"] > 0
+    assert leg["pages"] >= 1
+    assert leg["collection_seconds"] >= 0.0
+    assert leg["collected"] == 8
+
+
+async def test_the_candidate_pool_is_the_sum_of_every_portal(
+    db_session: AsyncSession,
+) -> None:
+    """The example from the brief: nothing is discarded for another portal."""
+    _, resume = await analysed_resume(db_session)
+    specs = [
+        ("a", build_fake_portal("a", jobs=make_jobs("a", 18, now=NOW))),
+        ("b", build_fake_portal("b", jobs=make_jobs("b", 31, now=NOW))),
+        ("c", build_fake_portal("c", jobs=make_jobs("c", 12, now=NOW))),
+    ]
+    prepared, adapters = await build_run(
+        db_session, resume=resume, specs=specs, limit=20
+    )
+
+    outcome = await run_search(db_session, prepared, adapters)
+
+    assert outcome.selection is not None
+    assert outcome.selection.pool_size == 18 + 31 + 12
+    assert outcome.returned_count == 20
+    assert prepared.run.summary["candidate_pool_size"] == 61
+
+
+async def test_every_portal_is_searched_to_its_own_depth(
+    db_session: AsyncSession,
+) -> None:
+    """A portal is never cut short because another one had enough."""
+    _, resume = await analysed_resume(db_session)
+    deep = build_fake_portal("deep", jobs=make_jobs("deep", 40, now=NOW))
+    small = build_fake_portal("small", jobs=make_jobs("small", 3, now=NOW))
+
+    prepared, adapters = await build_run(
+        db_session, resume=resume, specs=[("deep", deep), ("small", small)], limit=20
+    )
+
+    outcome = await run_search(db_session, prepared, adapters)
+
+    # Twenty were requested; both portals still collected everything they had.
+    assert [leg.collected_count for leg in outcome.portals] == [40, 3]
+    assert outcome.selection is not None
+    assert outcome.selection.pool_size == 43
+    assert outcome.returned_count == 20
+
+
+async def test_the_top_n_is_ranked_across_portals_not_within_them(
+    db_session: AsyncSession,
+) -> None:
+    _, resume = await analysed_resume(db_session)
+    specs = [
+        ("x", build_fake_portal("x", jobs=make_jobs("x", 15, now=NOW))),
+        ("y", build_fake_portal("y", jobs=make_jobs("y", 15, now=NOW))),
+    ]
+    prepared, adapters = await build_run(
+        db_session, resume=resume, specs=specs, limit=20
+    )
+
+    outcome = await run_search(db_session, prepared, adapters)
+
+    scores = [item.final_score for item in outcome.results]
+    assert scores == sorted(scores, reverse=True)
+    assert all(score >= 70.0 for score in scores)
+    # Every returned job outranks every job left in the pool.
+    returned = {item.job_id for item in outcome.results}
+    left_behind = [
+        candidate
+        for leg in outcome.portals
+        for candidate in leg.candidates
+        if candidate.job_id not in returned
+    ]
+    if left_behind:
+        assert min(scores) >= max(c.final_score for c in left_behind)
+
+
+@pytest.mark.parametrize("limit", [20, 50, 100])
+async def test_top_n_is_correct_for_each_supported_limit(
+    db_session: AsyncSession, limit: int
+) -> None:
+    _, resume = await analysed_resume(db_session)
+    specs = [
+        (f"p{i}", build_fake_portal(f"p{i}", jobs=make_jobs(f"p{i}", 45, now=NOW)))
+        for i in range(3)
+    ]
+    prepared, adapters = await build_run(
+        db_session, resume=resume, specs=specs, limit=limit
+    )
+
+    outcome = await run_search(db_session, prepared, adapters)
+
+    assert outcome.selection is not None
+    assert outcome.selection.pool_size == 135
+    assert outcome.returned_count == min(limit, 135)
+    assert len({item.job_id for item in outcome.results}) == outcome.returned_count
+
+
+# --- Deduplication after deep collection ------------------------------------
+
+
+async def test_a_vacancy_on_two_portals_is_one_job_after_deep_collection(
+    db_session: AsyncSession,
+) -> None:
+    """Deduplication is unchanged, and still runs on the deeper pool."""
+    _, resume = await analysed_resume(db_session)
+    shared = [
+        make_raw_job(
+            portal="alpha",
+            index=99,
+            company="Shared Employer",
+            location="Austin, TX",
+            description=FINANCE_DESCRIPTION,
+            now=NOW,
+        )
+    ]
+    mirrored = [
+        make_raw_job(
+            portal="beta",
+            index=99,
+            company="Shared Employer",
+            location="Austin, TX",
+            description=FINANCE_DESCRIPTION,
+            now=NOW,
+        )
+    ]
+
+    specs = [
+        ("alpha", build_fake_portal("alpha", jobs=shared + make_jobs("alpha", 10, now=NOW))),
+        ("beta", build_fake_portal("beta", jobs=mirrored + make_jobs("beta", 10, now=NOW))),
+    ]
+    prepared, adapters = await build_run(
+        db_session, resume=resume, specs=specs, limit=50
+    )
+
+    outcome = await run_search(db_session, prepared, adapters)
+
+    # 22 collected, 21 distinct vacancies: the shared one merged.
+    assert sum(leg.collected_count for leg in outcome.portals) == 22
+    assert outcome.selection is not None
+    assert outcome.selection.pool_size == 21
+
+    job_ids = [item.job_id for item in outcome.results]
+    assert len(job_ids) == len(set(job_ids))
+
+
+async def test_a_duplicate_still_takes_one_place_in_the_top_n(
+    db_session: AsyncSession,
+) -> None:
+    _, resume = await analysed_resume(db_session)
+    listing = dict(
+        company="One Vacancy",
+        location="Boston, MA",
+        description=FINANCE_DESCRIPTION,
+        now=NOW,
+    )
+    specs = [
+        ("one", build_fake_portal("one", jobs=[make_raw_job(portal="one", index=0, **listing)])),
+        ("two", build_fake_portal("two", jobs=[make_raw_job(portal="two", index=0, **listing)])),
+    ]
+    prepared, adapters = await build_run(
+        db_session, resume=resume, specs=specs, limit=20
+    )
+
+    outcome = await run_search(db_session, prepared, adapters)
+
+    assert outcome.returned_count == 1
+    sources = list(
+        (
+            await db_session.scalars(
+                select(JobSource).where(JobSource.job_id == outcome.results[0].job_id)
+            )
+        ).all()
+    )
+    assert len(sources) == 2
+
+
+# --- Guarantees that must survive the new engine ----------------------------
+
+
+async def test_the_us_filter_still_runs_on_the_deeper_pool(
+    db_session: AsyncSession,
+) -> None:
+    _, resume = await analysed_resume(db_session)
+    foreign = [
+        make_raw_job(
+            portal="mixed",
+            index=index,
+            location="London, United Kingdom",
+            description=FINANCE_DESCRIPTION,
+            now=NOW,
+        )
+        for index in range(100, 106)
+    ]
+    adapter = build_fake_portal(
+        "mixed", jobs=make_jobs("mixed", 6, now=NOW) + foreign
+    )
+    prepared, adapters = await build_run(
+        db_session, resume=resume, specs=[("mixed", adapter)], limit=50
+    )
+
+    outcome = await run_search(db_session, prepared, adapters)
+
+    assert outcome.portals[0].collected_count == 12
+    assert outcome.portals[0].non_us_count == 6
+    assert outcome.returned_count == 6
+    assert prepared.run.summary["non_us_excluded_count"] == 6
+    assert prepared.run.summary["location_policy"] == "united_states_only"
+
+
+async def test_an_applied_job_is_still_excluded_from_the_pool(
+    db_session: AsyncSession,
+) -> None:
+    user, resume = await analysed_resume(db_session)
+    adapter = build_fake_portal("applied", jobs=make_jobs("applied", 8, now=NOW))
+
+    prepared, adapters = await build_run(
+        db_session, resume=resume, specs=[("applied", adapter)], limit=20
+    )
+    first = await run_search(db_session, prepared, adapters)
+    applied_id = first.results[0].job_id
+
+    db_session.add(
+        Application(
+            user_id=user.id,
+            resume_id=resume.id,
+            job_id=applied_id,
+            status=ApplicationStatus.APPLIED,
+            applied_at=NOW,
+        )
+    )
+    await db_session.flush()
+
+    again_prepared, again_adapters = await build_run(
+        db_session, resume=resume, specs=[("applied2", adapter)], limit=20
+    )
+    second = await run_search(db_session, again_prepared, again_adapters)
+
+    assert applied_id not in {item.job_id for item in second.results}
+    assert second.returned_count == first.returned_count - 1
+
+
+async def test_the_threshold_is_still_never_lowered_to_fill_the_request(
+    db_session: AsyncSession,
+) -> None:
+    _, resume = await analysed_resume(db_session)
+    adapter = build_fake_portal(
+        "weak",
+        jobs=make_jobs(
+            "weak", 30, title="Accountant", description=ACCOUNTING_DESCRIPTION, now=NOW
+        ),
+    )
+    prepared, adapters = await build_run(
+        db_session, resume=resume, specs=[("weak", adapter)], limit=20
+    )
+
+    outcome = await run_search(db_session, prepared, adapters)
+
+    assert outcome.results == []
+    assert outcome.selection is not None
+    assert outcome.selection.pool_size == 0
+
+
+# --- Failure isolation under concurrent collection --------------------------
+
+
+async def test_one_portal_failing_does_not_stop_the_others(
+    db_session: AsyncSession,
+) -> None:
+    _, resume = await analysed_resume(db_session)
+    specs = [
+        ("good", build_fake_portal("good", jobs=make_jobs("good", 10, now=NOW))),
+        ("bad", build_fake_portal("bad", error=PortalParseError("down", portal="bad"))),
+        ("also", build_fake_portal("also", jobs=make_jobs("also", 10, now=NOW))),
+    ]
+    prepared, adapters = await build_run(
+        db_session, resume=resume, specs=specs, limit=20
+    )
+
+    outcome = await run_search(db_session, prepared, adapters)
+
+    assert outcome.status is SearchRunStatus.COMPLETED_WITH_ERRORS
+    assert outcome.returned_count == 20
+    statuses = [leg.status for leg in outcome.portals]
+    assert statuses == [
+        PortalRunStatus.COMPLETED,
+        PortalRunStatus.FAILED,
+        PortalRunStatus.COMPLETED,
+    ]
+
+
+async def test_several_portals_failing_still_returns_the_survivors(
+    db_session: AsyncSession,
+) -> None:
+    _, resume = await analysed_resume(db_session)
+    down = PortalBlockedError("refused", portal="x")
+    specs = [
+        ("f1", build_fake_portal("f1", error=down)),
+        ("f2", build_fake_portal("f2", error=down)),
+        ("alive", build_fake_portal("alive", jobs=make_jobs("alive", 12, now=NOW))),
+    ]
+    prepared, adapters = await build_run(
+        db_session, resume=resume, specs=specs, limit=20
+    )
+
+    outcome = await run_search(db_session, prepared, adapters)
+
+    assert outcome.status is SearchRunStatus.COMPLETED_WITH_ERRORS
+    assert outcome.returned_count == 12
+    assert sum(1 for leg in outcome.portals if leg.failed) == 2
+
+
+async def test_a_failed_portal_contributes_nothing_to_the_pool(
+    db_session: AsyncSession,
+) -> None:
+    _, resume = await analysed_resume(db_session)
+    specs = [
+        ("ok", build_fake_portal("ok", jobs=make_jobs("ok", 7, now=NOW))),
+        ("dead", build_fake_portal("dead", error=PortalParseError("no", portal="dead"))),
+    ]
+    prepared, adapters = await build_run(
+        db_session, resume=resume, specs=specs, limit=20
+    )
+
+    outcome = await run_search(db_session, prepared, adapters)
+
+    assert outcome.selection is not None
+    assert outcome.selection.pool_size == 7
+    assert outcome.selection.per_portal_available == (7, 0)
+
+
+# --- Determinism ------------------------------------------------------------
+
+
+async def test_repeating_a_deep_search_returns_the_same_order_and_scores(
+    db_session: AsyncSession,
+) -> None:
+    """Concurrent collection must not make the result order vary."""
+    _, resume = await analysed_resume(db_session)
+
+    def specs(tag: str):
+        return [
+            (f"a-{tag}", build_fake_portal(f"a{tag}", jobs=make_jobs("a", 20, now=NOW))),
+            (f"b-{tag}", build_fake_portal(f"b{tag}", jobs=make_jobs("b", 20, now=NOW))),
+            (f"c-{tag}", build_fake_portal(f"c{tag}", jobs=make_jobs("c", 20, now=NOW))),
+        ]
+
+    first_prepared, first_adapters = await build_run(
+        db_session, resume=resume, specs=specs("one"), limit=50
+    )
+    first = await run_search(db_session, first_prepared, first_adapters)
+    await db_session.commit()
+
+    second_prepared, second_adapters = await build_run(
+        db_session, resume=resume, specs=specs("two"), limit=50
+    )
+    second = await run_search(db_session, second_prepared, second_adapters)
+
+    assert [i.job_id for i in first.results] == [i.job_id for i in second.results]
+    assert [i.final_score for i in first.results] == [
+        i.final_score for i in second.results
+    ]
+
+
+async def test_running_the_same_portals_concurrently_is_stable_across_runs(
+    db_session: AsyncSession,
+) -> None:
+    """Five portals, run twice: attribution follows selection order, not luck."""
+    _, resume = await analysed_resume(db_session)
+
+    def specs(tag: str):
+        return [
+            (f"p{i}-{tag}", build_fake_portal(f"p{i}{tag}", jobs=make_jobs(f"p{i}", 12, now=NOW)))
+            for i in range(5)
+        ]
+
+    first_prepared, first_adapters = await build_run(
+        db_session, resume=resume, specs=specs("x"), limit=20
+    )
+    first = await run_search(db_session, first_prepared, first_adapters)
+    first_split = [leg.selected_count for leg in first.portals]
+    await db_session.commit()
+
+    second_prepared, second_adapters = await build_run(
+        db_session, resume=resume, specs=specs("y"), limit=20
+    )
+    second = await run_search(db_session, second_prepared, second_adapters)
+
+    assert first_split == [leg.selected_count for leg in second.portals]
+    assert [i.final_score for i in first.results] == [
+        i.final_score for i in second.results
+    ]
+
+
+# --- Depth configuration reaches the portal ---------------------------------
+
+
+async def test_a_configured_depth_limit_is_honoured_and_reported(
+    db_session: AsyncSession,
+) -> None:
+    _, resume = await analysed_resume(db_session)
+    adapter = build_fake_portal(
+        "capped", jobs=make_jobs("capped", 40, now=NOW), date_filter=True
+    )
+
+    portal = await make_portal(
+        db_session, slug="capped", adapter_key=adapter.slug, options={"max_jobs": 10}
+    )
+    prepared = await search_run_service.create_search_run(
+        db_session,
+        resume=resume,
+        portal_ids=[portal.id],
+        requested_limit=20,
+        require_adapter=False,
+    )
+    outcome = await execute_search_run(
+        db_session,
+        run=prepared.run,
+        legs=prepared.legs,
+        portals=prepared.portals,
+        adapters={portal.id: adapter()},
+        now=NOW,
+    )
+
+    assert outcome.portals[0].collected_count == 10
+    assert outcome.portals[0].exhaustion is ExhaustionReason.MAX_JOBS
+    assert prepared.run.summary["portals_limited"] == ["max_jobs"]
+    assert prepared.run.summary["portals_exhausted"] == 0

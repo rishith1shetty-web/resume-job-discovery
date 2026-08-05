@@ -76,9 +76,15 @@ class SearchRunPortalOut(BaseModel):
     """One portal's leg of a run.
 
     The counters narrow: ``raw_count`` is everything the portal returned,
-    ``qualified_count`` what passed the threshold, ``selected_count`` what the
-    quota took. ``shortfall`` is what could not be filled with qualified jobs -
-    a weak job is never used to close it.
+    ``qualified_count`` what passed the threshold, ``selected_count`` what this
+    portal contributed to the returned set.
+
+    ``target_quota``, ``final_quota`` and ``shortfall`` are retained for
+    compatibility and no longer gate anything: Phase 12 replaced per-portal
+    quotas with one ranked candidate pool, so ``target_quota`` records the run's
+    own limit and ``final_quota`` mirrors what the portal actually contributed.
+    How deep each portal searched, and why it stopped, is reported on the run's
+    ``summary`` under ``portals``.
     """
 
     model_config = ConfigDict(from_attributes=True)
@@ -125,7 +131,11 @@ class SearchRunOut(BaseModel):
     error_message: str | None = None
     summary: dict[str, Any] = Field(
         default_factory=dict,
-        description="Quota shortages and redistributions, once the run executes.",
+        description=(
+            "How the run reached its result: candidate pool size, collected "
+            "and filtered counts, and each portal's search depth and "
+            "exhaustion reason, once the run executes."
+        ),
     )
 
     created_at: datetime

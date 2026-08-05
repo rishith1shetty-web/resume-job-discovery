@@ -1,9 +1,12 @@
 """Creating and reading search runs.
 
-Creation records the run, validates the selection and computes each selected
-portal's quota. Executing the run - collection, scoring, allocation - belongs to
-``app.services.search_orchestrator``; this module prepares the inputs it needs
-and reads the outcome back afterwards.
+Creation records the run and validates the selection. Executing it -
+collection, scoring, ranking - belongs to ``app.services.search_orchestrator``;
+this module prepares the inputs it needs and reads the outcome back afterwards.
+
+Phase 12 removed per-portal quotas, so nothing here divides the requested limit
+between portals any more: every selected portal searches to its own depth and
+the run returns the best of the combined pool.
 
 A portal is only accepted when it exists, is enabled, and has a registered
 adapter. Accepting a portal with no adapter would create a leg that can only
@@ -36,7 +39,6 @@ from app.models.profile import ResumeProfile
 from app.models.resume import Resume
 from app.models.search import SearchRun, SearchRunPortal
 from app.portals.registry import PortalRegistry, registry as default_registry
-from app.services.quota import compute_quotas
 
 logger = get_logger(__name__)
 
@@ -46,8 +48,8 @@ class PreparedRun:
     """A recorded run and the aligned inputs the orchestrator executes.
 
     ``legs`` and ``portals`` are positionally aligned and in the user's
-    selection order - the order the quota remainder follows, and therefore the
-    order that makes a run reproducible.
+    selection order, which is the order legs are persisted in and therefore
+    what makes a run reproducible.
     """
 
     run: SearchRun
@@ -64,7 +66,7 @@ async def _load_selected_portals(
 ) -> list[Portal]:
     """Fetch the requested portals in the order the caller listed them.
 
-    Ordering matters: the quota remainder goes to the first portals, so a
+    Ordering matters: legs are persisted and attributed in this order, so a
     stable order keeps run creation reproducible.
 
     ``require_adapter`` refuses a portal that has no registered adapter. It is
@@ -144,10 +146,11 @@ async def create_search_run(
     require_adapter: bool = True,
     portal_registry: PortalRegistry | None = None,
 ) -> PreparedRun:
-    """Record a run and one row per selected portal, each with its quota.
+    """Record a run and one row per selected portal.
 
-    Every selected portal gets a row. None is dropped because another portal
-    might satisfy the limit on its own (CLAUDE.md section 5).
+    Every selected portal gets a row, and none of them is given a share of the
+    requested limit: each searches independently and to its own depth, and the
+    returned set is decided afterwards by ranking the combined pool.
 
     Returns the run together with its legs and portals, aligned, so the caller
     can execute it without re-reading what it just wrote.
@@ -219,15 +222,18 @@ async def create_search_run(
     session.add(run)
     await session.flush()
 
-    quotas = compute_quotas(requested_limit, len(portals))
     legs: list[SearchRunPortal] = []
-    for portal, quota in zip(portals, quotas, strict=True):
+    for portal in portals:
         leg = SearchRunPortal(
             search_run_id=run.id,
             portal_id=portal.id,
-            target_quota=quota,
-            # Equal until a genuine shortage is redistributed during execution.
-            final_quota=quota,
+            # Phase 12 removed per-portal quotas: every portal searches to its
+            # own depth and the returned set is the Top N of one combined pool.
+            # The column stays (no migration) and records the only ceiling that
+            # still exists - the run's own limit. ``final_quota`` is overwritten
+            # during execution with what this portal actually contributed.
+            target_quota=requested_limit,
+            final_quota=0,
             status=PortalRunStatus.PENDING,
         )
         session.add(leg)
