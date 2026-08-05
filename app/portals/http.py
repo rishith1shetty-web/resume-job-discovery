@@ -17,7 +17,9 @@ retry-with-a-different-fingerprint path, by design (CLAUDE.md section 15).
 from __future__ import annotations
 
 import asyncio
+import json
 import time
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 
 import httpx
@@ -26,6 +28,7 @@ from app.core.logging import get_logger
 from app.portals.exceptions import (
     PortalBlockedError,
     PortalError,
+    PortalParseError,
     PortalRateLimitedError,
     PortalTimeoutError,
 )
@@ -70,6 +73,18 @@ class HttpPolicy:
         return 60.0 / self.rate_limit_per_minute
 
 
+def _first_sse_datum(body: str) -> str:
+    """The first ``data:`` payload in a server-sent-event frame.
+
+    Returned unchanged when the body is not framed, so a server that answers a
+    plain POST with plain JSON still works.
+    """
+    for line in body.splitlines():
+        if line.startswith("data:"):
+            return line[len("data:") :].strip()
+    return body
+
+
 @dataclass(slots=True)
 class _RateLimiter:
     """Simple spacing limiter: wait until the next slot is due.
@@ -107,15 +122,24 @@ class PortalHttpClient:
             "Accept-Language": "en-US,en;q=0.9",
         }
 
-    async def get_text(self, url: str, *, params: dict | None = None) -> str:
-        """GET a URL and return its body, honouring timeout, retry and rate limit.
+    async def _send(
+        self,
+        send: Callable[[httpx.AsyncClient], Awaitable[httpx.Response]],
+        *,
+        headers: dict[str, str] | None = None,
+    ) -> httpx.Response:
+        """Run one request under this portal's timeout, retry and rate limit.
 
-        Raises a ``PortalError`` subclass on failure. Never returns an empty
-        string to paper over a problem: the caller has to be able to tell a
-        genuinely empty result from a broken one.
+        The verb-specific part is the ``send`` callable, so GET and POST share
+        one policy rather than drifting apart: a portal that offers a JSON-RPC
+        endpoint must still honour the same ``portal_configs`` row as one that
+        serves HTML.
+
+        Raises a ``PortalError`` subclass on failure.
         """
         attempts = max(1, self.policy.max_retries + 1)
         last_error: PortalError | None = None
+        request_headers = {**self._headers(), **(headers or {})}
 
         for attempt in range(1, attempts + 1):
             await self._limiter.acquire()
@@ -123,9 +147,9 @@ class PortalHttpClient:
                 async with httpx.AsyncClient(
                     timeout=self.policy.timeout_seconds,
                     follow_redirects=True,
-                    headers=self._headers(),
+                    headers=request_headers,
                 ) as client:
-                    response = await client.get(url, params=params)
+                    response = await send(client)
             except httpx.TimeoutException as exc:
                 last_error = PortalTimeoutError(
                     f"Request to {self.portal} timed out after "
@@ -185,7 +209,7 @@ class PortalHttpClient:
                         f"{self.portal} returned HTTP {status}.", portal=self.portal
                     )
                 else:
-                    return response.text
+                    return response
 
             if attempt < attempts:
                 # Exponential backoff, so a struggling portal is not hammered.
@@ -194,6 +218,56 @@ class PortalHttpClient:
         raise last_error or PortalError(
             f"Request to {self.portal} failed.", portal=self.portal
         )
+
+    async def get_text(self, url: str, *, params: dict | None = None) -> str:
+        """GET a URL and return its body, honouring timeout, retry and rate limit.
+
+        Raises a ``PortalError`` subclass on failure. Never returns an empty
+        string to paper over a problem: the caller has to be able to tell a
+        genuinely empty result from a broken one.
+        """
+        response = await self._send(lambda client: client.get(url, params=params))
+        return response.text
+
+    async def post_json(
+        self,
+        url: str,
+        *,
+        payload: dict,
+        headers: dict[str, str] | None = None,
+    ) -> dict:
+        """POST JSON and return the decoded object.
+
+        For portals that publish a JSON or JSON-RPC endpoint rather than pages.
+        A body that is not valid JSON is a ``PortalParseError``, not a crash:
+        the run has to be able to record it against that one portal.
+
+        Servers speaking the streamable-HTTP flavour of JSON-RPC may answer a
+        plain POST with a one-event ``text/event-stream`` frame, so that shape
+        is unwrapped here rather than in every adapter.
+        """
+        response = await self._send(
+            lambda client: client.post(url, json=payload, headers=headers),
+            headers=headers,
+        )
+        body = response.text
+        if "text/event-stream" in response.headers.get("content-type", ""):
+            body = _first_sse_datum(body)
+
+        try:
+            decoded = json.loads(body)
+        except json.JSONDecodeError as exc:
+            raise PortalParseError(
+                f"{self.portal} returned a body that was not valid JSON: {exc.msg}.",
+                portal=self.portal,
+            ) from exc
+
+        if not isinstance(decoded, dict):
+            raise PortalParseError(
+                f"{self.portal} returned {type(decoded).__name__}, expected an object.",
+                portal=self.portal,
+            )
+        return decoded
 
     async def head_ok(self, url: str) -> bool:
         """Cheap reachability probe used by health checks."""

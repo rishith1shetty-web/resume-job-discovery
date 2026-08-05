@@ -35,9 +35,15 @@ REGISTERED_SLUGS = registry.slugs
 
 def test_only_approved_adapters_are_registered() -> None:
     # The rollout order in docs/DECISIONS.md D-001: Jobright and LinkedIn in
-    # Phase 4, Hiring Cafe in Phase 9A. A slug appearing here that is not on
-    # this list means someone skipped the one-at-a-time rule.
-    assert set(REGISTERED_SLUGS) == {"jobright", "linkedin", "hiringcafe"}
+    # Phase 4, Hiring Cafe in Phase 9A, ZipRecruiter in Phase 9B. A slug
+    # appearing here that is not on this list means someone skipped the
+    # one-at-a-time rule.
+    assert set(REGISTERED_SLUGS) == {
+        "jobright",
+        "linkedin",
+        "hiringcafe",
+        "ziprecruiter",
+    }
 
 
 @pytest.mark.parametrize("slug", REGISTERED_SLUGS)
@@ -106,14 +112,33 @@ def test_capabilities_are_declared_honestly(slug: str) -> None:
         assert isinstance(getattr(capabilities, field), bool), field
 
 
+def _cut_the_network(adapter) -> None:  # noqa: ANN001
+    """Stub every verb an adapter might reach for.
+
+    Adapters do not all speak the same one - the page-scraped portals GET, the
+    ZipRecruiter one POSTs JSON-RPC - and a stub that misses the verb in use
+    lets a contract test issue a real request to a live portal.
+    """
+
+    async def _no_head(_url: str) -> bool:
+        return False
+
+    async def _no_get(*_args, **_kwargs) -> str:
+        raise ConnectionResetError("socket died")
+
+    async def _no_post(*_args, **_kwargs) -> dict:
+        raise ConnectionResetError("socket died")
+
+    adapter._http.head_ok = _no_head  # type: ignore[attr-defined]
+    adapter._http.get_text = _no_get  # type: ignore[attr-defined]
+    adapter._http.post_json = _no_post  # type: ignore[attr-defined]
+
+
 @pytest.mark.parametrize("slug", REGISTERED_SLUGS)
 async def test_health_check_returns_a_verdict_without_raising(slug: str) -> None:
     adapter = registry.create(slug, {})
 
-    async def _no_network(_url: str) -> bool:
-        return False
-
-    adapter._http.head_ok = _no_network  # type: ignore[attr-defined]
+    _cut_the_network(adapter)
     health = await adapter.health_check()
 
     assert isinstance(health, PortalHealth)
@@ -134,10 +159,7 @@ async def test_a_failing_portal_raises_a_portal_error_not_a_bare_exception(
     """
     adapter = registry.create(slug, {})
 
-    async def _explode(*_args, **_kwargs) -> str:
-        raise ConnectionResetError("socket died")
-
-    adapter._http.get_text = _explode  # type: ignore[attr-defined]
+    _cut_the_network(adapter)
 
     request = PortalSearchRequest(
         queries=("Financial Analyst",), window=FreshnessWindow.LAST_7D, limit=5

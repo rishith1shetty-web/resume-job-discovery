@@ -173,13 +173,29 @@ async def test_seeding_does_not_re_enable_a_portal_an_operator_disabled(
 
 
 def test_only_approved_portals_are_seeded() -> None:
-    # Jobright and LinkedIn in Phase 4, Hiring Cafe in Phase 9A. Portals are
-    # added one at a time; an unexpected slug means that gate was skipped.
+    # Jobright and LinkedIn in Phase 4, Hiring Cafe in Phase 9A, ZipRecruiter
+    # in Phase 9B. Portals are added one at a time; an unexpected slug means
+    # that gate was skipped.
     assert {seed.slug for seed in PORTAL_SEEDS} == {
         "jobright",
         "linkedin",
         "hiringcafe",
+        "ziprecruiter",
     }
+
+
+def test_ziprecruiter_is_seeded_disabled_with_the_reason_recorded() -> None:
+    """Implemented and permitted, but it cannot qualify a job.
+
+    The surface ZipRecruiter allows this client to read publishes no posting
+    description, so every listing is rejected as unscoreable. Seeding it
+    enabled would take a share of every search's quota and return nothing.
+    """
+    seed = next(seed for seed in PORTAL_SEEDS if seed.slug == "ziprecruiter")
+
+    assert seed.is_enabled is False
+    assert "llms.txt" in seed.notes
+    assert "description" in seed.notes.lower()
 
 
 def test_hiring_cafe_is_seeded_as_enabled_and_implemented() -> None:

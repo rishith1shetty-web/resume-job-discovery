@@ -67,6 +67,29 @@ PORTAL_SEEDS: tuple[PortalSeed, ...] = (
         ),
     ),
     PortalSeed(
+        slug="ziprecruiter",
+        website_url="https://www.ziprecruiter.com/",
+        display_order=17,
+        # Disabled deliberately, and not for an access reason: the adapter is
+        # permitted to collect and does. It is disabled because the surface it
+        # is permitted to read publishes no posting description, so every
+        # listing is rejected as unscoreable and the portal would take a share
+        # of every search's quota while returning nothing. Flip this to True to
+        # select it anyway.
+        is_enabled=False,
+        notes=(
+            "Collects through the job-search MCP endpoint that ZipRecruiter "
+            "publishes in its own /llms.txt manifest (read only, no auth). "
+            "Its robots.txt is deny-by-default for this client - "
+            "'User-agent: * / Allow: /llms.txt / Disallow: /' - so no "
+            "ziprecruiter.com page is ever requested. Disabled because that "
+            "endpoint returns no job description: title, company, location, "
+            "salary, benefits and age only. The matching engine rejects a "
+            "posting it cannot read, so the portal currently qualifies no "
+            "jobs. Enabling it needs a description source, not a code change."
+        ),
+    ),
+    PortalSeed(
         slug="linkedin",
         website_url="https://www.linkedin.com/",
         display_order=20,
