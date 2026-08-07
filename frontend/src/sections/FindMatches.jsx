@@ -237,6 +237,12 @@ function SearchOutcome({ outcome, resumeId }) {
             <dt>Locations</dt>
             <dd>United States only</dd>
           </div>
+          {/* Read-only statement of a fixed policy, not a control: Quick Apply
+              and Easy Apply listings are never returned. */}
+          <div>
+            <dt>Applications</dt>
+            <dd>Real applications only</dd>
+          </div>
         </dl>
 
         {/* How the returned set was arrived at. Every portal searches to its
@@ -250,6 +256,12 @@ function SearchOutcome({ outcome, resumeId }) {
           <div>
             <dt>Outside the US</dt>
             <dd>{summary.non_us_excluded_count ?? 0}</dd>
+          </div>
+          {/* Phase 13: one-click listings are refused before scoring, so the
+              drop from collected to candidate pool is explainable. */}
+          <div>
+            <dt>Quick Apply rejected</dt>
+            <dd>{summary.quick_apply_excluded_count ?? 0}</dd>
           </div>
           <div>
             <dt>Duplicates merged</dt>

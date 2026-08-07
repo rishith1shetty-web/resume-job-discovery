@@ -92,6 +92,7 @@ from datetime import UTC, datetime
 from typing import Any, ClassVar
 
 from app.core.constants import FreshnessWindow
+from app.core.constants import ApplicationType
 from app.core.logging import get_logger
 from app.portals.base import (
     BasePortal,
@@ -100,6 +101,7 @@ from app.portals.base import (
     PortalSearchRequest,
     PortalSearchResult,
     RawJob,
+    declare_application_type,
 )
 from app.portals.exceptions import PortalParseError
 from app.portals.http import HttpPolicy, PortalHttpClient
@@ -346,8 +348,30 @@ class ScaleJobsPortal(BasePortal):
             application_url=url,
             posted_at=self._posted_at(record.get("datePosted")),
             employment_type=self._employment_type(record),
-            raw_payload=dict(record),
+            raw_payload=declare_application_type(
+                dict(record), self._application_type(record)
+            ),
         )
+
+    @staticmethod
+    def _application_type(record: dict[str, Any]) -> ApplicationType:
+        """What the record says about where the user will apply (Phase 13).
+
+        Scale.jobs publishes ``sourceType`` per listing, and every one of the
+        80 records in the captured fixture is ``ats`` - the destination is an
+        employer applicant tracking system (Workday, iCIMS, UltiPro,
+        SuccessFactors and so on), which is a full application by definition.
+
+        This reads that field rather than declaring the whole portal a long
+        application. The two are indistinguishable today, but they stop being
+        so the moment Scale.jobs indexes a source that is not an ATS, and at
+        that point this returns ``UNKNOWN`` and the shared classifier looks at
+        the destination itself instead of waving the listing through.
+        """
+        source_type = str(record.get("sourceType") or "").strip().casefold()
+        if source_type == "ats":
+            return ApplicationType.LONG_APPLICATION
+        return ApplicationType.UNKNOWN
 
     @classmethod
     def _description(cls, record: dict[str, Any]) -> str | None:

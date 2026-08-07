@@ -138,6 +138,11 @@ PROCESSING_CHUNK = 50
 #: listing is never scored and never reaches the candidate pool.
 US_ONLY_POLICY = "united_states_only"
 
+#: Recorded on every run's summary. Phase 13: only jobs that ask for a real
+#: application are returned. Quick Apply, Easy Apply and one-click listings are
+#: refused during normalisation, so they are never scored and never ranked.
+LONG_APPLICATION_POLICY = "long_application_only"
+
 #: Recorded on every run's summary. Phase 12: portals search independently and
 #: to their own depth, and the returned set is the Top N of one combined pool.
 DEEP_UNIFIED_STRATEGY = "deep_unified"
@@ -198,6 +203,11 @@ class PortalLegOutcome:
     #: separately from other normalisation failures so the run can say plainly
     #: how much of what a portal returned was outside the United States.
     non_us_count: int = 0
+    #: Listings refused by the application-type filter (Phase 13) - one-click
+    #: and Easy Apply jobs. Counted separately from other normalisation
+    #: failures so the run can say plainly how much of what a portal returned
+    #: was not a real application.
+    quick_apply_count: int = 0
     duplicate_count: int = 0
     excluded_count: int = 0
     evaluated_count: int = 0
@@ -560,6 +570,11 @@ async def _process_leg(
                 for rejected in processed.rejected
                 if rejected.reason == RejectionReason.NON_US_LOCATION
             )
+            result.quick_apply_count += sum(
+                1
+                for rejected in processed.rejected
+                if rejected.reason == RejectionReason.QUICK_APPLY
+            )
 
             # Jobs another portal already claimed in this run. Their source row
             # was still written above - the listing is never discarded, it just
@@ -607,6 +622,7 @@ async def _process_leg(
         # US" alongside "0 collected" is a contradiction the summary should not
         # print.
         result.non_us_count = 0
+        result.quick_apply_count = 0
         result.duplicate_count = 0
         result.excluded_count = 0
         result.evaluated_count = 0
@@ -744,6 +760,8 @@ async def _finish_without_collection(
         "scoring_version": SCORING_VERSION,
         "location_policy": US_ONLY_POLICY,
         "non_us_excluded_count": 0,
+        "application_policy": LONG_APPLICATION_POLICY,
+        "quick_apply_excluded_count": 0,
         "search_strategy": DEEP_UNIFIED_STRATEGY,
         "candidate_pool_size": 0,
         "portals_exhausted": 0,
@@ -830,6 +848,19 @@ async def _finalise(
             )
         outcome.warnings.append(note)
 
+    # Likewise on every run: the user is entitled to know the search excluded
+    # one-click applications whether or not any turned up.
+    quick_apply = sum(leg.quick_apply_count for leg in outcome.portals)
+    if run.status is not SearchRunStatus.FAILED:
+        note = "Only jobs with a real application process were considered."
+        if quick_apply:
+            note += (
+                f" {quick_apply} Quick Apply or Easy Apply "
+                f"listing{'s' if quick_apply != 1 else ''} "
+                "were excluded before scoring."
+            )
+        outcome.warnings.append(note)
+
     if outcome.is_short and run.status is not SearchRunStatus.FAILED:
         outcome.warnings.append(
             f"{outcome.returned_count} of {run.requested_limit} requested jobs "
@@ -876,6 +907,12 @@ def _summary(
         # every run rather than leaving the user to infer it from the results.
         "location_policy": US_ONLY_POLICY,
         "non_us_excluded_count": sum(leg.non_us_count for leg in outcome.portals),
+        # Phase 13: this product returns only jobs asking for a real
+        # application, and says how many one-click listings that cost.
+        "application_policy": LONG_APPLICATION_POLICY,
+        "quick_apply_excluded_count": sum(
+            leg.quick_apply_count for leg in outcome.portals
+        ),
         "collected_count": sum(leg.collected_count for leg in outcome.portals),
         "normalized_count": sum(leg.normalized_count for leg in outcome.portals),
         "duplicate_count": sum(leg.duplicate_count for leg in outcome.portals),
@@ -918,6 +955,7 @@ def _summary(
                 "qualified": leg.qualified_count,
                 "selected": leg.selected_count,
                 "non_us_excluded": leg.non_us_count,
+                "quick_apply_excluded": leg.quick_apply_count,
                 "duplicates": leg.duplicate_count,
                 # How deep this portal actually went, and why it stopped.
                 "exhaustion": (

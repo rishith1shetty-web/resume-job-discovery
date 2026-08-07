@@ -18,7 +18,36 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any, ClassVar
 
-from app.core.constants import FreshnessWindow
+from app.core.constants import ApplicationType, FreshnessWindow
+
+
+#: The one ``raw_payload`` key the core is allowed to read (Phase 13).
+#:
+#: The field set of ``RawJob`` is fixed by CLAUDE.md section 4 and adapters may
+#: not extend it, so a portal declares how much of an application a listing
+#: demands through this reserved key instead. It is part of the *contract*, not
+#: a portal-specific key: ``app.processing.application_type`` reads this name
+#: and no other, so normalisation stays portal-agnostic and a new portal is
+#: filtered on day one without the core learning anything about it.
+#:
+#: Set it with ``declare_application_type``. Leaving it unset is legitimate and
+#: means "this portal cannot tell" - the shared classifier then looks for
+#: evidence itself and, finding none, returns ``UNKNOWN``.
+APPLICATION_TYPE_KEY = "application_type"
+
+
+def declare_application_type(
+    payload: dict[str, Any], application_type: ApplicationType
+) -> dict[str, Any]:
+    """Record a portal's own verdict on a listing's application style.
+
+    Returns the payload so it can be used inline when building a ``RawJob``.
+    Adapters should only call this when the portal published something real -
+    a flag, a source type, a destination it owns. Declaring a type the portal
+    did not actually state would be guessing, which this phase forbids.
+    """
+    payload[APPLICATION_TYPE_KEY] = ApplicationType(application_type).value
+    return payload
 
 
 @dataclass(slots=True)
@@ -29,6 +58,10 @@ class RawJob:
     and hand back exactly what the portal exposed. ``raw_payload`` preserves
     the untouched source response so a later scoring version can re-extract
     fields without re-fetching.
+
+    ``raw_payload`` may also carry the reserved ``APPLICATION_TYPE_KEY``, which
+    is how an adapter tells the core what the portal said about applying. See
+    that constant; every other key in the payload stays opaque to the core.
     """
 
     external_id: str | None

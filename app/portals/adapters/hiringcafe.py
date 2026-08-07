@@ -57,6 +57,7 @@ from datetime import UTC, datetime
 from typing import Any, ClassVar
 
 from app.core.constants import FreshnessWindow
+from app.core.constants import ApplicationType
 from app.core.logging import get_logger
 from app.portals.base import (
     BasePortal,
@@ -65,6 +66,7 @@ from app.portals.base import (
     PortalSearchRequest,
     PortalSearchResult,
     RawJob,
+    declare_application_type,
 )
 from app.portals.exceptions import PortalParseError
 from app.portals.http import HttpPolicy, PortalHttpClient
@@ -309,8 +311,35 @@ class HiringCafePortal(BasePortal):
             application_url=apply_url,
             posted_at=self._posted_at(processed.get("estimated_publish_date")),
             employment_type=self._employment_type(processed),
-            raw_payload=self._safe_payload(record),
+            raw_payload=declare_application_type(
+                self._safe_payload(record), self._application_type(record)
+            ),
         )
+
+    @staticmethod
+    def _application_type(record: dict[str, Any]) -> ApplicationType:
+        """What the record says about how the user will apply (Phase 13).
+
+        Hiring Cafe publishes **no** quick-apply flag - there is no field here
+        equivalent to SimplyHired's ``indeedApply`` or to the per-job flag
+        Jobright exposes. So the honest answer is ``UNKNOWN``, and that is what
+        this returns.
+
+        It is tempting to infer a long application from ``source`` and
+        ``board_token``, which name the applicant tracking system the posting
+        was read out of (``workday``, ``icims``, ``ultipro``, ``applitrack``,
+        ``applicantpro`` in the captured fixture). That inference is
+        deliberately *not* made, because a declaration wins outright over the
+        shared classifier: asserting "long application" here would skip the
+        destination check, and a listing whose ``apply_url`` pointed at a
+        one-click host would sail through on the strength of a guess.
+
+        ``UNKNOWN`` costs nothing. It is eligible, and it leaves the shared
+        classifier free to judge the destination and the listing text - so a
+        quick-apply listing is still caught, by evidence rather than by a flag
+        this portal does not publish.
+        """
+        return ApplicationType.UNKNOWN
 
     @staticmethod
     def _safe_payload(record: dict[str, Any]) -> dict[str, Any]:

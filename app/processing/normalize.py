@@ -18,6 +18,10 @@ from datetime import UTC, datetime, timedelta
 from app.core.constants import JobUrlKind, WorkMode
 from app.core.logging import get_logger
 from app.portals.base import RawJob
+from app.processing.application_type import (
+    QUICK_APPLY_REJECTION,
+    classify_application_type,
+)
 from app.processing.companies import NormalizedCompany, normalize_company
 from app.processing.locations import NormalizedLocation, normalize_location
 from app.processing.us_locations import NON_US_REJECTION, classify_us_location
@@ -82,6 +86,10 @@ class RejectionReason:
     #: here, during normalisation, so a non-US listing is never scored, never
     #: deduplicated and never takes a portal's quota slot.
     NON_US_LOCATION = NON_US_REJECTION
+    #: Phase 13: only jobs asking for a real application are returned. Applied
+    #: immediately after the US filter, so a one-click listing is never scored,
+    #: never canonicalised and never deduplicated against a real vacancy.
+    QUICK_APPLY = QUICK_APPLY_REJECTION
 
 
 @dataclass(frozen=True, slots=True)
@@ -276,6 +284,27 @@ def normalize_raw_job(
             external_id=raw.external_id,
             title=title.display,
             reason=RejectionReason.NON_US_LOCATION,
+        )
+
+    # Phase 13, and deliberately here: after the US gate and before anything
+    # expensive. A quick-apply listing must never be scored, and it must never
+    # be canonicalised either - otherwise it could claim the canonical key of a
+    # real vacancy and take its place in the pool.
+    application = classify_application_type(raw)
+    if not application.is_eligible:
+        logger.info(
+            "job_rejected_quick_apply",
+            portal=portal_slug,
+            external_id=raw.external_id,
+            title=title.display,
+            detail=application.reason,
+            evidence=application.evidence,
+        )
+        return RejectedJob(
+            portal_slug=portal_slug,
+            external_id=raw.external_id,
+            title=title.display,
+            reason=RejectionReason.QUICK_APPLY,
         )
 
     # Work mode is read from the location first, then the title, then the

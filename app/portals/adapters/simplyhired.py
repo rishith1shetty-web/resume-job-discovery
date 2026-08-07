@@ -60,6 +60,7 @@ import re
 from datetime import UTC, datetime
 from typing import Any, ClassVar
 
+from app.core.constants import ApplicationType
 from app.core.logging import get_logger
 from app.portals.base import (
     BasePortal,
@@ -68,6 +69,7 @@ from app.portals.base import (
     PortalSearchRequest,
     PortalSearchResult,
     RawJob,
+    declare_application_type,
 )
 from app.portals.exceptions import PortalParseError
 from app.portals.http import HttpPolicy, PortalHttpClient
@@ -346,8 +348,35 @@ class SimplyHiredPortal(BasePortal):
             application_url=url,
             posted_at=self._posted_at(record.get("dateOnIndeed")),
             employment_type=self._employment_type(record),
-            raw_payload=dict(record),
+            raw_payload=declare_application_type(
+                dict(record), self._application_type(record)
+            ),
         )
+
+    @staticmethod
+    def _application_type(record: dict[str, Any]) -> ApplicationType:
+        """What the card says about how the user will apply (Phase 13).
+
+        SimplyHired is an Indeed property and publishes ``indeedApply`` on every
+        card. ``True`` means Indeed's own one-click submission against a stored
+        profile - the user never reaches the employer's form. That is precisely
+        what this product refuses, and it is the majority of what this portal
+        returns: 44 of 60 cards in the captured fixture.
+
+        ``False`` is an equally real statement - the card links out to the
+        employer's own application - so it is reported as a long application
+        rather than left unknown.
+
+        A card missing the field entirely is left ``UNKNOWN``. Reading absence
+        as either answer would be guessing, and the shared classifier still
+        examines the listing for evidence afterwards.
+        """
+        flag = record.get("indeedApply")
+        if flag is True:
+            return ApplicationType.QUICK_APPLY
+        if flag is False:
+            return ApplicationType.LONG_APPLICATION
+        return ApplicationType.UNKNOWN
 
     @classmethod
     def _description(cls, record: dict[str, Any]) -> str | None:

@@ -56,6 +56,7 @@ import re
 from datetime import UTC, datetime
 from typing import Any, ClassVar
 
+from app.core.constants import ApplicationType
 from app.core.logging import get_logger
 from app.portals.base import (
     BasePortal,
@@ -64,6 +65,7 @@ from app.portals.base import (
     PortalSearchRequest,
     PortalSearchResult,
     RawJob,
+    declare_application_type,
 )
 from app.portals.exceptions import (
     PortalBlockedError,
@@ -383,7 +385,15 @@ class GreenhousePortal(BasePortal):
                 record.get("first_published") or record.get("updated_at")
             ),
             employment_type=self._employment_type(record),
-            raw_payload=dict(record),
+            # Phase 13. Greenhouse is not a job board that links to an
+            # employer's application - it *is* the employer's application
+            # system, and ``absolute_url`` is the posting's own form. There is
+            # no one-click path through this API to be wrong about, so the
+            # declaration is a statement of what the surface is rather than a
+            # guess about an individual listing.
+            raw_payload=declare_application_type(
+                dict(record), ApplicationType.LONG_APPLICATION
+            ),
         )
 
     @staticmethod

@@ -227,6 +227,35 @@ JOB_URL_PREFERENCE: dict[JobUrlKind, int] = {
 }
 
 
+class ApplicationType(StrEnum):
+    """How much of an application the employer actually asks for (Phase 13).
+
+    This product exists to find jobs worth applying to properly. A one-click
+    submission against an aggregator profile is a different act from completing
+    an employer's own form, and only the second is returned.
+
+    ``UNKNOWN`` is a real state, not a synonym for either: it means no evidence
+    either way was found. It resolves to eligible, because refusing every
+    listing that failed to advertise its application style would silently
+    discard most of the market - but it stays distinct so the reason a job was
+    admitted is always recoverable.
+    """
+
+    LONG_APPLICATION = "long_application"
+    QUICK_APPLY = "quick_apply"
+    UNKNOWN = "unknown"
+
+    @property
+    def is_eligible(self) -> bool:
+        """Whether a job of this type may reach matching.
+
+        The single place the admission rule lives. Only ``QUICK_APPLY`` is
+        refused; ``UNKNOWN`` is admitted, and is admitted *because* nothing
+        indicated a quick apply, never as a guess that it is a long one.
+        """
+        return self is not ApplicationType.QUICK_APPLY
+
+
 class WorkMode(StrEnum):
     """Dashboard "location / work mode" column (CLAUDE.md section 10)."""
 

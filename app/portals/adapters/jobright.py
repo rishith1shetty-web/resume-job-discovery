@@ -35,6 +35,7 @@ from datetime import UTC, datetime
 from typing import Any, ClassVar
 
 from app.core.constants import FreshnessWindow
+from app.core.constants import ApplicationType
 from app.core.logging import get_logger
 from app.portals.base import (
     BasePortal,
@@ -43,6 +44,7 @@ from app.portals.base import (
     PortalSearchRequest,
     PortalSearchResult,
     RawJob,
+    declare_application_type,
 )
 from app.portals.exceptions import PortalParseError
 from app.portals.http import HttpPolicy, PortalHttpClient
@@ -272,8 +274,29 @@ class JobrightPortal(BasePortal):
             application_url=result.get("applyLink") or source_url,
             posted_at=self._posted_at(result.get("publishTime")),
             employment_type=(result.get("employmentType") or None),
-            raw_payload=record,
+            raw_payload=declare_application_type(
+                dict(record), self._application_type(result)
+            ),
         )
+
+    @staticmethod
+    def _application_type(result: dict[str, Any]) -> ApplicationType:
+        """What the record says about how the user will apply (Phase 13).
+
+        Jobright publishes ``jobtargetEasyapply`` on its job records - its own
+        flag for a one-click submission rather than a hand-off to the
+        employer's form. ``True`` is refused.
+
+        ``False`` is reported as a long application because Jobright is
+        asserting the opposite, not merely staying silent. A record without the
+        field is left ``UNKNOWN`` rather than assumed either way.
+        """
+        flag = result.get("jobtargetEasyapply")
+        if flag is True:
+            return ApplicationType.QUICK_APPLY
+        if flag is False:
+            return ApplicationType.LONG_APPLICATION
+        return ApplicationType.UNKNOWN
 
     @staticmethod
     def _location(result: dict[str, Any]) -> str | None:
