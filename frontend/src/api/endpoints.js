@@ -128,35 +128,9 @@ export function listPortals({ enabledOnly = false } = {}, signal) {
   })
 }
 
-/**
- * Exercise one adapter against the live portal.
- *
- * A diagnostic, not a search: the backend caps the limit and writes nothing.
- * A portal that refuses returns `ok: false` with the reason, rather than an
- * error status.
- */
-export function probePortal(slug, { queries, limit = 3 }, signal) {
-  return request(`/portals/${slug}/probe`, {
-    method: 'POST',
-    body: { queries, limit },
-    signal,
-  })
-}
-
-/**
- * Show what normalisation and deduplication would do with a small sample.
- *
- * Read-only: the backend issues only SELECTs, so nothing is stored. Listings
- * sharing a `group_index` would become one canonical job, and
- * `existing_job_id` means it would attach to a job already saved.
- */
-export function previewProcessing(slug, { queries, limit = 5 }, signal) {
-  return request(`/portals/${slug}/processing-preview`, {
-    method: 'POST',
-    body: { queries, limit },
-    signal,
-  })
-}
+/* The portal probe and processing-preview diagnostics were removed with the
+   developer dashboard in Phase 14. Both endpoints still exist on the backend;
+   the production interface simply has no reason to call them. */
 
 // --- Search runs -----------------------------------------------------------
 

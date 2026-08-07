@@ -1,12 +1,20 @@
-import { createContext, useCallback, useContext, useMemo, useState } from 'react'
+import { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react'
+
+import { getResume } from '../api/endpoints.js'
 
 /**
- * The resume every other section works against.
+ * The resume every other screen works against.
  *
- * Almost every Phase 3 endpoint is scoped to one resume — `GET /jobs` refuses
- * to run without `resume_id` at all — so the selection is shared rather than
- * repeated per section. It is kept in localStorage so a page reload does not
- * lose it mid-test.
+ * Almost every endpoint in this product is scoped to one resume — `GET /jobs`
+ * refuses to run without `resume_id` at all — so the selection is shared
+ * rather than repeated per screen. It is kept in localStorage so a reload does
+ * not lose it.
+ *
+ * The provider rehydrates the full record itself. Only the id survives a
+ * reload, and if each screen had to look the name up separately then any
+ * screen that did not happen to fetch the resume list would show "Selected
+ * resume" in the navigation rail instead of the filename. Resolving it once,
+ * here, means every screen gets the same answer.
  */
 
 const STORAGE_KEY = 'jobfinder.activeResumeId'
@@ -19,7 +27,7 @@ export function ActiveResumeProvider({ children }) {
     try {
       return localStorage.getItem(STORAGE_KEY)
     } catch {
-      // Private-mode browsers can refuse storage; the dashboard still works.
+      // Private-mode browsers can refuse storage; the app still works.
       return null
     }
   })
@@ -35,14 +43,46 @@ export function ActiveResumeProvider({ children }) {
     }
   }, [])
 
+  // Resolve the id into a record whenever the two disagree — on first load,
+  // and after a reload.
+  useEffect(() => {
+    if (!activeResumeId || activeResume?.id === activeResumeId) return undefined
+
+    let cancelled = false
+    const controller = new AbortController()
+
+    getResume(activeResumeId, controller.signal)
+      .then((resume) => {
+        if (!cancelled) setActiveResumeState(resume)
+      })
+      .catch((error) => {
+        if (cancelled || controller.signal.aborted) return
+        // Clear only when the resume is genuinely gone. A transient failure
+        // must not wipe the user's selection — and an aborted request is not
+        // a failure at all, though the client reports it as one, which is why
+        // the signal is checked before the status.
+        if (error?.status === 404) {
+          setActiveResumeIdState(null)
+          try {
+            localStorage.removeItem(STORAGE_KEY)
+          } catch {
+            /* ignore */
+          }
+        }
+      })
+
+    return () => {
+      cancelled = true
+      controller.abort()
+    }
+  }, [activeResumeId, activeResume])
+
   const value = useMemo(
     () => ({ activeResume, activeResumeId, setActiveResume }),
     [activeResume, activeResumeId, setActiveResume],
   )
 
-  return (
-    <ActiveResumeContext.Provider value={value}>{children}</ActiveResumeContext.Provider>
-  )
+  return <ActiveResumeContext.Provider value={value}>{children}</ActiveResumeContext.Provider>
 }
 
 export function useActiveResume() {

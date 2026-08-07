@@ -1,7 +1,7 @@
 import { useState } from 'react'
 
 import { getApplication, updateApplication } from '../api/endpoints.js'
-import { Badge, Button, formatDateTime } from './ui.jsx'
+import { Badge, Button, IconButton, formatDateTime } from './ui.jsx'
 
 /**
  * Manual application tracking for one canonical job under one resume.
@@ -128,11 +128,20 @@ export function ApplicationStatusCell({ jobId, resumeId, initial }) {
   return (
     <div className="status-cell">
       <div className="status-controls">
+        {/* The select is the status display as well as its control — a badge
+            beside it repeating the same word was noise. The tone is carried
+            by the select itself instead, so colour still distinguishes the
+            statuses that remove a job from future searches. */}
         <select
-          className="select select-compact"
+          className={`select select-compact status-select status-select-${STATUS_TONES[status] ?? 'neutral'}`}
           value={status}
           disabled={busy}
           aria-label="Application status"
+          title={
+            EXCLUDING.has(status)
+              ? 'Excluded from future searches for this resume.'
+              : 'Still eligible in future searches.'
+          }
           onChange={(event) => save(event.target.value, undefined)}
         >
           {STATUSES.map((option) => (
@@ -142,29 +151,18 @@ export function ApplicationStatusCell({ jobId, resumeId, initial }) {
           ))}
         </select>
 
-        <button
-          type="button"
-          className="icon-button"
-          title="Refresh status"
-          aria-label="Refresh status"
-          disabled={busy}
-          onClick={refresh}
-        >
-          ↻
-        </button>
+        <IconButton icon="refresh" label="Refresh status" disabled={busy} onClick={refresh} />
       </div>
 
-      <div className="status-meta">
-        <StatusBadge status={status} />
-        {savedNotes.trim() && (
-          <span className="note-dot" title={savedNotes}>
-            ●&nbsp;note
-          </span>
-        )}
-      </div>
-
-      {updatedAt && (
-        <div className="muted small">Updated {formatDateTime(updatedAt)}</div>
+      {(savedNotes.trim() || updatedAt) && (
+        <div className="xs subtle row" style={{ gap: 'var(--space-2)' }}>
+          {savedNotes.trim() && (
+            <span className="note-dot" title={savedNotes}>
+              ●&nbsp;note
+            </span>
+          )}
+          {updatedAt && <span>Updated {formatDateTime(updatedAt)}</span>}
+        </div>
       )}
 
       {editing ? (

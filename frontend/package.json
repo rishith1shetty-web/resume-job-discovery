@@ -1,9 +1,9 @@
 {
-  "name": "jobfinder-dev-dashboard",
+  "name": "rising-path-recruiters",
   "private": true,
-  "version": "0.1.0",
+  "version": "1.0.0",
   "type": "module",
-  "description": "Phase 3.5 development dashboard for visually testing the JobFinder backend. Not the production UI.",
+  "description": "Rising Path Recruiters — AI Job Discovery Platform. Production interface.",
   "scripts": {
     "dev": "vite",
     "build": "vite build",

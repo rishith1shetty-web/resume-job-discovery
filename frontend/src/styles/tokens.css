@@ -1,0 +1,175 @@
+/**
+ * Rising Path Recruiters — design tokens.
+ *
+ * Every colour here is derived from the official logo rather than chosen
+ * alongside it. The four brand values below were sampled directly out of
+ * `rising-path-recruiters-logo.png`:
+ *
+ *   #F4A41C  the sun's body, the most-used colour in the mark
+ *   #FCD009  the highlight the gradient resolves to
+ *   #A96928  the path/ridge in the full-colour lockup
+ *   #FAF2E8  the wordmark
+ *
+ * Two consequences drive the whole interface:
+ *
+ * 1. The supplied logo's wordmark is cream, so it is invisible on white. Every
+ *    surface the logo sits on is therefore dark (see --sidebar-*). That is why
+ *    the navigation rail is espresso rather than light — it is a branding
+ *    requirement, not a style preference.
+ *
+ * 2. Amber at #F4A41C carries only 2.06:1 against white, so it can never be
+ *    small text on a light surface. It is used as a *field* (button fills,
+ *    rails, indicators) with dark ink on top, which measures ~8:1. Where an
+ *    amber-family colour has to be text, --brand-bronze-ink is used instead at
+ *    5.7:1. No token in this file is used in a way that fails WCAG AA.
+ */
+
+:root {
+  /* --- Brand, straight from the logo ------------------------------------ */
+  --brand-amber: #f4a41c;
+  --brand-gold: #fcd009;
+  --brand-bronze: #a96928;
+  --brand-cream: #faf2e8;
+
+  /* Darkened bronze that clears 4.5:1 on white, for text and icons. */
+  --brand-bronze-ink: #8f5a20;
+  /* Ink that clears 8:1 on top of --brand-amber, for button labels. */
+  --brand-on-amber: #2a1d08;
+
+  --brand-gradient: linear-gradient(135deg, #f4a41c 0%, #fcd009 100%);
+  --brand-gradient-soft: linear-gradient(135deg, #fdf0d8 0%, #fbe6b8 100%);
+
+  /* --- Surfaces --------------------------------------------------------- */
+  /* Warm off-white rather than pure grey: a neutral grey next to this amber
+     reads as dirty, and the whole product would look mismatched to the mark. */
+  --bg-app: #faf7f2;
+  --bg-surface: #ffffff;
+  --bg-surface-raised: #fffdfa;
+  --bg-inset: #f5f0e8;
+  --bg-inset-strong: #efe8dc;
+
+  --border: #ebe3d6;
+  --border-strong: #dbcfbb;
+  --border-focus: var(--brand-amber);
+
+  /* --- Text ------------------------------------------------------------- */
+  --text-primary: #241a0f; /* 14.9:1 on --bg-surface */
+  --text-secondary: #67563f; /* 6.8:1  */
+  /* Must clear 4.5:1 against --bg-inset (#F5F0E8), not just against white:
+     it is the colour of table headers and stat labels, which sit on the inset
+     surface. Measured 5.17:1 on inset and 5.87:1 on white. */
+  --text-muted: #736349;
+  --text-inverse: var(--brand-cream);
+
+  /* --- Navigation rail (dark, so the cream wordmark reads) -------------- */
+  --sidebar-bg: #1b1206;
+  --sidebar-bg-elevated: #241809;
+  --sidebar-border: rgba(250, 242, 232, 0.1);
+  --sidebar-text: rgba(250, 242, 232, 0.68);
+  --sidebar-text-strong: var(--brand-cream);
+  --sidebar-item-hover: rgba(250, 242, 232, 0.07);
+  --sidebar-item-active: rgba(244, 164, 28, 0.16);
+
+  /* --- Semantic status -------------------------------------------------- */
+  --success: #15803d;
+  --success-bg: #e9f6ed;
+  --success-border: #bfe3cc;
+
+  --danger: #b42318;
+  --danger-bg: #fdedeb;
+  --danger-border: #f4c8c2;
+
+  --warning: #b54708;
+  --warning-bg: #fdf3e6;
+  --warning-border: #f2ddbd;
+
+  /* Deliberately teal, not blue: the brief rules out bright blues, and a
+     blue "info" chip beside this amber is the one thing that would make the
+     palette look borrowed. */
+  --info: #0f6e82;
+  --info-bg: #e7f3f6;
+  --info-border: #bcdde5;
+
+  --neutral-bg: var(--bg-inset);
+  --neutral-border: var(--border-strong);
+
+  /* --- Radii ------------------------------------------------------------ */
+  --radius-xs: 6px;
+  --radius-sm: 8px;
+  --radius-md: 12px;
+  --radius-lg: 16px;
+  --radius-xl: 22px;
+  --radius-pill: 999px;
+
+  /* --- Elevation -------------------------------------------------------- */
+  /* Warm-tinted shadows. A pure-black shadow over this cream background
+     turns grey and flattens the card edge. */
+  --shadow-xs: 0 1px 2px rgba(59, 40, 15, 0.06);
+  --shadow-sm: 0 1px 3px rgba(59, 40, 15, 0.07), 0 1px 2px rgba(59, 40, 15, 0.04);
+  --shadow-md: 0 4px 12px rgba(59, 40, 15, 0.07), 0 2px 4px rgba(59, 40, 15, 0.04);
+  --shadow-lg: 0 12px 28px rgba(59, 40, 15, 0.1), 0 4px 10px rgba(59, 40, 15, 0.05);
+  --shadow-xl: 0 24px 56px rgba(59, 40, 15, 0.14), 0 8px 20px rgba(59, 40, 15, 0.06);
+  --shadow-amber: 0 6px 18px rgba(244, 164, 28, 0.28);
+
+  /* --- Spacing (density 7: dashboard-standard) -------------------------- */
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 20px;
+  --space-6: 24px;
+  --space-8: 32px;
+  --space-10: 40px;
+  --space-12: 48px;
+  --space-16: 64px;
+
+  /* --- Typography ------------------------------------------------------- */
+  /* Plus Jakarta Sans echoes the geometric wordmark in the logo. The stack
+     degrades to the platform UI face if the webfont never loads, so an
+     offline machine still renders a coherent interface. */
+  --font-sans: "Plus Jakarta Sans", "Inter", -apple-system, BlinkMacSystemFont,
+    "Segoe UI Variable Text", "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, "Cascadia Mono",
+    Consolas, "Liberation Mono", monospace;
+
+  --text-3xl: 30px;
+  --text-2xl: 24px;
+  --text-xl: 20px;
+  --text-lg: 17px;
+  --text-base: 15px;
+  --text-sm: 13.5px;
+  --text-xs: 12.5px;
+
+  --leading-tight: 1.22;
+  --leading-snug: 1.4;
+  --leading-normal: 1.55;
+
+  /* --- Motion ----------------------------------------------------------- */
+  --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+  --ease-in-out: cubic-bezier(0.65, 0, 0.35, 1);
+  --duration-fast: 120ms;
+  --duration-base: 200ms;
+  --duration-slow: 320ms;
+
+  /* --- Layout ----------------------------------------------------------- */
+  --sidebar-width: 268px;
+  --topbar-height: 68px;
+  --content-max: 1440px;
+  --z-topbar: 40;
+  --z-sidebar: 50;
+  --z-overlay: 60;
+  --z-toast: 70;
+}
+
+/* Honour the OS setting. Motion here is all supportive — nothing conveys
+   information by movement alone — so it can be removed outright. */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
