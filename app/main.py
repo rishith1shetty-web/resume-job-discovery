@@ -15,6 +15,7 @@ from app.core.error_handlers import register_exception_handlers
 from app.core.logging import configure_logging, get_logger
 from app.core.middleware import REQUEST_ID_HEADER, RequestContextMiddleware
 from app.db.session import dispose_engine, init_engine
+from app.web import mount_frontend
 
 logger = get_logger(__name__)
 
@@ -97,6 +98,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     register_exception_handlers(app)
     app.include_router(api_router, prefix=settings.api_v1_prefix)
+
+    # The packaged desktop application serves the compiled interface from this
+    # same process. Off in development, where Vite serves it. This reacts to a
+    # 404 rather than registering a route, so it cannot shadow anything added
+    # before or after it.
+    if settings.serve_frontend:
+        mount_frontend(app)
 
     return app
 

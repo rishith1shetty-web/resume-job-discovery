@@ -16,6 +16,7 @@ from app.api.v1.routes import (
     portals,
     resumes,
     search_runs,
+    system,
 )
 
 api_router = APIRouter()
@@ -27,3 +28,4 @@ api_router.include_router(portals.router)
 api_router.include_router(search_runs.router)
 api_router.include_router(jobs.router)
 api_router.include_router(applications.router)
+api_router.include_router(system.router)

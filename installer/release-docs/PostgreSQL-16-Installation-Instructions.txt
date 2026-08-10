@@ -1,0 +1,147 @@
+================================================================================
+ STEP 1 - Install PostgreSQL 16
+================================================================================
+
+Rising Path Recruiters Job Finding Automation keeps everything -- your resumes, your searches and
+your application history -- in a database on THIS computer. Nothing is sent
+anywhere. PostgreSQL is that database, and it has to be installed before the
+application's setup program will run.
+
+You only do this once.
+
+
+================================================================================
+ DOWNLOAD
+================================================================================
+
+Go to:
+
+    https://www.postgresql.org/download/windows/
+
+Click "Download the installer", then choose the latest PostgreSQL 16 build for
+Windows x86-64.
+
+The file is named something like:
+
+    postgresql-16.x-1-windows-x64.exe
+
+
+================================================================================
+ INSTALL
+================================================================================
+
+ 1. Right-click the downloaded file and choose "Run as administrator".
+
+ 2. Installation Directory - accept the default:
+
+        C:\Program Files\PostgreSQL\16
+
+ 3. Select Components - leave all of these ticked:
+
+        [x] PostgreSQL Server          <- required
+        [x] pgAdmin 4                  <- useful, optional
+        [x] Command Line Tools         <- required
+        [ ] Stack Builder              <- not needed, you may untick it
+
+ 4. Data Directory - accept the default.
+
+ 5. PASSWORD. This is the important screen.
+
+        You are choosing the password for the database administrator account,
+        which is called "postgres".
+
+        *** WRITE THIS PASSWORD DOWN AND KEEP IT. ***
+
+        You will be asked for it once, by the Rising Path Recruiters Job Finding Automation
+        installer. It is not your Windows password, and there is no way to
+        recover it if you forget it -- you would have to reinstall PostgreSQL.
+
+ 6. Port - leave it at:
+
+        5432
+
+        The application only supports this port.
+
+ 7. Locale - accept the default.
+
+ 8. Click Next, then Next, then Finish.
+
+ 9. If Stack Builder offers to run, untick it or just close it. It is not
+    needed.
+
+
+================================================================================
+ CHECK THAT IT WORKED
+================================================================================
+
+Open PowerShell and run:
+
+    Get-Service -Name postgresql*
+
+You should see something like:
+
+    Status   Name                DisplayName
+    ------   ----                -----------
+    Running  postgresql-x64-16   postgresql-x64-16 - PostgreSQL Server 16
+
+The Status must say "Running".
+
+Then check that it is actually accepting connections:
+
+    Test-NetConnection -ComputerName 127.0.0.1 -Port 5432 -InformationLevel Quiet
+
+This must print:
+
+    True
+
+If both of those are correct, you are done. Go on to STEP 2 and run
+RisingPathRecruitersJobFindingAutomationSetup.exe.
+
+
+================================================================================
+ IF SOMETHING IS WRONG
+================================================================================
+
+Get-Service shows nothing
+    PostgreSQL did not install. Run its installer again as an administrator.
+
+Status is "Stopped"
+    Start it. In PowerShell, as an administrator:
+
+        Start-Service -Name postgresql-x64-16
+
+    To have it start automatically with Windows:
+
+        Set-Service -Name postgresql-x64-16 -StartupType Automatic
+
+Test-NetConnection prints False, but the service is Running
+    Something else is holding port 5432, or PostgreSQL was installed on a
+    different port. Check which:
+
+        Get-Content "C:\Program Files\PostgreSQL\16\data\postgresql.conf" |
+            Select-String "^port"
+
+    If it is not 5432, the simplest fix is to uninstall PostgreSQL and install
+    it again, accepting the default port.
+
+To see what is using port 5432:
+
+        Get-NetTCPConnection -LocalPort 5432 |
+            Select-Object OwningProcess |
+            ForEach-Object { Get-Process -Id $_.OwningProcess }
+
+I forgot the postgres password
+    It cannot be recovered. Uninstall PostgreSQL 16, delete its data directory
+    (C:\Program Files\PostgreSQL\16), and install it again, choosing a password
+    you record this time.
+
+    WARNING: this destroys any existing databases on this computer, including
+    any data from a previous installation of this application.
+
+I already have PostgreSQL, but an older version
+    Rising Path Recruiters Job Finding Automation requires 16 or newer. Older versions are not
+    supported and setup will refuse to continue.
+
+I have PostgreSQL in Docker or WSL
+    That is not detected and is not supported. The setup program looks for a
+    PostgreSQL registered with Windows.

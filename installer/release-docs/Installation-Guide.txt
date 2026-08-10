@@ -1,0 +1,258 @@
+================================================================================
+ Rising Path Recruiters Job Finding Automation
+ Installation Guide
+================================================================================
+
+There are two steps, in this order:
+
+    STEP 1   Install PostgreSQL 16   (PostgreSQL-16-Installation-Instructions.txt)
+    STEP 2   Run RisingPathRecruitersJobFindingAutomationSetup.exe
+
+If you have not done STEP 1 yet, do it first. This setup program will refuse to
+install anything until PostgreSQL 16 is present and running, and it will tell
+you so before writing anything to your computer.
+
+IF YOU ARE UPGRADING: do NOT uninstall first, and do not do STEP 1 again. Close
+the application and run the new setup over the existing installation. Your
+resumes, searches and application history are kept.
+
+
+================================================================================
+ SYSTEM REQUIREMENTS
+================================================================================
+
+  Operating system   Windows 10 (1809 or later) or Windows 11, 64-bit
+  Processor          x64
+  Disk space         About 400 MB, plus PostgreSQL and your own data
+  Memory             4 GB minimum, 8 GB recommended
+  Privileges         A local administrator account
+  Database           PostgreSQL 16 or newer, on port 5432, installed first
+  Network            Internet access when searching, for the job boards
+
+You do NOT need Python, Node.js, npm or Git. All of them are inside the setup
+file.
+
+IMPORTANT: sign in as the account that will USE the application before you run
+setup. The database password is protected for your Windows account. If a
+different administrator approves the User Account Control prompt, the
+application will not be able to read it afterwards.
+
+
+================================================================================
+ BEFORE YOU RUN IT: VERIFY THE DOWNLOAD
+================================================================================
+
+This setup program is not code-signed, so Windows SmartScreen will warn you.
+Check the checksum first. In PowerShell:
+
+    Get-FileHash .\RisingPathRecruitersJobFindingAutomationSetup.exe -Algorithm SHA256
+
+Compare it with the value in SHA256.txt. If it does not match, DO NOT RUN THE
+FILE.
+
+If it matches, run it. At the SmartScreen prompt choose "More info", then
+"Run anyway".
+
+
+================================================================================
+ INSTALLING
+================================================================================
+
+ 1. Right-click RisingPathRecruitersJobFindingAutomationSetup.exe and choose "Run as administrator".
+
+ 2. Setup checks PostgreSQL BEFORE installing anything. It verifies that
+    PostgreSQL 16 or newer is registered, that its Windows service is running,
+    and that 127.0.0.1 port 5432 is accepting connections.
+
+    If any of those is not true, setup tells you exactly what to do and stops.
+    Nothing is written to your computer, so you can fix the problem and run
+    setup again with nothing to undo.
+
+ 3. Choose the installation folder. The default is:
+
+        C:\Program Files\Rising Path Recruiters Job Finding Automation
+
+ 4. Enter the PostgreSQL administrator password - the one you chose when you
+    installed PostgreSQL in STEP 1.
+
+        User name   postgres      (fixed)
+        Server      127.0.0.1     (fixed)
+        Port        5432          (fixed)
+
+    The field is masked. The password is checked immediately, used once, and
+    never stored. If it is not accepted you can try again, up to five times, so
+    a typo is a correctable mistake.
+
+ 5. Optionally tick "Create a desktop shortcut", then click Install.
+
+ 6. After the files are copied, setup finishes the database automatically:
+
+        - creates the account  resume_job_discovery_app
+          (with its OWN separate, randomly generated password)
+        - creates the database resume_job_discovery
+        - applies least-privilege permissions
+        - creates all database tables
+        - verifies the result
+        - stores only the application's own password, encrypted by Windows
+          for your Windows account
+
+    If this fails, setup removes what it created and tells you which stage
+    failed and where the log is. You are never left with a half-configured
+    program.
+
+ 7. Click Finish.
+
+
+================================================================================
+ STARTING THE APPLICATION
+================================================================================
+
+Use the Start menu shortcut "Rising Path Recruiters Job Finding Automation", or the desktop
+shortcut if you created one.
+
+The application has no console window. It starts a local web server bound to
+127.0.0.1 only -- never to your network -- and opens your browser at
+
+    http://127.0.0.1:8100
+
+Starting it a second time brings the existing window forward instead of
+starting another copy.
+
+Closing the browser tab does not stop it. To stop it, run:
+
+    "C:\Program Files\Rising Path Recruiters Job Finding Automation\RisingPathRecruitersJobFindingAutomation.exe" --shutdown
+
+
+================================================================================
+ WHERE YOUR DATA AND LOGS ARE
+================================================================================
+
+Everything is local to this computer and to your Windows account. Nothing is
+uploaded, synchronised or shared with anyone.
+
+  Program files       C:\Program Files\Rising Path Recruiters Job Finding Automation
+  Your data           %LOCALAPPDATA%\RisingPathRecruitersJobFindingAutomation
+  Resumes             %LOCALAPPDATA%\RisingPathRecruitersJobFindingAutomation\storage
+  Application log     %LOCALAPPDATA%\RisingPathRecruitersJobFindingAutomation\logs\launcher.log
+  Installation log    %LOCALAPPDATA%\RisingPathRecruitersJobFindingAutomation\logs\install.log
+  Database            PostgreSQL database "resume_job_discovery"
+  Setup log           %TEMP%\Setup Log <date> #NNN.txt
+
+The application never holds the postgres password. It connects as
+resume_job_discovery_app, an account that can only read and write the rows in
+its own database. It is not a superuser, it owns nothing, and it cannot create
+databases or accounts, change the database structure, or delete a table.
+
+
+================================================================================
+ UPDATING
+================================================================================
+
+This application does not update itself. There is no automatic update check and
+no telemetry.
+
+When you receive a newer installer:
+
+    1. Close Rising Path Recruiters Job Finding Automation.
+    2. Check the new file's SHA256 against the SHA256.txt shipped with it.
+    3. Run the new installer as an administrator.
+    4. DO NOT UNINSTALL FIRST. Install over the existing installation.
+
+An upgrade preserves everything: the database and all application history,
+uploaded resumes and their analysis, your settings, and the stored password.
+
+
+================================================================================
+ UNINSTALLING (YOUR DATA IS KEPT)
+================================================================================
+
+Settings > Apps > Rising Path Recruiters Job Finding Automation > Uninstall.
+
+This removes ONLY the program files, the shortcuts and the Add/Remove Programs
+entry.
+
+It does NOT touch:
+
+    - %LOCALAPPDATA%\RisingPathRecruitersJobFindingAutomation (resumes, logs, settings)
+    - the resume_job_discovery database or your application history
+    - the resume_job_discovery_app account
+    - PostgreSQL itself
+
+Reinstalling later picks all of it up again.
+
+If you want everything gone -- THIS IS IRREVERSIBLE, back up first:
+
+    1. Uninstall the application (above).
+    2. Remove-Item -Recurse -Force "$env:LOCALAPPDATA\RisingPathRecruitersJobFindingAutomation"
+    3. psql -U postgres -c "DROP DATABASE resume_job_discovery;"
+       psql -U postgres -c "DROP ROLE resume_job_discovery_app;"
+    4. Remove PostgreSQL itself, ONLY if nothing else uses it.
+
+Step 3 is the only step that destroys data you cannot recreate.
+
+
+================================================================================
+ COMMON ERRORS
+================================================================================
+
+"PostgreSQL is not installed on this computer."
+    Do STEP 1. Nothing was installed; run setup again afterwards.
+
+"This computer has PostgreSQL <n>, but ... requires PostgreSQL 16 or newer."
+    Install PostgreSQL 16. Note that setup reads the Windows registry, so a
+    server installed via Docker, WSL or a zip-file copy is not detected.
+
+"PostgreSQL 16 is installed ... but its Windows service is not running."
+    Elevated PowerShell:  Start-Service -Name postgresql-x64-16
+    Then run setup again.
+
+"PostgreSQL is running, but nothing is answering on 127.0.0.1 port 5432."
+    Something else holds the port, or the server is on a different one. Only
+    the standard port is supported.
+
+"PostgreSQL did not accept that password."
+    Wrong password for the postgres account. This is the password you set when
+    you installed PostgreSQL, not your Windows password. Setup lets you retry.
+
+"The password could not be passed securely to the database step."
+    Setup was approved with a DIFFERENT administrator account from the one
+    signed in. Sign in as the account that will use the application and run
+    setup again.
+
+"Windows could not protect the credential on this computer."
+    Windows DPAPI is unavailable for this account. Try a different
+    administrator account on the same computer.
+
+"The database credential belongs to a different Windows account."
+    The application was installed by another account. Run the installer again
+    while signed in as the account that will use it.
+
+"Port 8100 is already being used by another program."
+    Close whatever is using it and start the application again.
+
+The application will not start, or the browser shows nothing
+    There is no console window, so read the log:
+
+        %LOCALAPPDATA%\RisingPathRecruitersJobFindingAutomation\logs\launcher.log
+
+    Then run:
+
+        "C:\Program Files\Rising Path Recruiters Job Finding Automation\RisingPathRecruitersJobFindingAutomation.exe" --check
+
+    Exit code 0 means configuration, credential, database and schema are all in
+    order.
+
+
+================================================================================
+ KNOWN LIMITATIONS
+================================================================================
+
+  - PostgreSQL 16 must be installed manually first. This is the supported
+    design, not an oversight.
+  - The setup program is not code-signed, so SmartScreen warns on first run.
+  - There is no automatic updater. Updates are manual, as described above.
+  - Only 127.0.0.1 port 5432 is supported. A remote server or a different port
+    is not.
+  - Windows x64 only.
+  - The database password is protected for one Windows account. Installing
+    under one account and running under another does not work.

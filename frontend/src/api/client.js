@@ -44,7 +44,12 @@ export class ApiError extends Error {
 }
 
 function buildUrl(path, query) {
-  const url = new URL(`${BASE_URL}${path}`)
+  // The second argument is what lets BASE_URL be relative. The packaged
+  // application serves the interface and the API from one origin, so its base
+  // is `/api/v1`, and `new URL()` given a single relative string throws
+  // `TypeError: Invalid URL`. A base is ignored when the first argument is
+  // already absolute, so the development value still works unchanged.
+  const url = new URL(`${BASE_URL}${path}`, window.location.origin)
   for (const [key, value] of Object.entries(query ?? {})) {
     // Skip unset filters rather than sending `?status=undefined`.
     if (value === undefined || value === null || value === '') continue
@@ -73,9 +78,14 @@ export async function requestEnvelope(path, options = {}) {
     init.body = JSON.stringify(body)
   }
 
+  // Built outside the try below on purpose. It used to be built inside it, so
+  // a malformed base URL surfaced as "is the backend running?" — a question
+  // about the server, when nothing had ever been sent to the server.
+  const url = buildUrl(path, query)
+
   let response
   try {
-    response = await fetch(buildUrl(path, query), init)
+    response = await fetch(url, init)
   } catch (cause) {
     // fetch only rejects for transport failures: server down, DNS, CORS.
     throw new ApiError(

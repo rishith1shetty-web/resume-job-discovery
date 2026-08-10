@@ -9,9 +9,10 @@ from typing import Annotated, Any
 from pydantic import Field, PostgresDsn, field_validator, model_validator
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
+from app.core import paths
 from app.core.constants import Environment, LogFormat
 
-PROJECT_ROOT = Path(__file__).resolve().parents[2]
+PROJECT_ROOT = paths.PROJECT_ROOT
 
 
 def _split_csv(value: Any) -> Any:
@@ -70,8 +71,22 @@ class Settings(BaseSettings):
     log_level: str = "INFO"
     log_format: LogFormat = LogFormat.CONSOLE
 
+    # --- Desktop packaging -------------------------------------------------
+    # Whether this process also serves the compiled interface. True in the
+    # packaged application, which is one process on one port; false in
+    # development, where Vite serves it and the API must keep answering an
+    # unknown path with the error envelope rather than an HTML shell.
+    #
+    # Deliberately not "whenever a build happens to be on disk": that made the
+    # behaviour of the API depend on whether someone had run `npm run build`,
+    # which is not something the API's contract should turn on.
+    serve_frontend: bool = Field(default_factory=paths.is_installed)
+
     # --- Storage -----------------------------------------------------------
-    storage_dir: Path = PROJECT_ROOT / "storage"
+    # Resolved rather than fixed: in development this is still the checked-out
+    # `storage/`, but an installed copy lives under Program Files and cannot
+    # write beside itself, so uploads go to the user's own data directory.
+    storage_dir: Path = Field(default_factory=paths.storage_dir)
     max_upload_mb: int = 10
 
     # --- Single-user mode --------------------------------------------------
@@ -159,7 +174,52 @@ class Settings(BaseSettings):
         return self.environment is Environment.PRODUCTION
 
 
+def _apply_installed_credential(settings: Settings) -> Settings:
+    """Point an installed application at its provisioned database.
+
+    Only in installed mode, and only when a credential is actually present.
+    The generated `app.env` deliberately carries no password — the credential
+    is DPAPI-protected and cannot live in a plain file — so this is what makes
+    an installed copy able to connect at all.
+
+    A missing credential is left alone rather than raised on: the API must
+    still start so `/health` can report *why* it is degraded. Failing here
+    would produce a program that dies silently at launch with nothing to read.
+    """
+    if not paths.is_installed():
+        return settings
+
+    # Imported here: this module is imported by tooling that has no business
+    # loading ctypes bindings, and on non-Windows platforms.
+    from app.core.credentials import CredentialError, credential_exists, load_credential
+
+    if not credential_exists():
+        return settings
+
+    try:
+        credential = load_credential()
+    except CredentialError:
+        # Reported by the launcher's --check and by /health, both of which can
+        # explain it properly. See app/core/credentials.py.
+        return settings
+
+    return settings.model_copy(
+        update={
+            "postgres_user": credential.username,
+            "postgres_password": credential.password,
+            "postgres_host": credential.host,
+            "postgres_port": credential.port,
+            "postgres_db": credential.database,
+            "database_url": credential.sqlalchemy_url,
+        }
+    )
+
+
 @lru_cache(maxsize=1)
 def get_settings() -> Settings:
     """Cached settings singleton. Call ``get_settings.cache_clear()`` in tests."""
-    return Settings()
+    # `_env_file` overrides the class default so an installed copy reads the
+    # configuration the installer generated instead of a `.env` that is not
+    # shipped.
+    settings = Settings(_env_file=paths.env_file())
+    return _apply_installed_credential(settings)
