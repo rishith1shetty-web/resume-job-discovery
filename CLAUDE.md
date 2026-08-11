@@ -114,15 +114,19 @@ Quotas apply to **qualified final jobs**, not raw jobs. Never include a weak job
 If one portal cannot fill its quota after all suitable active jobs are checked, redistribute only its unused slots to selected portals with additional qualified jobs. Record the shortage and redistribution in the search summary.
 
 ## 6. Freshness Policy
+**A job is eligible only if it was posted within the last 30 days.** A listing posted 31 or more days ago is excluded regardless of match score: a 99% match posted 31 days ago is not a result. This is a hard gate, applied before the result limit, alongside the locked 70% threshold.
+
+An unknown, missing, malformed or unverifiable posting date must never be treated as recent. Such a listing is excluded, because it cannot be shown to fall inside the window.
+
 Within each selected portal, search progressively:
 1. last 24 hours
 2. last 3 days
 3. last 7 days
 4. last 14 days
 5. last 30 days
-6. older but still active jobs
+6. a final pass with no date filter
 
-Fill each portal's quota with the newest qualified jobs first. Expand to an older window only when the current windows do not provide enough qualified jobs. Do not reject a job solely because it is one day or one week old. Reject expired, unavailable, irrelevant, duplicate, or insufficiently matched jobs.
+Keep the final unfiltered pass. It is a *query* strategy, not an admission rule: portals' own date filters are coarser than ours, so that pass is what reaches listings which are inside the 30-day window but which the narrower queries never returned. Removing it silently loses eligible jobs. Eligibility is enforced separately and always, so the wider query can never admit an over-age listing. Fill each portal's share with the newest qualified jobs first, and expand to an older window only when the current windows do not provide enough qualified jobs. Do not reject a job solely because it is one day or one week old — inside the 30-day window, age decides order, not admission. Reject expired, unavailable, irrelevant, duplicate, insufficiently matched, and over-age jobs.
 
 Store:
 - `posted_at`
@@ -172,17 +176,23 @@ Do not use plain keyword overlap or TF-IDF as the authoritative score. Use struc
 ## 8. Ranking
 Selection happens per portal first, then qualified portal results are combined.
 
-Recommended portal ranking:
-```text
-80% resume match + 20% freshness
-```
-Recommended final dashboard ranking:
-```text
-75% resume match + 20% freshness + 5% source/direct-URL quality
-```
-Default sort: **Best Overall**. Also support Highest Match, Newest First, Portal, Company, and Status.
+**Primary ranking is posting date, newest to oldest. Match percentage is only the secondary sort**, used when posting dates are equal or effectively equivalent. Remaining ties break on role compatibility, then required-skill coverage, then canonical key, then job id, so the order is total and deterministic.
 
-A one-week-old 94% match may rank above a five-minute-old 71% match. Freshness helps prioritize; it does not override relevance.
+Therefore a 75% job posted one hour ago ranks **above** a 99% job posted 20 days ago. Relevance is not thereby discarded: nothing below the locked 70% threshold or outside the 30-day window is ranked at all, so everything being ordered has already been judged worth applying to. Ranking decides the order of good jobs; the gates decide which jobs are good.
+
+Worked example — the authoritative specification:
+
+```text
+Job    Match   Age        Result
+Job A  75%     1 hour     #1
+Job B  96%     2 days     #2
+Job C  88%     5 days     #3
+Job D  99%     28 days    #4
+Job E  99%     31 days    Excluded (over 30 days)
+Job F  69%     1 hour     Excluded (below 70%)
+```
+
+Default sort: **Best Overall**, which is the ordering above. Also support Highest Match, Newest First, Portal, Company, and Status. Every consumer — search pipeline, job list API, dashboard — must use this same ordering, so a job never changes position between the search that produced it and the list that shows it.
 
 ## 9. Deduplication and URL Preference
 Do not deduplicate by URL alone. Use:
@@ -356,7 +366,9 @@ Security, monitoring, rate limits, backups, migrations, performance, end-to-end 
 - Search every selected portal.
 - Apply result limits only after qualification and deduplication.
 - Keep the 70% threshold locked; never lower it to fill quotas.
-- Newest qualified jobs come first per portal; older active jobs are fallback.
+- Keep the 30-day eligibility window locked; never widen it to fill quotas.
+- Rank newest first, with match percentage as the secondary sort only.
+- Enforce both gates and the ordering at the domain level, never in UI sorting alone.
 - Preserve approximately equal portal coverage, then redistribute only genuine shortages.
 - One portal failure must not fail the complete search.
 - Store matching and application history by resume.

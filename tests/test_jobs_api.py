@@ -13,7 +13,7 @@ from httpx import AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import Settings
-from app.core.constants import JobUrlKind
+from app.core.constants import ApplicationStatus, JobUrlKind
 from app.models.user import User
 from app.services.user_service import get_or_create_default_user
 from tests.factories import (
@@ -115,6 +115,7 @@ async def test_the_most_direct_url_is_surfaced(
         db_session, preferred_application_url="https://careers.acme.invalid/1"
     )
     await make_job_source(db_session, job=job, portal=portal)
+    await make_match(db_session, resume=resume, job=job)
 
     response = await api_client.get(BASE, params={"resume_id": str(resume.id)})
 
@@ -134,6 +135,7 @@ async def test_a_job_without_a_preferred_url_still_gives_the_user_a_link(
     portal = await make_portal(db_session, slug="alpha")
     job = await make_job(db_session)
     source = await make_job_source(db_session, job=job, portal=portal)
+    await make_match(db_session, resume=resume, job=job)
 
     response = await api_client.get(BASE, params={"resume_id": str(resume.id)})
 
@@ -267,10 +269,12 @@ async def test_newest_first_sorts_by_posted_date(
     assert titles == ["Newer", "Older"]
 
 
-async def test_best_overall_can_rank_an_older_strong_match_first(
+async def test_best_overall_ranks_the_newer_job_first(
     api_client: AsyncClient, db_session: AsyncSession, settings: Settings
 ) -> None:
-    # Freshness helps prioritise; it does not override relevance.
+    # Recency is the primary sort; match quality only breaks ties. Both jobs
+    # are above the threshold and inside the window, so both are worth
+    # applying to and the newer one leads.
     user = await _acting_user(db_session, settings)
     resume = await make_resume(db_session, user=user)
     await make_profile(db_session, resume=resume)
@@ -297,7 +301,7 @@ async def test_best_overall_can_rank_an_older_strong_match_first(
     )
 
     titles = [item["title"] for item in response.json()["data"]["items"]]
-    assert titles[0] == "Strong but a week old"
+    assert titles == ["Weak but minutes old", "Strong but a week old"]
 
 
 async def test_a_job_scored_in_several_runs_is_listed_once(
@@ -333,19 +337,128 @@ async def test_a_job_scored_in_several_runs_is_listed_once(
     assert body["items"][0]["match"]["final_score"] == 88.0
 
 
-async def test_a_job_with_no_score_yet_is_still_listable(
+async def test_a_job_never_scored_for_this_resume_is_not_listed(
     api_client: AsyncClient, db_session: AsyncSession, settings: Settings
 ) -> None:
+    """This used to assert the opposite, which was the scoping defect.
+
+    A stored job that this resume was never scored against, and that the user
+    never applied to under this resume, does not belong to this resume. Listing
+    it meant every resume saw every job in the database.
+    """
     user = await _acting_user(db_session, settings)
     resume = await make_resume(db_session, user=user)
     await make_profile(db_session, resume=resume)
 
     portal = await make_portal(db_session, slug="alpha")
-    job = await make_job(db_session)
+    job = await make_job(db_session, title="Scored for nobody")
     await make_job_source(db_session, job=job, portal=portal)
 
     response = await api_client.get(BASE, params={"resume_id": str(resume.id)})
 
-    item = response.json()["data"]["items"][0]
-    assert item["match"] is None
-    assert item["application_status"] == "not_applied"
+    titles = [item["title"] for item in response.json()["data"]["items"]]
+    assert "Scored for nobody" not in titles
+
+
+# --- Resume scoping (regression) --------------------------------------------
+#
+# GET /jobs outer-joins the match and the application, and for a long time
+# nothing else constrained the row, so it returned every job in the database
+# whatever resume was asked for. One resume's list was therefore decided by
+# another resume's searches - including its order, once ranking became
+# newest-first.
+
+
+async def test_another_resumes_jobs_never_appear(
+    api_client: AsyncClient, db_session: AsyncSession, settings: Settings
+) -> None:
+    user = await _acting_user(db_session, settings)
+    mine = await make_resume(db_session, user=user)
+    theirs = await make_resume(db_session, user=user)
+    await make_profile(db_session, resume=mine)
+    await make_profile(db_session, resume=theirs)
+
+    now = datetime.now(UTC)
+    my_job = await make_job(db_session, title="Mine, scored for this resume")
+    their_job = await make_job(db_session, title="Theirs, never scored for mine")
+    await make_match(
+        db_session, resume=mine, job=my_job, final_score=80.0, ranking_score=80.0
+    )
+    await make_match(
+        db_session, resume=theirs, job=their_job, final_score=99.0, ranking_score=99.0
+    )
+
+    response = await api_client.get(BASE, params={"resume_id": str(mine.id)})
+    titles = [item["title"] for item in response.json()["data"]["items"]]
+
+    assert "Mine, scored for this resume" in titles
+    assert "Theirs, never scored for mine" not in titles
+
+
+async def test_another_resumes_newer_job_cannot_take_the_top_row(
+    api_client: AsyncClient, db_session: AsyncSession, settings: Settings
+) -> None:
+    """Ordering, not just membership: leakage used to decide position too."""
+    user = await _acting_user(db_session, settings)
+    mine = await make_resume(db_session, user=user)
+    theirs = await make_resume(db_session, user=user)
+    await make_profile(db_session, resume=mine)
+    await make_profile(db_session, resume=theirs)
+
+    now = datetime.now(UTC)
+    my_newest = await make_job(
+        db_session, title="My newest", posted_at=now - timedelta(hours=1)
+    )
+    my_older = await make_job(
+        db_session, title="My older", posted_at=now - timedelta(days=10)
+    )
+    # Newer than anything of mine, and a better score. It must still not appear.
+    their_newest = await make_job(
+        db_session, title="Their newest", posted_at=now - timedelta(minutes=1)
+    )
+    for resume, job, score in (
+        (mine, my_newest, 75.0),
+        (mine, my_older, 99.0),
+        (theirs, their_newest, 99.0),
+    ):
+        await make_match(
+            db_session, resume=resume, job=job, final_score=score, ranking_score=score
+        )
+
+    response = await api_client.get(
+        BASE, params={"resume_id": str(mine.id), "sort": "best_overall"}
+    )
+    titles = [item["title"] for item in response.json()["data"]["items"]]
+
+    assert "Their newest" not in titles
+    # Newest first, match second: the 75% posted an hour ago leads the 99%
+    # posted ten days ago.
+    assert titles.index("My newest") < titles.index("My older")
+
+
+async def test_an_applied_job_stays_listed_even_without_a_stored_match(
+    api_client: AsyncClient, db_session: AsyncSession, settings: Settings
+) -> None:
+    """The scoping filter must not drop application history."""
+    from app.models.application import Application
+
+    user = await _acting_user(db_session, settings)
+    resume = await make_resume(db_session, user=user)
+    await make_profile(db_session, resume=resume)
+
+    job = await make_job(db_session, title="Applied, never rescored")
+    db_session.add(
+        Application(
+            user_id=user.id,
+            resume_id=resume.id,
+            job_id=job.id,
+            status=ApplicationStatus.APPLIED,
+            applied_at=datetime.now(UTC),
+        )
+    )
+    await db_session.flush()
+
+    response = await api_client.get(BASE, params={"resume_id": str(resume.id)})
+    titles = [item["title"] for item in response.json()["data"]["items"]]
+
+    assert "Applied, never rescored" in titles

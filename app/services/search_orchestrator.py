@@ -120,7 +120,7 @@ from app.search.allocation import (
 )
 from app.search.collection import DeepCollection, ExecutedQuery, PortalCollector
 from app.search.depth import ExhaustionReason, SearchDepth
-from app.search.freshness import freshness_score
+from app.search.freshness import freshness_score, is_eligible_age
 from app.search.queries import QueryPlan, build_query_plan
 from app.processing.normalize import RejectionReason
 from app.services.job_processing import process_raw_jobs
@@ -716,6 +716,14 @@ async def _score_and_collect(
                 continue
 
             job = by_id[scored.job_id]
+
+            # The age gate, applied here rather than only at collection so it
+            # holds however the job arrived - a rediscovery, a cross-portal
+            # duplicate, or a listing whose date was corrected after it was
+            # first stored. A job past the window is not eligible at any score.
+            if not is_eligible_age(job.posted_at, moment):
+                continue
+
             result.candidates.append(
                 Candidate(
                     job_id=scored.job_id,

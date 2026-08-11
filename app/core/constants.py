@@ -126,6 +126,12 @@ class FreshnessWindow(StrEnum):
 
 
 # Ordered widest-last. Iterating this list *is* the escalation strategy.
+#: How widely to *query*, which is not the same question as what is eligible.
+#: OLDER_ACTIVE stays on the ladder because it is the one pass that sends no
+#: date filter, and portals' own date filters are coarser than ours - dropping
+#: it lost listings that were inside the 30-day window but that the narrower
+#: queries never returned. Eligibility is enforced separately, by
+#: ``is_eligible_age``, so this final pass cannot admit an over-age job.
 FRESHNESS_ESCALATION: tuple[FreshnessWindow, ...] = (
     FreshnessWindow.LAST_24H,
     FreshnessWindow.LAST_3D,

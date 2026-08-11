@@ -26,16 +26,27 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.core.config import Settings, get_settings
 
-REQUIRED_DATABASE = "resume_job_discovery"
+#: The suite has its own database, created on demand and migrated to head.
+#: Fixtures must never meet real rows: `build_canonical_key` is deliberately
+#: date-free, so a recorded listing deduplicates onto a real job with the same
+#: company, title and location, and `earliest_posted_at` then keeps the older
+#: stored date. A test's result would depend on what the developer happened to
+#: search for last, which is not a test.
+REQUIRED_DATABASE = "resume_job_discovery_test"
+
+#: Never written to by the suite. Named so the guard can say why it refused.
+DEVELOPMENT_DATABASE = "resume_job_discovery"
 FORBIDDEN_DATABASE = "linkedin_auto_apply"
 
 # Marker on every record tests create. Greppable, and obviously not real data.
 TEST_USER_EMAIL = "pytest+jobfinder@test.invalid"
 TEST_RECORD_MARKER = "pytest-jobfinder"
 
-# Only non-database settings are pinned. POSTGRES_* deliberately comes from the
-# local .env so the guard below checks the configuration actually in use.
+# POSTGRES_DB is pinned to the test database; the remaining POSTGRES_* values
+# come from the local .env, so the suite reaches the same server with the same
+# credentials and only the database differs.
 TEST_ENV = {
+    "POSTGRES_DB": REQUIRED_DATABASE,
     "APP_NAME": "JobFinder",
     "ENVIRONMENT": "local",
     "DEBUG": "false",
@@ -46,6 +57,80 @@ TEST_ENV = {
     "DEFAULT_USER_EMAIL": TEST_USER_EMAIL,
     "ENABLE_LLM_ASSIST": "false",
 }
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _test_database() -> None:
+    """Create the suite's own database, migrated to head, once per session.
+
+    Connects to the ``postgres`` maintenance database to issue CREATE DATABASE,
+    because a session cannot create the database it is connected to. The
+    development database is never opened, never read and never written.
+
+    The database is left in place afterwards rather than dropped: creating and
+    migrating it costs a few seconds, and keeping it makes a re-run fast. It is
+    truncated per test by the transaction rollback in ``db_session``.
+    """
+    import asyncio
+    import os
+
+    import asyncpg
+
+    base = get_settings()  # .env values: host, port, user, password
+
+    async def _create_if_missing() -> None:
+        # The maintenance database, because a session cannot create the
+        # database it is connected to. The development database is never
+        # opened.
+        connection = await asyncpg.connect(
+            user=base.postgres_user,
+            password=base.postgres_password,
+            host=base.postgres_host,
+            port=base.postgres_port,
+            database="postgres",
+        )
+        try:
+            exists = await connection.fetchval(
+                "SELECT 1 FROM pg_database WHERE datname = $1", REQUIRED_DATABASE
+            )
+            if not exists:
+                # Identifier is a module constant, not user input.
+                await connection.execute(f'CREATE DATABASE "{REQUIRED_DATABASE}"')
+        finally:
+            await connection.close()
+
+    try:
+        asyncio.run(_create_if_missing())
+    except Exception as error:  # pragma: no cover - environment problem
+        pytest.exit(
+            f"Could not prepare the test database {REQUIRED_DATABASE!r}: {error}",
+            returncode=1,
+        )
+
+    # env.py reads application settings, so the target is set before Alembic
+    # imports it. Restored afterwards so nothing else sees the change.
+    previous = os.environ.get("POSTGRES_DB")
+    os.environ["POSTGRES_DB"] = REQUIRED_DATABASE
+    get_settings.cache_clear()
+    try:
+        def _upgrade() -> None:
+            from alembic import command
+            from alembic.config import Config
+
+            root = Path(__file__).resolve().parents[1]
+            config = Config(str(root / "alembic.ini"))
+            config.set_main_option("script_location", str(root / "migrations"))
+            command.upgrade(config, "head")
+
+        # migrations/env.py drives an async engine with asyncio.run(), which
+        # raises if a loop is already running on this thread.
+        asyncio.run(asyncio.to_thread(_upgrade))
+    finally:
+        if previous is None:
+            os.environ.pop("POSTGRES_DB", None)
+        else:
+            os.environ["POSTGRES_DB"] = previous
+        get_settings.cache_clear()
 
 
 @pytest.fixture(autouse=True)
@@ -65,13 +150,19 @@ def settings() -> Settings:
 
 @pytest.fixture(autouse=True)
 def _guard_database_target(_test_env: None) -> None:
-    """Refuse to run against anything but resume_job_discovery.
+    """Refuse to run against anything but the dedicated test database.
 
     Fails the test rather than skipping: a misconfigured target is a problem to
     surface, not to quietly work around.
     """
     current = get_settings()
 
+    if current.postgres_db == DEVELOPMENT_DATABASE:
+        pytest.fail(
+            f"Tests must never run against {DEVELOPMENT_DATABASE!r}: it holds "
+            "real jobs, and fixtures would deduplicate onto them. Expected "
+            f"{REQUIRED_DATABASE!r}."
+        )
     if current.postgres_db != REQUIRED_DATABASE:
         pytest.fail(
             f"Tests must target {REQUIRED_DATABASE!r}, but POSTGRES_DB is "

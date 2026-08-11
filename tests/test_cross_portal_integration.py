@@ -41,6 +41,7 @@ from app.portals.adapters.jobright import JobrightPortal
 from app.portals.adapters.scalejobs import PAGE_SIZE as SCALEJOBS_PAGE_SIZE
 from app.portals.adapters.scalejobs import ScaleJobsPortal
 from app.portals.adapters.simplyhired import SimplyHiredPortal
+from app.portals.adapters import ziprecruiter as ziprecruiter_module
 from app.portals.adapters.ziprecruiter import ZipRecruiterPortal
 from app.portals.exceptions import PortalParseError, PortalTimeoutError
 from app.processing.normalize import RejectionReason
@@ -57,6 +58,19 @@ GREENHOUSE_FIXTURE = FIXTURES / "greenhouse_financial_analyst.json"
 SCALEJOBS_FIXTURE = FIXTURES / "scalejobs_financial_analyst.json"
 
 NOW = datetime(2026, 8, 4, 12, 0, tzinfo=UTC)
+
+
+class _FrozenDatetime(datetime):
+    """``datetime`` whose ``now()`` is NOW, for relative-date portals.
+
+    Only ``now`` is replaced; construction, arithmetic and comparison are the
+    real ones, so an adapter patched with this behaves normally in every other
+    respect.
+    """
+
+    @classmethod
+    def now(cls, tz=None):  # noqa: D102 - matches datetime.now
+        return NOW if tz is None else NOW.astimezone(tz)
 TAXONOMY = frozenset({"financial-analyst"})
 
 
@@ -351,6 +365,45 @@ def build_scalejobs(
 # --- Scaffolding ------------------------------------------------------------
 
 
+
+def assert_ranked_newest_first(results) -> None:
+    """The ranking contract: posted_at DESC, then final_score DESC.
+
+    Replaces an older assertion that results were sorted by score alone. That
+    is no longer the contract: recency is primary and match quality only breaks
+    ties, so a newer weaker job legitimately precedes an older stronger one.
+    Both keys are checked together, because asserting recency alone would pass
+    for an ordering that ignored score entirely.
+    """
+    assert results, "nothing to check the ordering of"
+
+    keys = [
+        (-(item.posted_at.timestamp() if item.posted_at else float("-inf")),
+         -item.final_score)
+        for item in results
+    ]
+    assert keys == sorted(keys), (
+        "results are not ordered newest-first with score as the tie-break: "
+        f"{[(str(i.posted_at), i.final_score) for i in results]}"
+    )
+
+
+def assert_recency_outranks_score(results) -> None:
+    """At least one newer-but-weaker job precedes an older-but-stronger one.
+
+    Without this the suite would still pass if ranking quietly reverted to
+    score-first and the fixture happened to be newest-first already.
+    """
+    dated = [i for i in results if i.posted_at is not None]
+    for earlier, later in ((a, b) for x, a in enumerate(dated) for b in dated[x + 1:]):
+        if earlier.final_score < later.final_score and earlier.posted_at > later.posted_at:
+            return
+    raise AssertionError(
+        "no newer-lower-scoring job ranked above an older-higher-scoring one, "
+        "so this result set does not demonstrate the ranking contract"
+    )
+
+
 async def analysed_resume(session: AsyncSession, *, user=None):
     user = user or await make_user(session)
     resume = await make_resume(session, user=user)
@@ -514,8 +567,7 @@ async def test_both_portals_are_searched_and_merged(
     assert all(leg.raw_count > 0 for leg in prepared.legs)
 
     # One combined list, ordered once.
-    scores = [item.final_score for item in outcome.results]
-    assert scores == sorted(scores, reverse=True)
+    assert_ranked_newest_first(outcome.results)
 
 
 async def test_quotas_are_allocated_across_both_portals(
@@ -1029,13 +1081,24 @@ async def test_the_rejection_reason_names_the_missing_description(
 
 
 async def test_ziprecruiter_listings_still_normalise_and_persist(
-    db_session: AsyncSession,
+    db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Rejected for scoring is not the same as discarded.
 
     The listings are canonicalised and stored with their provenance, so the
     moment a description source exists they are scoreable without re-fetching.
+
+    ZipRecruiter publishes ``days_ago`` rather than a date, so its timestamps
+    are relative to whenever the adapter runs. ``PortalSearchRequest`` carries
+    no clock - adapters read the wall clock, which is the contract - while the
+    run itself is frozen at NOW. Left alone, the two disagree by however long
+    ago this fixture was recorded, the dates land in the future, and
+    ``normalize_posted_at`` correctly discards them. Freezing the adapter's
+    clock to the same NOW is what makes a relative-date portal testable at all;
+    without it this passes only while the wall clock sits near NOW.
     """
+    monkeypatch.setattr(ziprecruiter_module, "datetime", _FrozenDatetime)
+
     _, resume = await analysed_resume(db_session)
 
     prepared, _ = await run_search(
@@ -1201,8 +1264,7 @@ async def test_the_three_portal_result_is_ranked_and_free_of_duplicates(
         ],
     )
 
-    scores = [item.final_score for item in outcome.results]
-    assert scores == sorted(scores, reverse=True)
+    assert_ranked_newest_first(outcome.results)
 
     job_ids = [item.job_id for item in outcome.results]
     assert len(job_ids) == len(set(job_ids))
@@ -1661,8 +1723,7 @@ async def test_the_three_portal_result_is_ranked_and_free_of_duplicates(
         ],
     )
 
-    scores = [item.final_score for item in outcome.results]
-    assert scores == sorted(scores, reverse=True)
+    assert_ranked_newest_first(outcome.results)
 
     job_ids = [item.job_id for item in outcome.results]
     assert len(job_ids) == len(set(job_ids))
@@ -2355,8 +2416,7 @@ async def test_the_four_portal_result_is_ranked_and_free_of_duplicates(
         ],
     )
 
-    scores = [item.final_score for item in outcome.results]
-    assert scores == sorted(scores, reverse=True)
+    assert_ranked_newest_first(outcome.results)
 
     job_ids = [item.job_id for item in outcome.results]
     assert len(job_ids) == len(set(job_ids))
@@ -3119,8 +3179,11 @@ async def test_the_five_portal_result_is_ranked_and_free_of_duplicates(
         limit=50,
     )
 
-    scores = [item.final_score for item in outcome.results]
-    assert scores == sorted(scores, reverse=True)
+    assert_ranked_newest_first(outcome.results)
+    # Across five portals the pool is wide enough to contain the case the
+    # ranking contract exists for, so assert it is actually present rather
+    # than merely permitted.
+    assert_recency_outranks_score(outcome.results)
 
     job_ids = [item.job_id for item in outcome.results]
     assert len(job_ids) == len(set(job_ids))
@@ -3371,9 +3434,8 @@ async def test_repeating_a_scalejobs_search_keeps_its_scores(
         assert item.final_score == before[item.job_id]
 
     for outcome in (first, second):
-        scores = [item.final_score for item in outcome.results]
-        assert scores == sorted(scores, reverse=True)
-        assert all(score >= 70.0 for score in scores)
+        assert_ranked_newest_first(outcome.results)
+        assert all(item.final_score >= 70.0 for item in outcome.results)
 
 
 async def test_repeating_a_five_portal_search_keeps_ranking_stable(
@@ -3418,8 +3480,7 @@ async def test_repeating_a_five_portal_search_keeps_ranking_stable(
     _, second = await run_search(db_session, resume=resume, specs=specs("two"), limit=50)
 
     for outcome in (first, second):
-        scores = [item.final_score for item in outcome.results]
-        assert scores == sorted(scores, reverse=True)
+        assert_ranked_newest_first(outcome.results)
         ids = [item.job_id for item in outcome.results]
         assert len(ids) == len(set(ids))
         assert all(item.final_score >= 70.0 for item in outcome.results)

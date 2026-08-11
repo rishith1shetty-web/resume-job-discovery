@@ -1001,16 +1001,34 @@ async def test_the_newest_qualified_jobs_come_first(
     assert ages == sorted(ages, reverse=True)
 
 
-async def test_an_older_listing_is_not_rejected_for_its_age(
+async def test_a_listing_past_the_window_is_rejected_for_its_age(
     db_session: AsyncSession,
 ) -> None:
-    # CLAUDE.md section 6: age alone is never a rejection reason.
+    # CLAUDE.md section 6: age alone IS a rejection reason. A 45-day-old
+    # listing is excluded whatever it scores.
     _, resume = await analysed_resume(db_session)
     adapter = build_fake_portal(
         "old", jobs=make_jobs("old", 3, age_days=45, now=NOW)
     )
     prepared, adapters = await build_run(
         db_session, resume=resume, specs=[("old", adapter)]
+    )
+
+    outcome = await run_search(db_session, prepared, adapters)
+
+    assert outcome.returned_count == 0
+
+
+async def test_a_listing_inside_the_window_is_still_returned(
+    db_session: AsyncSession,
+) -> None:
+    """The other half of the rule: 28 days is eligible, 45 is not."""
+    _, resume = await analysed_resume(db_session)
+    adapter = build_fake_portal(
+        "recent", jobs=make_jobs("recent", 3, age_days=28, now=NOW)
+    )
+    prepared, adapters = await build_run(
+        db_session, resume=resume, specs=[("recent", adapter)]
     )
 
     outcome = await run_search(db_session, prepared, adapters)

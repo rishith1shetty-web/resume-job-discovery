@@ -160,7 +160,10 @@ def test_max_queries_must_be_positive() -> None:
         (24 * 10, FreshnessWindow.LAST_14D, True),
         (24 * 20, FreshnessWindow.LAST_30D, True),
         (24 * 200, FreshnessWindow.LAST_30D, False),
-        (24 * 200, FreshnessWindow.OLDER_ACTIVE, True),
+        # The eligibility bound applies even to the unconstrained window, so a
+        # 200-day-old listing belongs to no window at all.
+        (24 * 200, FreshnessWindow.OLDER_ACTIVE, False),
+        (24 * 2, FreshnessWindow.OLDER_ACTIVE, True),
     ],
 )
 def test_window_membership(
@@ -171,14 +174,14 @@ def test_window_membership(
     assert within_window(posted, window, NOW) is expected
 
 
-def test_an_undated_listing_waits_for_the_final_window() -> None:
-    # CLAUDE.md section 6: a posting date is never invented. An undated but
-    # active listing is still a real result, so it is admitted last rather than
-    # discarded or guessed into a fresher window.
-    for window in FRESHNESS_ESCALATION[:-1]:
+def test_an_undated_listing_belongs_to_no_window() -> None:
+    # A posting date is never invented, and an undated listing cannot be shown
+    # to be within the eligible window, so it is excluded rather than admitted
+    # last (CLAUDE.md section 6).
+    for window in FRESHNESS_ESCALATION:
         assert within_window(None, window, NOW) is False
 
-    assert within_window(None, FreshnessWindow.OLDER_ACTIVE, NOW) is True
+    assert within_window(None, FreshnessWindow.OLDER_ACTIVE, NOW) is False
 
 
 def test_a_future_posting_counts_as_current() -> None:
@@ -309,15 +312,16 @@ def test_the_total_never_exceeds_the_requested_limit() -> None:
     assert result.returned_count == 20
 
 
-def test_results_are_ordered_by_score_first() -> None:
+def test_results_are_ordered_by_recency_first() -> None:
     weak = candidate(score=71.0, age_days=0.0)
     strong = candidate(score=94.0, age_days=7.0)
 
     ordered = order_candidates([weak, strong])
 
-    # A week-old 94% outranks a fresh 71%: freshness prioritises, it does not
-    # override relevance (CLAUDE.md section 8).
-    assert ordered == [strong, weak]
+    # A fresh 71% outranks a week-old 94%: recency is the primary sort and
+    # match quality only breaks ties (CLAUDE.md section 8). Both are already
+    # above the threshold and inside the window, so both are worth applying to.
+    assert ordered == [weak, strong]
 
 
 def test_recency_breaks_a_score_tie() -> None:
@@ -380,7 +384,11 @@ def test_an_undated_job_sorts_after_dated_ones_of_the_same_score() -> None:
     assert order_candidates([undated, dated]) == [dated, undated]
 
 
-def test_a_higher_scoring_undated_job_still_wins() -> None:
+def test_an_undated_candidate_sorts_last_however_well_it_scores() -> None:
+    # Eligibility rejects a missing date before allocation, so this cannot
+    # arise from a real run. Asserted anyway: a caller constructing candidates
+    # by hand must degrade predictably rather than have an undated job placed
+    # among the newest ones by accident.
     dated = candidate(score=80.0, age_days=0.0)
     undated = Candidate(
         job_id=uuid.uuid4(),
@@ -392,7 +400,7 @@ def test_a_higher_scoring_undated_job_still_wins() -> None:
         canonical_key="zzz",
     )
 
-    assert order_candidates([undated, dated]) == [undated, dated]
+    assert order_candidates([undated, dated]) == [dated, undated]
 
 
 def test_allocation_needs_at_least_one_portal() -> None:
@@ -405,3 +413,161 @@ def test_no_candidates_returns_an_empty_allocation() -> None:
 
     assert result.returned_count == 0
     assert result.shortfalls == (10, 10)
+
+
+# ---------------------------------------------------------------------------
+# The freshness policy, asserted as the specification states it
+# ---------------------------------------------------------------------------
+#
+# Eligible only if posted within the last 30 days, and below 70% is excluded.
+# Ranking is newest -> oldest, with match percentage as the secondary sort
+# only. The table below is the specification verbatim.
+
+
+def _aged(hours: float, score: float, key: str) -> Candidate:
+    return Candidate(
+        job_id=uuid.uuid5(uuid.NAMESPACE_URL, key),
+        portal_index=0,
+        final_score=score,
+        posted_at=NOW - timedelta(hours=hours),
+        role_verdict=RoleVerdict.EXACT,
+        skill_coverage=1.0,
+        canonical_key=key,
+    )
+
+
+SPEC_TABLE = [
+    # (name, match, age)
+    ("Job A", 75.0, timedelta(hours=1)),
+    ("Job B", 96.0, timedelta(days=2)),
+    ("Job C", 88.0, timedelta(days=5)),
+    ("Job D", 99.0, timedelta(days=28)),
+    ("Job E", 99.0, timedelta(days=31)),
+    ("Job F", 69.0, timedelta(hours=1)),
+]
+
+
+def test_the_specification_table_is_reproduced_exactly():
+    """A > B > C > D; E excluded by age; F excluded by score."""
+    from app.matching.scoring import QUALIFICATION_THRESHOLD
+    from app.search.freshness import is_eligible_age
+
+    eligible = [
+        (name, score, age)
+        for name, score, age in SPEC_TABLE
+        if score >= QUALIFICATION_THRESHOLD and is_eligible_age(NOW - age, NOW)
+    ]
+
+    assert [name for name, _, _ in eligible] == ["Job A", "Job B", "Job C", "Job D"]
+
+    ordered = order_candidates(
+        [
+            _aged(age.total_seconds() / 3600, score, name)
+            for name, score, age in eligible
+        ]
+    )
+    assert [c.canonical_key for c in ordered] == ["Job A", "Job B", "Job C", "Job D"]
+
+
+def test_a_weak_new_job_outranks_a_strong_old_one():
+    """The inversion the specification asks for, stated on its own."""
+    weak_new = _aged(1, 75.0, "new")
+    strong_old = _aged(24 * 20, 99.0, "old")
+
+    assert order_candidates([strong_old, weak_new]) == [weak_new, strong_old]
+
+
+def test_match_percentage_breaks_ties_between_equally_recent_jobs():
+    lower = _aged(6, 80.0, "lower")
+    higher = _aged(6, 94.0, "higher")
+
+    assert order_candidates([lower, higher]) == [higher, lower]
+
+
+@pytest.mark.parametrize(
+    ("age", "eligible"),
+    [
+        (timedelta(hours=1), True),
+        (timedelta(days=29, hours=23), True),
+        (timedelta(days=30), True),
+        (timedelta(days=30, seconds=1), False),
+        (timedelta(days=31), False),
+        (timedelta(days=365), False),
+        (timedelta(hours=-2), True),  # future-dated postings are current
+    ],
+)
+def test_the_eligibility_boundary(age, eligible):
+    from app.search.freshness import is_eligible_age
+
+    assert is_eligible_age(NOW - age, NOW) is eligible
+
+
+def test_an_unknown_posting_date_is_never_treated_as_recent():
+    """Missing, malformed and unverifiable dates all arrive here as None."""
+    from app.search.freshness import is_eligible_age
+
+    assert is_eligible_age(None, NOW) is False
+    assert within_window(None, FreshnessWindow.OLDER_ACTIVE, NOW) is False
+
+
+def test_the_unconstrained_window_is_not_a_way_around_the_age_rule():
+    """OLDER_ACTIVE used to admit anything; it must not any more."""
+    assert within_window(NOW - timedelta(days=31), FreshnessWindow.OLDER_ACTIVE, NOW) is False
+    assert within_window(NOW - timedelta(days=2), FreshnessWindow.OLDER_ACTIVE, NOW) is True
+
+
+def test_the_ladder_still_ends_unfiltered_but_admits_nothing_over_age():
+    """Querying widely and admitting widely are separate questions.
+
+    The final pass sends no date filter, because portals' own filters are
+    coarser than ours and dropping it lost listings that were inside the
+    window. Eligibility is enforced separately, so the wider query cannot
+    become a way in for an over-age job.
+    """
+    assert FRESHNESS_ESCALATION[-1] is FreshnessWindow.OLDER_ACTIVE
+    assert within_window(NOW - timedelta(days=31), FRESHNESS_ESCALATION[-1], NOW) is False
+
+
+@pytest.mark.parametrize(
+    ("score", "eligible"),
+    [
+        (100.0, True),
+        (70.0, True),   # exactly the floor qualifies
+        (69.99, False),
+        (69.0, False),  # Job F in the specification table
+        (0.0, False),
+    ],
+)
+def test_the_score_boundary(score, eligible):
+    """The locked 70% floor, asserted at the boundary rather than near it."""
+    from app.matching.scoring import QUALIFICATION_THRESHOLD
+
+    assert QUALIFICATION_THRESHOLD == 70.0
+    assert (score >= QUALIFICATION_THRESHOLD) is eligible
+
+
+def test_a_seventy_five_percent_hour_old_job_beats_a_ninety_nine_percent_ten_day_old():
+    """The specification's headline case, stated with its exact numbers."""
+    recent_weak = _aged(1, 75.0, "recent-weak")
+    older_strong = _aged(24 * 10, 99.0, "older-strong")
+
+    assert order_candidates([older_strong, recent_weak]) == [recent_weak, older_strong]
+
+
+def test_score_only_breaks_ties_and_never_reorders_across_dates():
+    """Every ordering decision is recency first; score never jumps a date."""
+    candidates = [
+        _aged(1, 71.0, "newest-weakest"),
+        _aged(48, 99.0, "older-strongest"),
+        _aged(48, 85.0, "older-middle"),
+        _aged(24, 72.0, "middle-weak"),
+    ]
+
+    ordered = [c.canonical_key for c in order_candidates(candidates)]
+
+    assert ordered == [
+        "newest-weakest",   # 1h
+        "middle-weak",      # 24h
+        "older-strongest",  # 48h, higher score wins the tie
+        "older-middle",     # 48h
+    ]

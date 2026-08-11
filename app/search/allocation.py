@@ -79,23 +79,29 @@ class AllocationResult:
 
 
 def sort_key(candidate: Candidate) -> tuple:
-    """The deterministic result order (Phase 7 brief, "Final ordering").
+    """The deterministic result order: newest first, match quality second.
 
-    In order: match score, then posting recency, then role compatibility, then
+    In order: posting recency, then match score, then role compatibility, then
     required-skill coverage, then the canonical key, then the job id. The last
-    two make the order total - without them two identically-scored jobs would
-    fall back on whatever order the database returned.
+    two make the order total - without them two jobs alike on every earlier
+    term would fall back on whatever order the database returned.
 
-    Undated listings sort after dated ones *within the same score*, never
-    across scores: freshness prioritises, it does not override relevance
-    (CLAUDE.md section 8).
+    Recency is primary and match is only a tie-break, so a 75% job posted an
+    hour ago outranks a 99% job posted twenty days ago (CLAUDE.md section 8).
+    Quality is not thereby discarded: nothing below the locked 70% threshold or
+    older than the eligibility window reaches this function at all, so every
+    candidate being ordered here has already been judged worth applying to.
+
+    An undated candidate cannot appear: ``is_eligible_age`` rejects a missing
+    date before allocation. The ``dated`` guard remains so that a future caller
+    constructing candidates by hand degrades predictably instead of raising.
     """
     dated = candidate.posted_at is not None
 
     return (
-        -candidate.final_score,
         0 if dated else 1,
         -candidate.posted_at.timestamp() if dated else 0.0,
+        -candidate.final_score,
         ROLE_RANK.get(candidate.role_verdict, len(ROLE_RANK)),
         -candidate.skill_coverage,
         candidate.canonical_key,

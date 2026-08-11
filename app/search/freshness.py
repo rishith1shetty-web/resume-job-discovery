@@ -1,22 +1,26 @@
 """What "recent" means, numerically.
 
 CLAUDE.md section 6: a portal is searched newest-first and the window widens
-only when the current one has not produced enough *qualified* jobs. Age is
-never a rejection reason on its own - a one-week-old 94% match outranks a
-five-minute-old 71% match (section 8).
+only when the current one has not produced enough *qualified* jobs.
 
-Two jobs this module does:
+Age **is** a rejection reason on its own. A listing posted more than
+``MAX_ELIGIBLE_AGE`` ago is ineligible at any score - a 99% match posted 31 days
+ago is excluded, while a 75% match posted an hour ago is kept and ranks first.
+Recency is the primary sort and match quality only breaks ties (section 8).
 
+Three jobs this module does:
+
+* decide whether a listing is eligible at all (``is_eligible_age``)
 * decide whether a listing belongs to a window (``within_window``)
 * score recency for the stored ranking blend (``freshness_score``)
 
 # Undated listings
 
 A portal that does not publish a posting date leaves ``posted_at`` as None, and
-nothing here invents one. An undated listing is admitted only at
-``OLDER_ACTIVE``, the final window: it is still a real, active vacancy, so
-discarding it would lose genuine results, but it cannot be claimed to be fresh.
-For the same reason its freshness score is 0 rather than a flattering guess.
+nothing here invents one. An undated listing cannot be *shown* to be within the
+eligible window, so it is excluded rather than assumed recent. The same applies
+to a date that could not be parsed: the adapter leaves it None, and None is not
+treated as fresh.
 """
 
 from __future__ import annotations
@@ -41,6 +45,31 @@ WINDOW_MAX_AGE: dict[FreshnessWindow, timedelta | None] = {
 #: score and the escalation ladder describe the same notion of recent.
 FRESHNESS_HORIZON = timedelta(days=30)
 
+#: Hard eligibility bound. A listing older than this is rejected whatever it
+#: scores. Equal to the horizon on purpose: "stops counting as fresh" and
+#: "stops being eligible" are the same moment, so there is no band in which a
+#: job is eligible but scores zero for recency.
+MAX_ELIGIBLE_AGE = FRESHNESS_HORIZON
+
+
+def is_eligible_age(posted_at: datetime | None, now: datetime) -> bool:
+    """Whether a listing is recent enough to be shown at all.
+
+    The gate is deliberately independent of the escalation ladder and of the
+    score: every consumer asks this one question and gets the same answer.
+
+    An unknown, missing or unparseable date arrives here as None and is
+    rejected. It cannot be demonstrated to be within the window, and treating
+    it as recent would let an arbitrarily old listing through the one rule that
+    exists to stop exactly that.
+    """
+    if posted_at is None:
+        return False
+    if posted_at >= now:
+        # Portals occasionally publish a future date; that is current, not stale.
+        return True
+    return now - posted_at <= MAX_ELIGIBLE_AGE
+
 
 def cutoff_for(window: FreshnessWindow, now: datetime) -> datetime | None:
     """Oldest ``posted_at`` that still belongs to ``window``.
@@ -59,12 +88,15 @@ def within_window(
     A listing posted in the future - portals occasionally publish one - is
     treated as current rather than filtered out.
     """
-    if window is FreshnessWindow.OLDER_ACTIVE:
-        return True
     if posted_at is None:
-        # Undated listings wait for OLDER_ACTIVE rather than being guessed into
-        # a window they may not belong to.
+        # Never guessed into a window. An undated listing is not eligible at
+        # all, so there is no later window for it to wait for.
         return False
+    if window is FreshnessWindow.OLDER_ACTIVE:
+        # No longer "anything still active": the eligibility bound applies even
+        # when a caller asks for the unconstrained window, so this can never be
+        # a way around the 30-day rule.
+        return is_eligible_age(posted_at, now)
 
     cutoff = cutoff_for(window, now)
     assert cutoff is not None  # only OLDER_ACTIVE has no cutoff
@@ -99,9 +131,11 @@ def freshness_score(posted_at: datetime | None, now: datetime) -> float:
 
 __all__ = [
     "FRESHNESS_HORIZON",
+    "MAX_ELIGIBLE_AGE",
     "WINDOW_MAX_AGE",
     "cutoff_for",
     "freshness_score",
+    "is_eligible_age",
     "windows_from",
     "within_window",
 ]

@@ -60,10 +60,14 @@ def _build_query(
     status: ApplicationStatus | None,
     include_expired: bool,
 ) -> tuple[Select[Any], Any]:
-    """Jobs joined to this resume's match and application state.
+    """Jobs belonging to this resume, with its match and application state.
 
-    Outer joins throughout: a job with no score yet, or one the user has not
-    touched, must still be listable.
+    Outer joins so a scored job the user has not touched, and an applied job
+    whose match was never stored, are both listable. The joins alone do not
+    scope anything, though - without the filter below this returns every job in
+    the database, so one resume's results are decided by another resume's
+    searches. A job belongs to this resume when the resume was scored against
+    it, or when the user recorded an application for it under this resume.
     """
     match_alias = _latest_match_alias(
         resume_id=resume_id, search_run_id=search_run_id
@@ -78,6 +82,12 @@ def _build_query(
             & (Application.resume_id == resume_id)
             & (Application.user_id == user_id),
         )
+    )
+
+    # The scoping filter. Applied unconditionally, so no caller can obtain an
+    # unscoped listing by omitting a parameter.
+    statement = statement.where(
+        match_alias.id.is_not(None) | Application.id.is_not(None)
     )
 
     if search_run_id is not None:
@@ -110,9 +120,11 @@ def _apply_sort(
 ) -> Select[Any]:
     """Order results.
 
-    BEST_OVERALL uses the stored ranking score, which already blends match and
-    freshness. Freshness only breaks ties inside that blend - a strong older
-    match still outranks a weak new one (CLAUDE.md section 8).
+    BEST_OVERALL is newest-first with match quality as the tie-break, matching
+    ``app.search.allocation.sort_key`` so a job does not change position
+    between the search that produced it and the list that shows it. Ordering by
+    the stored ``ranking_score`` here would reintroduce the score-first order
+    that blend encodes (CLAUDE.md section 8).
     """
     match sort:
         case SortOption.HIGHEST_MATCH:
@@ -137,8 +149,8 @@ def _apply_sort(
             return statement.order_by(Job.canonical_key.asc())
         case _:
             return statement.order_by(
-                match_alias.ranking_score.desc().nullslast(),
                 Job.posted_at.desc().nullslast(),
+                match_alias.final_score.desc().nullslast(),
             )
 
 

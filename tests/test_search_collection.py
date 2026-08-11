@@ -50,6 +50,8 @@ async def test_a_portal_without_a_date_filter_is_asked_once() -> None:
 
 
 async def test_widening_admits_older_listings_locally() -> None:
+    # The ladder still ends with an unfiltered pass, but 40 days is past the
+    # eligibility bound, so that pass admits nothing.
     adapter_class = build_fake_portal("local", jobs=jobs_at_ages("p", 0.5, 5, 40))
     adapter = adapter_class()
 
@@ -62,7 +64,9 @@ async def test_widening_admits_older_listings_locally() -> None:
 
     assert len(batches[FreshnessWindow.LAST_24H].jobs) == 1
     assert len(batches[FreshnessWindow.LAST_7D].jobs) == 1
-    assert len(batches[FreshnessWindow.OLDER_ACTIVE].jobs) == 1
+    assert batches[FreshnessWindow.OLDER_ACTIVE].jobs == []
+    collected = [job for batch in batches.values() for job in batch.jobs]
+    assert len(collected) == 2
 
 
 async def test_each_listing_is_handed_over_exactly_once() -> None:
@@ -78,7 +82,9 @@ async def test_each_listing_is_handed_over_exactly_once() -> None:
     assert len(identities) == len(set(identities))
 
 
-async def test_an_undated_listing_arrives_in_the_final_window() -> None:
+async def test_an_undated_listing_is_never_collected() -> None:
+    # An undated listing cannot be shown to be within the eligible window, so
+    # it belongs to no window rather than waiting for the last one.
     undated = make_raw_job(portal="p", index=0, now=NOW)
     undated.posted_at = None
     adapter_class = build_fake_portal("undated", jobs=[undated])
@@ -91,8 +97,7 @@ async def test_an_undated_listing_arrives_in_the_final_window() -> None:
         ).windows(now=NOW)
     }
 
-    assert batches[FreshnessWindow.LAST_24H].jobs == []
-    assert len(batches[FreshnessWindow.OLDER_ACTIVE].jobs) == 1
+    assert all(batch.jobs == [] for batch in batches.values())
 
 
 # --- Portals that can filter by date ----------------------------------------
