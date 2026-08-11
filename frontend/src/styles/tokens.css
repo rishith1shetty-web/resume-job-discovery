@@ -12,10 +12,15 @@
  *
  * Two consequences drive the whole interface:
  *
- * 1. The supplied logo's wordmark is cream, so it is invisible on white. Every
- *    surface the logo sits on is therefore dark (see --sidebar-*). That is why
- *    the navigation rail is espresso rather than light — it is a branding
- *    requirement, not a style preference.
+ * 1. The supplied logo's wordmark is cream (#FAF2E8 — measured, the wordmark
+ *    band of the artwork is 100% that one colour), so on the warm-white rail
+ *    and welcome panel it reads as a very light tint rather than as text. That
+ *    is the approved treatment: the artwork is placed on the light surface
+ *    exactly as supplied, with nothing behind it, and its transparency shows
+ *    the surface through. WCAG 1.4.3 exempts logotypes from contrast, and the
+ *    company name is also rendered beside the mark as real text in
+ *    --sidebar-text-strong, so the brand name is never conveyed by the image
+ *    alone.
  *
  * 2. Amber at #F4A41C carries only 2.06:1 against white, so it can never be
  *    small text on a light surface. It is used as a *field* (button fills,
@@ -61,14 +66,25 @@
   --text-muted: #736349;
   --text-inverse: var(--brand-cream);
 
-  /* --- Navigation rail (dark, so the cream wordmark reads) -------------- */
-  --sidebar-bg: #1b1206;
-  --sidebar-bg-elevated: #241809;
-  --sidebar-border: rgba(250, 242, 232, 0.1);
-  --sidebar-text: rgba(250, 242, 232, 0.68);
-  --sidebar-text-strong: var(--brand-cream);
-  --sidebar-item-hover: rgba(250, 242, 232, 0.07);
-  --sidebar-item-active: rgba(244, 164, 28, 0.16);
+  /* --- Navigation rail (warm white, gold used only as accent) ----------- */
+  /* Ratios below are against --sidebar-bg. */
+  --sidebar-bg: #fffdf7;
+  --sidebar-bg-elevated: #fffaf0;
+  --sidebar-border: #eee2c9;
+  --sidebar-text: #6b5b45; /* 6.44:1 */
+  --sidebar-text-strong: #2b2118; /* 15.5:1 */
+  --sidebar-item-hover: #fdf4e2;
+  --sidebar-item-active: #fff4d6;
+  --sidebar-inset: #fdf7ea;
+  /* The active marker is a UI shape, so it needs 3:1, not 1.4.3's 4.5:1.
+     Brand amber manages only 2.03:1 on this rail; this deeper gold is the
+     closest value to the mark that still qualifies. */
+  --sidebar-indicator: #b8790c; /* 3.57:1 */
+
+  /* --- Welcome panel ---------------------------------------------------- */
+  --hero-bg-start: #fffcf5;
+  --hero-bg-end: #fff8e1;
+  --hero-border: #f4e6c6;
 
   /* --- Semantic status -------------------------------------------------- */
   --success: #15803d;

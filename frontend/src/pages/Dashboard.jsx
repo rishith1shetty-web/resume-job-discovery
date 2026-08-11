@@ -226,10 +226,10 @@ export function Dashboard({ navigate }) {
   )
 }
 
+/* The panel deliberately opens with what the user is working on rather than a
+   greeting: the time of day is something they already know, and it pushed the
+   one fact that matters — which resume, which role — into secondary text. */
 function Welcome({ resume, targetRole, navigate, hasResume }) {
-  const hour = new Date().getHours()
-  const greeting = hour < 12 ? 'Good morning' : hour < 18 ? 'Good afternoon' : 'Good evening'
-
   return (
     <section className="hero">
       <div className="hero-copy">
@@ -237,27 +237,36 @@ function Welcome({ resume, targetRole, navigate, hasResume }) {
           <Icon name="sparkle" size={13} />
           Rising Path Recruiters
         </span>
-        <h2 className="hero-title">{greeting}</h2>
-        <p className="hero-sub">
+        <h2 className="hero-title">
           {hasResume ? (
             <>
-              Working from <strong style={{ color: 'var(--brand-gold)' }}>
+              Working from <strong className="hero-highlight">
                 {resume?.original_filename ?? 'the active resume'}
               </strong>
               {targetRole ? (
                 <>
                   {' '}
-                  against the role <strong style={{ color: 'var(--brand-gold)' }}>
+                  against the role <strong className="hero-highlight">
                     {humanize(targetRole)}
                   </strong>.
                 </>
               ) : (
-                '. Run the analysis to detect its target role.'
-              )}{' '}
-              Every match is a real, US-based opening scoring 70% or higher.
+                '.'
+              )}
             </>
           ) : (
-            'Upload a resume and this platform will identify its target role, search every connected job board, and return only genuine US openings worth applying to.'
+            'Upload a resume to start finding matches.'
+          )}
+        </h2>
+        <p className="hero-sub">
+          {hasResume ? (
+            targetRole ? (
+              'Every match is a real, US-based opening scoring 70% or higher.'
+            ) : (
+              'Run the analysis to detect its target role. Every match is a real, US-based opening scoring 70% or higher.'
+            )
+          ) : (
+            'This platform will identify its target role, search every connected job board, and return only genuine US openings worth applying to.'
           )}
         </p>
         <div className="hero-actions">

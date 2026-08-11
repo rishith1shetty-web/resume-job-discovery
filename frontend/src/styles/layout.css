@@ -30,23 +30,26 @@
     var(--sidebar-bg) 42%,
     var(--sidebar-bg) 100%
   );
-  border-right: 1px solid rgba(0, 0, 0, 0.4);
+  border-right: 1px solid var(--sidebar-border);
   overflow: hidden;
 }
 
-/* A faint warm glow behind the lockup, picking up the sunrise in the mark. */
+/* A faint warm wash at the head of the rail, picking up the sunrise in the
+   mark. Kept low: on a light surface anything stronger reads as a stain. */
 .sidebar::before {
   content: "";
   position: absolute;
-  top: -140px;
+  top: -160px;
   left: 50%;
   width: 340px;
   height: 340px;
   transform: translateX(-50%);
-  background: radial-gradient(circle, rgba(244, 164, 28, 0.16) 0%, transparent 68%);
+  background: radial-gradient(circle, rgba(244, 164, 28, 0.1) 0%, transparent 68%);
   pointer-events: none;
 }
 
+/* The artwork sits directly on the rail: no panel, no fill, nothing behind it,
+   so its transparency shows the warm white through. */
 .sidebar-brand {
   position: relative;
   display: flex;
@@ -63,7 +66,7 @@
   width: 132px;
   height: auto;
   margin-bottom: calc(var(--space-2) * -1);
-  filter: drop-shadow(0 4px 14px rgba(244, 164, 28, 0.24));
+  filter: drop-shadow(0 4px 14px rgba(244, 164, 28, 0.2));
 }
 
 .sidebar-brand-name {
@@ -78,7 +81,7 @@
   font-weight: 500;
   letter-spacing: 0.07em;
   text-transform: uppercase;
-  color: rgba(250, 242, 232, 0.5);
+  color: var(--text-muted);
 }
 
 .sidebar-divider {
@@ -135,7 +138,7 @@
   height: 20px;
   transform: translateY(-50%);
   border-radius: 0 var(--radius-pill) var(--radius-pill) 0;
-  background: var(--brand-gradient);
+  background: var(--sidebar-indicator);
 }
 
 .nav-icon {
@@ -145,8 +148,10 @@
   opacity: 0.9;
 }
 
+/* Bronze rather than amber: amber is 2.03:1 here and this is an icon that
+   carries meaning, not decoration. */
 .nav-item-active .nav-icon {
-  color: var(--brand-amber);
+  color: var(--brand-bronze-ink);
   opacity: 1;
 }
 
@@ -157,8 +162,8 @@
   font-size: 11px;
   font-weight: 650;
   font-variant-numeric: tabular-nums;
-  color: var(--brand-cream);
-  background: rgba(250, 242, 232, 0.12);
+  color: var(--sidebar-text);
+  background: var(--bg-inset-strong);
 }
 
 .nav-item-active .nav-count {
@@ -183,7 +188,7 @@
   gap: var(--space-3);
   padding: var(--space-3);
   border-radius: var(--radius-md);
-  background: rgba(250, 242, 232, 0.05);
+  background: var(--sidebar-inset);
   border: 1px solid var(--sidebar-border);
 }
 
@@ -193,7 +198,7 @@
   font-weight: 600;
   letter-spacing: 0.08em;
   text-transform: uppercase;
-  color: rgba(250, 242, 232, 0.45);
+  color: var(--text-muted);
 }
 
 .rail-resume-name {
@@ -216,14 +221,14 @@
 }
 
 .rail-resume-dot-idle {
-  background: rgba(250, 242, 232, 0.28);
+  background: var(--border-strong);
   animation: none;
 }
 
 .sidebar-legal {
   font-size: 11px;
   line-height: 1.45;
-  color: rgba(250, 242, 232, 0.34);
+  color: var(--text-muted);
   text-align: center;
 }
 
