@@ -16,6 +16,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
+from app.careers.base import career_registry
 from app.core.logging import get_logger
 from app.models.portal import Portal, PortalConfig
 from app.portals.registry import registry
@@ -145,6 +146,27 @@ PORTAL_SEEDS: tuple[PortalSeed, ...] = (
         ),
     ),
     PortalSeed(
+        slug="career_pages",
+        website_url="https://www.rising-path.example/careers",
+        display_order=25,
+        is_enabled=True,
+        notes=(
+            "Not a job board: returns companies and the official career page "
+            "each one publishes, rather than individual vacancies. Companies "
+            "are discovered from openings that are live right now - reusing "
+            "the listings the other selected portals already returned, or "
+            "collecting shallowly through the enabled portals when Career "
+            "Pages is selected on its own. No company list is maintained "
+            "anywhere: an employer appears only by having a current US opening "
+            "that passes the same role gate the job pipeline uses. Career page "
+            "URLs are accepted only when they verify as the employer's own "
+            "domain or the employer's own space on an applicant-tracking "
+            "system; aggregators and job boards are refused. Results are "
+            "capped at 20 per run and take no part in the Find 20/50/100 job "
+            "allocation."
+        ),
+    ),
+    PortalSeed(
         slug="linkedin",
         website_url="https://www.linkedin.com/",
         display_order=20,
@@ -172,6 +194,26 @@ async def ensure_portals_seeded(
         adapter = registry.get(seed.slug) if registry.is_registered(seed.slug) else None
         capabilities = adapter(options={}).capabilities if adapter else None
 
+        # A career source is implemented, and selectable, without being a
+        # portal adapter: it answers "which companies are hiring" rather than
+        # returning listings, so it has no PortalCapabilities to declare and
+        # every capability flag stays False - which is accurate, not a
+        # placeholder. Without this the row would seed as unimplemented and the
+        # dashboard would never offer its checkbox.
+        career_source = (
+            career_registry.get(seed.slug)
+            if career_registry.is_registered(seed.slug)
+            else None
+        )
+        implemented = adapter is not None or career_source is not None
+        display_name = (
+            adapter.display_name
+            if adapter
+            else career_source.display_name
+            if career_source
+            else seed.slug.title()
+        )
+
         existing = await session.scalar(
             select(Portal)
             .where(Portal.slug == seed.slug)
@@ -181,12 +223,12 @@ async def ensure_portals_seeded(
         if existing is None:
             portal = Portal(
                 slug=seed.slug,
-                display_name=adapter.display_name if adapter else seed.slug.title(),
+                display_name=display_name,
                 website_url=seed.website_url,
-                adapter_key=seed.slug if adapter else None,
+                adapter_key=seed.slug if implemented else None,
                 is_enabled=seed.is_enabled,
-                # True only when an adapter is actually registered.
-                is_implemented=adapter is not None,
+                # True only when something is actually registered to run it.
+                is_implemented=implemented,
                 supports_date_filter=bool(
                     capabilities and capabilities.supports_date_filter
                 ),
@@ -205,8 +247,8 @@ async def ensure_portals_seeded(
             # Refresh what the adapter owns; leave is_enabled alone so an
             # operator's decision to disable a portal is not undone by a
             # redeploy.
-            existing.adapter_key = seed.slug if adapter else existing.adapter_key
-            existing.is_implemented = adapter is not None
+            existing.adapter_key = seed.slug if implemented else existing.adapter_key
+            existing.is_implemented = implemented
             existing.website_url = seed.website_url
             existing.notes = seed.notes
             existing.display_order = seed.display_order

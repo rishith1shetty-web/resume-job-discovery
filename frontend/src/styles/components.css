@@ -1659,3 +1659,54 @@
     margin-left: 0;
   }
 }
+
+/* --- Career pages -------------------------------------------------------- */
+/* Companies, not vacancies. Deliberately a different shape from a job row:
+   the matches list is dense and tabular because it is scanned and compared,
+   while these are a handful of destinations to open, so they get cards with
+   room for the employer's name. */
+
+.career-card {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding: var(--space-4);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  /* Inset rather than surface: these tiles sit inside a white card, so they
+     need to read as distinct from it. --text-secondary and .subtle are both
+     contrast-checked against this token (see tokens.css). */
+  background: var(--bg-inset);
+}
+
+.career-card-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--space-2);
+}
+
+.career-card-company {
+  margin: 0;
+  font-size: var(--text-base);
+  font-weight: 650;
+  letter-spacing: -0.01em;
+  color: var(--text-primary);
+}
+
+.career-card-role {
+  margin: 0;
+  font-size: var(--text-sm);
+  color: var(--text-secondary);
+}
+
+/* Pushed to the bottom so the buttons line up across cards of unequal height,
+   which is what makes a grid of them read as one row rather than as debris. */
+.career-card-link {
+  margin-top: auto;
+  width: 100%;
+}
+
+.career-card-reason {
+  margin: 0;
+}

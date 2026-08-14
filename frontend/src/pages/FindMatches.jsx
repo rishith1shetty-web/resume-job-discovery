@@ -279,6 +279,65 @@ function SearchProgress({ count }) {
   )
 }
 
+/**
+ * Companies with current US openings, and the official career page each one
+ * publishes.
+ *
+ * Rendered as cards rather than as rows in the matches table, and deliberately
+ * so: these are not vacancies. There is no score ring, no posted date and no
+ * status control, because a career page has none of those things — it is a
+ * place to go and look. The single action is an ordinary link to the
+ * employer's own site. Nothing here applies to anything, and opening the link
+ * records nothing.
+ */
+function CareerPages({ pages }) {
+  if (pages.length === 0) return null
+
+  return (
+    <Card
+      title={`Career pages (${pages.length})`}
+      subtitle="Companies hiring for your role in the US right now. Apply on the company's own site — these are not job listings and are separate from the matches above."
+      actions={<Badge tone="accent">Official pages only</Badge>}
+    >
+      <div className="grid grid-3">
+        {pages.map((page) => (
+          <article key={page.official_career_url + page.company_name} className="career-card">
+            <div className="career-card-head">
+              <h4 className="career-card-company">{page.company_name}</h4>
+              <Badge tone="neutral">
+                {page.opening_count} open{page.opening_count === 1 ? 'ing' : 'ings'}
+              </Badge>
+            </div>
+
+            <p className="career-card-role">{page.relevant_role}</p>
+
+            <p className="xs subtle row" style={{ gap: 'var(--space-1)' }}>
+              <Icon name="pin" size={13} />
+              {page.location}
+            </p>
+
+            {/* rel=noreferrer noopener on an external link the user opens
+                themselves; target=_blank so the search they waited for is
+                still here when they come back. */}
+            <a
+              className="btn btn-default career-card-link"
+              href={page.official_career_url}
+              target="_blank"
+              rel="noreferrer noopener"
+              title={page.reason}
+            >
+              View official careers
+              <Icon name="external" size={14} />
+            </a>
+
+            <p className="xs subtle career-card-reason">{page.reason}</p>
+          </article>
+        ))}
+      </div>
+    </Card>
+  )
+}
+
 const RUN_TONES = {
   completed: 'good',
   completed_with_errors: 'warn',
@@ -370,6 +429,8 @@ function SearchOutcome({ outcome, resumeId }) {
           </div>
         )}
       </Card>
+
+      <CareerPages pages={run.career_pages ?? []} />
 
       <details className="group">
         <summary>

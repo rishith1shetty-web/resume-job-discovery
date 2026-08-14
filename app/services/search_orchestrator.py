@@ -93,6 +93,14 @@ from app.core.constants import (
     PortalRunStatus,
     SearchRunStatus,
 )
+from app.careers.base import (
+    CareerPage,
+    CareerPageDiscovery,
+    CareerPageRequest,
+    CareerPageSource,
+    career_registry,
+)
+from app.careers.source import collect_discovery_listings
 from app.core.logging import get_logger
 from app.matching.eligibility import ineligible_job_ids
 from app.matching.profile import ResumeMatchProfile
@@ -270,10 +278,19 @@ class SearchOutcome:
     portals: list[PortalLegOutcome] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
     selection: GlobalSelection | None = None
+    #: Companies and their official career pages, when a career source was
+    #: selected. A separate list from ``results`` on purpose: these are not
+    #: vacancies, they never entered the allocation that filled ``results``,
+    #: and ``requested_limit`` does not apply to them.
+    career_pages: list[CareerPage] = field(default_factory=list)
 
     @property
     def returned_count(self) -> int:
         return len(self.results)
+
+    @property
+    def career_page_count(self) -> int:
+        return len(self.career_pages)
 
     @property
     def is_short(self) -> bool:
@@ -370,11 +387,34 @@ async def execute_search_run(
     # One query, once per run, before any selection (Phase 6 eligibility).
     excluded = await ineligible_job_ids(session, resume_id=run.resume_id)
 
+    # --- Stage 0: split the two kinds of source apart -----------------------
+    # A career source answers a different question - which companies are
+    # hiring - so it runs in its own lane. Splitting here rather than filtering
+    # later is what makes the guarantee structural: the job pipeline below
+    # receives exactly the legs it would have received before this feature
+    # existed, so allocation, deduplication, the 70% gate, the 30-day window
+    # and the recency ranking all run on unchanged input. A career page cannot
+    # take a slot from Find 20/50/100 because it never enters that code path.
+    #
+    # The test is "does a registry know this key", never "is this portal called
+    # Career Pages" - the same indirection that keeps portal names out of this
+    # module (CLAUDE.md section 4).
+    job_legs: list[SearchRunPortal] = []
+    job_portals: list[Portal] = []
+    career_pairs: list[tuple[SearchRunPortal, Portal]] = []
+
+    for leg, portal in zip(legs, portals, strict=True):
+        if career_registry.is_registered(portal.adapter_key or portal.slug):
+            career_pairs.append((leg, portal))
+        else:
+            job_legs.append(leg)
+            job_portals.append(portal)
+
     # --- Stage 1: read everything the concurrent stage will need ------------
     # Adapter options come off the ORM session, so they are resolved here,
     # sequentially, before anything runs in parallel.
     plans: list[_LegPlan] = []
-    for index, (leg, portal) in enumerate(zip(legs, portals, strict=True)):
+    for index, (leg, portal) in enumerate(zip(job_legs, job_portals, strict=True)):
         leg.status = PortalRunStatus.RUNNING
         leg.started_at = moment
         options = adapter_options(portal)
@@ -388,6 +428,9 @@ async def execute_search_run(
                 depth=SearchDepth.from_options(options),
             )
         )
+    for leg, _portal in career_pairs:
+        leg.status = PortalRunStatus.RUNNING
+        leg.started_at = moment
     await session.flush()
 
     # --- Stage 2: collect from every portal, concurrently -------------------
@@ -422,10 +465,173 @@ async def execute_search_run(
         )
         outcome.portals.append(leg_outcome)
 
+    # --- Stage 4: the career lane, on the listings already collected --------
+    # After the job pipeline, so it can reuse what the portals returned without
+    # asking for anything twice. Its failures are its own: a career source that
+    # breaks leaves the job results untouched.
+    if career_pairs:
+        await _run_career_lane(
+            session,
+            run=run,
+            pairs=career_pairs,
+            collections=collections,
+            profile=profile,
+            plan=plan,
+            outcome=outcome,
+            moment=moment,
+        )
+
     await _finalise(
-        session, run=run, legs=legs, outcome=outcome, moment=moment
+        session, run=run, legs=job_legs, outcome=outcome, moment=moment
     )
     return outcome
+
+
+# ---------------------------------------------------------------------------
+# The career lane
+# ---------------------------------------------------------------------------
+
+
+async def _career_discovery_adapters(
+    session: AsyncSession, *, exclude: set[uuid.UUID]
+) -> list[BasePortal]:
+    """Adapters to collect through when Career Pages was selected alone.
+
+    Only portals an operator has already enabled, and only ones with a working
+    adapter. This asks nothing new of any portal: it is the same access, the
+    same adapters and the same queries the user could have run by ticking those
+    boxes themselves.
+    """
+    rows = (
+        await session.scalars(
+            select(Portal)
+            .where(Portal.is_enabled.is_(True), Portal.is_implemented.is_(True))
+            .order_by(Portal.display_order, Portal.slug)
+        )
+    ).all()
+
+    built: list[BasePortal] = []
+    for portal in rows:
+        key = portal.adapter_key or portal.slug
+        if portal.id in exclude or career_registry.is_registered(key):
+            continue
+        try:
+            built.append(registry.create(key, {}))
+        except Exception as exc:  # noqa: BLE001 - a missing adapter is not fatal
+            logger.info(
+                "career_discovery_adapter_unavailable",
+                portal=portal.slug,
+                error=str(exc),
+            )
+    return built
+
+
+async def _run_career_lane(
+    session: AsyncSession,
+    *,
+    run: SearchRun,
+    pairs: list[tuple[SearchRunPortal, Portal]],
+    collections: list[DeepCollection],
+    profile: ResumeMatchProfile,
+    plan: QueryPlan,
+    outcome: SearchOutcome,
+    moment: datetime,
+) -> None:
+    """Discover company career pages, isolated from the job results.
+
+    Writes nothing but the leg's own bookkeeping: no ``jobs`` row, no
+    ``job_matches`` row and - deliberately - no ``applications`` row. Returning
+    a company's career page is not an application and must never look like one
+    (CLAUDE.md section 1).
+    """
+    listings = [job for collected in collections for job in collected.jobs]
+
+    if not listings:
+        # Career Pages was selected on its own, so there is nothing to reuse.
+        adapters = await _career_discovery_adapters(
+            session, exclude={portal.id for _leg, portal in pairs}
+        )
+        listings = await collect_discovery_listings(
+            adapters, queries=plan.queries, now=moment
+        )
+
+    for leg, portal in pairs:
+        options = adapter_options(portal)
+        discovery = CareerPageDiscovery()
+        error: Exception | None = None
+
+        try:
+            source: CareerPageSource = career_registry.create(
+                portal.adapter_key or portal.slug, options
+            )
+            discovery = await source.discover(
+                CareerPageRequest(
+                    queries=plan.queries,
+                    role_display=plan.role_display,
+                    role_key=plan.role_key,
+                    # The source's own ceiling applies; the run's requested
+                    # limit is not passed in, because it governs jobs and this
+                    # category is deliberately independent of it.
+                    limit=0,
+                    profile=profile,
+                ),
+                listings=listings,
+                now=moment,
+            )
+        except Exception as exc:  # noqa: BLE001 - isolation is the point
+            error = exc
+            logger.warning(
+                "career_source_failed",
+                search_run_id=str(run.id),
+                source=portal.slug,
+                error=str(exc),
+            )
+            session.add(
+                PortalErrorRow(
+                    portal_id=portal.id,
+                    search_run_id=run.id,
+                    search_run_portal_id=leg.id,
+                    kind=classify_error(exc),
+                    message=str(exc)[:2000],
+                    context={"phase": "career_discovery", "portal": portal.slug},
+                )
+            )
+
+        outcome.career_pages.extend(discovery.pages)
+
+        leg.status = (
+            PortalRunStatus.FAILED if error is not None else PortalRunStatus.COMPLETED
+        )
+        # The leg's counters, read in this lane's own terms: listings examined,
+        # companies that survived verification, cards returned.
+        leg.raw_count = len(listings) if error is None else 0
+        leg.qualified_count = discovery.companies_seen
+        leg.selected_count = discovery.returned_count
+        leg.final_quota = discovery.returned_count
+        leg.error = str(error) if error is not None else None
+        leg.completed_at = datetime.now(UTC)
+
+        if error is None:
+            outcome.warnings.append(
+                f"{portal.display_name}: {discovery.returned_count} verified "
+                f"company career page{'s' if discovery.returned_count != 1 else ''} "
+                "from companies with current US openings. These are companies to "
+                "apply to directly and are separate from the job results."
+            )
+        else:
+            outcome.warnings.append(
+                f"{portal.display_name} failed "
+                f"({classify_error(error).value}): {error}"
+            )
+
+    await session.flush()
+
+    logger.info(
+        "career_lane_completed",
+        search_run_id=str(run.id),
+        listings=len(listings),
+        returned=outcome.career_page_count,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -869,7 +1075,11 @@ async def _finalise(
             )
         outcome.warnings.append(note)
 
-    if outcome.is_short and run.status is not SearchRunStatus.FAILED:
+    # Only meaningful when a job portal was actually searched. A run of Career
+    # Pages alone returns no vacancies by design, and reporting that as "0 of
+    # 20 qualified" would describe it as a shortfall rather than as the search
+    # the user asked for.
+    if outcome.portals and outcome.is_short and run.status is not SearchRunStatus.FAILED:
         outcome.warnings.append(
             f"{outcome.returned_count} of {run.requested_limit} requested jobs "
             f"qualified at the locked {run.min_score}% threshold. The "
@@ -931,6 +1141,12 @@ def _summary(
         # on the same ranking. There are no per-portal quotas to redistribute.
         "search_strategy": DEEP_UNIFIED_STRATEGY,
         "candidate_pool_size": selection.pool_size,
+        # A supplementary category, recorded separately so it is visible that
+        # it took no part in the count above. Stored in the summary rather than
+        # a new table: career pages are transient discovery output, not records
+        # to keep, and the JSONB column exists precisely so a run can report
+        # its reasoning without a migration.
+        "career_page_count": outcome.career_page_count,
         "portals_exhausted": sum(
             1
             for leg in outcome.portals

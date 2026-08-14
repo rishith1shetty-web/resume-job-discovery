@@ -231,6 +231,45 @@ class SearchResultOut(BaseModel):
     )
 
 
+class CareerPageOut(BaseModel):
+    """One company and the official career page it publishes.
+
+    Deliberately not a ``SearchResultOut``. There is no ``job_id``, no
+    ``final_score``, no ``posted_at`` and no ``application_status``, because a
+    career page is a company's recruiting site rather than a vacancy - it has
+    none of those things, and inventing them would be claiming evidence that
+    does not exist.
+
+    ``relevance`` is a company-level judgement built from the openings actually
+    observed. It is not the 0-100 resume match a scored job carries and is
+    never compared against the 70% threshold.
+    """
+
+    company_name: str
+    relevant_role: str = Field(
+        description="The role titles seen at this company, as the employer writes them."
+    )
+    location: str
+    official_career_url: str = Field(
+        description=(
+            "The employer's own careers site, or their own space on an "
+            "applicant-tracking system. Never an aggregator or job board."
+        )
+    )
+    url_kind: str = Field(description="Why the URL was accepted as official.")
+    opening_count: int = Field(
+        description="Current US openings seen matching the resume's target role."
+    )
+    relevance: float = Field(
+        description="Company-level relevance, 0-100. Not a resume match score."
+    )
+    reason: str = Field(description="Why this company and page are being shown.")
+    sources: list[str] = Field(
+        default_factory=list, description="Portals that supplied the evidence."
+    )
+    matched_titles: list[str] = Field(default_factory=list)
+
+
 class SearchRunResultsOut(BaseModel):
     """A run's outcome: what was searched, what came back, and what failed."""
 
@@ -251,6 +290,15 @@ class SearchRunResultsOut(BaseModel):
     )
 
     results: list[SearchResultOut] = Field(default_factory=list)
+    career_pages: list[CareerPageOut] = Field(
+        default_factory=list,
+        description=(
+            "Companies with current US openings and their official career "
+            "pages, when a career source was selected. A supplementary "
+            "category: these took no part in filling `results`, and "
+            "`requested_limit` does not apply to them."
+        ),
+    )
     portals: list[SearchRunPortalOut] = Field(default_factory=list)
     queries: list[ExecutedQueryOut] = Field(default_factory=list)
     warnings: list[str] = Field(

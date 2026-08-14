@@ -38,6 +38,7 @@ from app.models.portal import Portal
 from app.models.profile import ResumeProfile
 from app.models.resume import Resume
 from app.models.search import SearchRun, SearchRunPortal
+from app.careers.base import career_registry
 from app.portals.registry import PortalRegistry, registry as default_registry
 
 logger = get_logger(__name__)
@@ -110,11 +111,17 @@ async def _load_selected_portals(
 
     if require_adapter:
         active_registry = portal_registry or default_registry
+        # Either registry may own the key. A career source is not a portal
+        # adapter - it returns companies, not listings - but it is just as
+        # runnable, and refusing it here would make its checkbox unusable.
         unimplemented = [
             portal
             for portal in by_id.values()
             if not portal.is_implemented
-            or not active_registry.is_registered(portal.adapter_key or portal.slug)
+            or not (
+                active_registry.is_registered(portal.adapter_key or portal.slug)
+                or career_registry.is_registered(portal.adapter_key or portal.slug)
+            )
         ]
         if unimplemented:
             raise UnprocessableError(

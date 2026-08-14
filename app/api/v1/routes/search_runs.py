@@ -21,6 +21,7 @@ from app.core.constants import ApplicationStatus, PortalRunStatus
 from app.models.search import SearchRun, SearchRunPortal
 from app.schemas.common import Page, PaginationMeta, ResponseEnvelope
 from app.schemas.search import (
+    CareerPageOut,
     ExecutedQueryOut,
     SearchResultOut,
     SearchRunCreate,
@@ -135,6 +136,26 @@ def _stored_result_out(item, statuses: dict) -> SearchResultOut:
     )
 
 
+def _career_page_out(page) -> CareerPageOut:
+    """Serialise one company career page.
+
+    No application status and no job id: nothing here is a vacancy, and a
+    career page never creates or carries an application record.
+    """
+    return CareerPageOut(
+        company_name=page.company_name,
+        relevant_role=page.relevant_role,
+        location=page.location,
+        official_career_url=page.official_career_url,
+        url_kind=page.url_kind.value,
+        opening_count=page.opening_count,
+        relevance=page.relevance,
+        reason=page.reason,
+        sources=list(page.sources),
+        matched_titles=list(page.matched_titles),
+    )
+
+
 def _results_out(run: SearchRun, outcome: SearchOutcome) -> SearchRunResultsOut:
     return SearchRunResultsOut(
         search_run_id=run.id,
@@ -147,6 +168,7 @@ def _results_out(run: SearchRun, outcome: SearchOutcome) -> SearchRunResultsOut:
         domain=outcome.query_plan.domain_key,
         is_short=outcome.is_short,
         results=[_result_out(item) for item in outcome.results],
+        career_pages=[_career_page_out(page) for page in outcome.career_pages],
         portals=[_portal_out(leg) for leg in run.portals],
         queries=[
             ExecutedQueryOut(
