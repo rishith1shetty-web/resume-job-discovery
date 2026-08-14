@@ -554,15 +554,55 @@ async def test_an_applied_job_is_excluded_for_that_resume(
     assert prepared2.legs[0].status is PortalRunStatus.COMPLETED
 
 
+async def test_a_skipped_job_is_excluded_for_that_resume(
+    db_session: AsyncSession,
+) -> None:
+    """Skipped excludes like Applied, but records no submission.
+
+    Deliberately written without ``applied_at``: skipping is a decision not to
+    apply, so a run that came back with this job again would be offering back
+    something the user already turned down.
+    """
+    user, resume = await analysed_resume(db_session)
+    listing = make_raw_job(portal="skip", index=0, company="Passed Over", now=NOW)
+    adapter = build_fake_portal("skip", jobs=[listing])
+
+    prepared, adapters = await build_run(
+        db_session, resume=resume, specs=[("skip", adapter)]
+    )
+    first = await run_search(db_session, prepared, adapters)
+    assert first.returned_count == 1
+    job_id = first.results[0].job_id
+
+    db_session.add(
+        Application(
+            user_id=user.id,
+            resume_id=resume.id,
+            job_id=job_id,
+            status=ApplicationStatus.SKIPPED,
+            notes=TEST_RECORD_MARKER,
+        )
+    )
+    await db_session.flush()
+
+    second_adapter = build_fake_portal("skip2", jobs=[listing])
+    prepared2, adapters2 = await build_run(
+        db_session, resume=resume, specs=[("skip2", second_adapter)]
+    )
+    second = await run_search(db_session, prepared2, adapters2)
+
+    assert second.returned_count == 0
+    assert prepared2.legs[0].status is PortalRunStatus.COMPLETED
+
+
 @pytest.mark.parametrize(
     "status",
     [
         ApplicationStatus.NOT_APPLIED,
         ApplicationStatus.SAVED,
-        ApplicationStatus.SKIPPED,
     ],
 )
-async def test_uncommitted_statuses_stay_eligible(
+async def test_undecided_statuses_stay_eligible(
     db_session: AsyncSession, status: ApplicationStatus
 ) -> None:
     user, resume = await analysed_resume(db_session)

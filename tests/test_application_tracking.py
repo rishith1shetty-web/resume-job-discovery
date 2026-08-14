@@ -13,8 +13,10 @@ an application.
 
 from __future__ import annotations
 
+import re
 import uuid
 from datetime import UTC, datetime
+from pathlib import Path
 
 import pytest
 from httpx import AsyncClient
@@ -749,25 +751,39 @@ async def build_run(db_session: AsyncSession, *, resume, slug: str, listing):
     )
 
 
-async def test_marking_applied_removes_the_job_from_the_next_search(
-    api_client: AsyncClient, db_session: AsyncSession, settings: Settings
+@pytest.mark.parametrize("status", ["applied", "skipped"])
+async def test_a_decided_status_removes_the_job_from_the_next_search(
+    api_client: AsyncClient,
+    db_session: AsyncSession,
+    settings: Settings,
+    status: str,
 ) -> None:
+    """Applied and Skipped are both decisions, so neither is offered again.
+
+    The whole point of Skipped: the user looked at this job and passed on it.
+    Returning it in the next run would waste the slot on something already
+    rejected.
+    """
     user = await acting_user(db_session, settings)
     resume = await tracked_resume(db_session, user=user)
     listing = make_raw_job(portal="flow", index=0, company="Flow Co", now=NOW)
 
-    first = await build_run(db_session, resume=resume, slug="flow1", listing=listing)
+    first = await build_run(
+        db_session, resume=resume, slug=f"flow1-{status}", listing=listing
+    )
     await db_session.commit()
     assert first.returned_count == 1
     job_id = first.results[0].job_id
 
-    await api_client.patch(url(job_id, resume.id), json={"status": "applied"})
+    await api_client.patch(url(job_id, resume.id), json={"status": status})
 
-    second = await build_run(db_session, resume=resume, slug="flow2", listing=listing)
+    second = await build_run(
+        db_session, resume=resume, slug=f"flow2-{status}", listing=listing
+    )
     assert second.returned_count == 0
 
 
-@pytest.mark.parametrize("status", ["saved", "skipped", "not_applied"])
+@pytest.mark.parametrize("status", ["saved", "not_applied"])
 async def test_an_eligible_status_keeps_the_job_in_the_next_search(
     api_client: AsyncClient,
     db_session: AsyncSession,
@@ -791,25 +807,31 @@ async def test_an_eligible_status_keeps_the_job_in_the_next_search(
     assert second.results[0].application_status.value == status
 
 
-async def test_one_resume_applying_does_not_hide_the_job_from_another(
-    api_client: AsyncClient, db_session: AsyncSession, settings: Settings
+@pytest.mark.parametrize("status", ["applied", "skipped"])
+async def test_one_resume_deciding_does_not_hide_the_job_from_another(
+    api_client: AsyncClient,
+    db_session: AsyncSession,
+    settings: Settings,
+    status: str,
 ) -> None:
-    # Resume A applied, resume B never did: the job must still appear for B.
+    # Resume A decided, resume B never did: the job must still appear for B.
+    # Skipping a job as a Financial Analyst says nothing about whether it suits
+    # the user's other resume.
     user = await acting_user(db_session, settings)
     first_resume = await tracked_resume(db_session, user=user)
     second_resume = await tracked_resume(db_session, user=user)
     listing = make_raw_job(portal="two", index=0, company="Two Co", now=NOW)
 
     first = await build_run(
-        db_session, resume=first_resume, slug="two1", listing=listing
+        db_session, resume=first_resume, slug=f"two1-{status}", listing=listing
     )
     await db_session.commit()
     job_id = first.results[0].job_id
 
-    await api_client.patch(url(job_id, first_resume.id), json={"status": "applied"})
+    await api_client.patch(url(job_id, first_resume.id), json={"status": status})
 
     other = await build_run(
-        db_session, resume=second_resume, slug="two2", listing=listing
+        db_session, resume=second_resume, slug=f"two2-{status}", listing=listing
     )
 
     assert other.returned_count == 1
@@ -889,14 +911,20 @@ async def test_the_status_payload_carries_what_the_dashboard_renders(
         assert field in payload, field
 
 
-async def test_every_status_the_dashboard_offers_is_accepted(
+async def test_every_status_in_the_vocabulary_is_accepted(
     api_client: AsyncClient, db_session: AsyncSession, settings: Settings
 ) -> None:
+    """The API accepts the whole vocabulary, not only what the dropdown shows.
+
+    Find Matches offers three of them (see the dropdown test below), but rows
+    recorded under any status - by an earlier build, by the history page, or by
+    a direct PATCH - must still be writable and readable.
+    """
     user = await acting_user(db_session, settings)
     resume = await tracked_resume(db_session, user=user)
     job = await make_job(db_session)
 
-    offered = [
+    accepted = [
         "not_applied",
         "saved",
         "applied",
@@ -905,14 +933,81 @@ async def test_every_status_the_dashboard_offers_is_accepted(
         "offer",
         "skipped",
     ]
-    assert offered == [status.value for status in ApplicationStatus]
+    assert accepted == [status.value for status in ApplicationStatus]
 
-    for status in offered:
+    for status in accepted:
         response = await api_client.patch(
             url(job.id, resume.id), json={"status": status}
         )
         assert response.status_code == 200, (status, response.text)
         assert response.json()["data"]["status"] == status
+
+
+def test_the_find_matches_dropdown_offers_exactly_three_statuses() -> None:
+    """The dropdown is trimmed to the three decisions the row supports.
+
+    Read from the source rather than asserted in prose: there is no JavaScript
+    test runner in this project, and a comment cannot fail when the list drifts.
+    """
+    source = (
+        Path(__file__).resolve().parents[1]
+        / "frontend"
+        / "src"
+        / "components"
+        / "ApplicationStatus.jsx"
+    ).read_text(encoding="utf-8")
+
+    match = re.search(r"export const STATUSES = \[(.*?)\]", source, re.DOTALL)
+    assert match is not None, "STATUSES is no longer declared as an array literal."
+
+    offered = re.findall(r"'([a-z_]+)'", match.group(1))
+
+    assert offered == ["not_applied", "applied", "skipped"]
+
+    # Both excluding statuses must be marked as such, or the tooltip would tell
+    # the user a skipped job is still eligible.
+    excluding = re.search(r"const EXCLUDING = new Set\(\[(.*?)\]\)", source, re.DOTALL)
+    assert excluding is not None
+    assert "'skipped'" in excluding.group(1)
+    assert "'applied'" in excluding.group(1)
+
+
+def test_application_history_filters_to_all_applied_and_skipped() -> None:
+    """The history page offers three filters and one summary card.
+
+    Only what is *shown* is trimmed. ``ALL_TRACKED`` stays complete in the same
+    file, because the table still lists rows recorded under any status and the
+    board column is enriched per status - a row saved as Interview must not
+    vanish just because it has no filter tab of its own.
+    """
+    source = (
+        Path(__file__).resolve().parents[1]
+        / "frontend"
+        / "src"
+        / "pages"
+        / "ApplicationHistory.jsx"
+    ).read_text(encoding="utf-8")
+
+    filters = re.search(r"const FILTERS = \[(.*?)\]", source, re.DOTALL)
+    assert filters is not None, "FILTERS is no longer declared as an array literal."
+    assert re.findall(r"'([a-z_]+)'", filters.group(1)) == ["applied", "skipped"]
+
+    # Rendered alongside a hardcoded All pill, and nothing else.
+    assert source.count("<FilterPill") == 2
+    assert "{FILTERS.map((status)" in source
+
+    tracked = re.search(r"const ALL_TRACKED = \[(.*?)\]", source, re.DOTALL)
+    assert tracked is not None
+    for status in ("interview", "offer", "rejected", "saved"):
+        assert status in tracked.group(0) or status in "".join(
+            re.findall(r"const OUTCOMES = \[(.*?)\]", source, re.DOTALL)
+        ), status
+
+    # One summary card: Applications. The other three are gone.
+    assert source.count("<StatCard") == 1
+    assert 'label="Applications"' in source
+    for removed in ('label="Interviews"', 'label="Offers"', 'label="Rejected"'):
+        assert removed not in source, removed
 
 
 async def test_the_applications_list_carries_the_derived_timestamp(

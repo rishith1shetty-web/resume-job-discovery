@@ -884,8 +884,46 @@ async def test_an_applied_job_stays_excluded_when_found_by_the_other_portal(
     assert job_id not in {item.job_id for item in second.results}
 
 
+async def test_a_skipped_job_stays_excluded_when_found_by_the_other_portal(
+    db_session: AsyncSession,
+) -> None:
+    """Skipping survives rediscovery through a different portal.
+
+    The exclusion is keyed on the canonical job, so a second portal's listing
+    resolves to the same row and cannot smuggle a passed-over job back in under
+    another source's URL.
+    """
+    shared = hiringcafe_records()[0]
+    user, resume = await analysed_resume(db_session)
+
+    _, first = await run_search(
+        db_session, resume=resume, specs=[("hc-skip", build_hiringcafe([shared]))]
+    )
+    await db_session.commit()
+    assert first.returned_count == 1
+    job_id = first.results[0].job_id
+
+    db_session.add(
+        Application(
+            user_id=user.id,
+            resume_id=resume.id,
+            job_id=job_id,
+            status=ApplicationStatus.SKIPPED,
+        )
+    )
+    await db_session.flush()
+
+    _, second = await run_search(
+        db_session,
+        resume=resume,
+        specs=[("jr-skip", build_jobright([_mirror_as_jobright(shared)]))],
+    )
+
+    assert job_id not in {item.job_id for item in second.results}
+
+
 @pytest.mark.parametrize(
-    "status", [ApplicationStatus.SAVED, ApplicationStatus.SKIPPED]
+    "status", [ApplicationStatus.NOT_APPLIED, ApplicationStatus.SAVED]
 )
 async def test_an_eligible_status_survives_the_new_portal(
     db_session: AsyncSession, status: ApplicationStatus

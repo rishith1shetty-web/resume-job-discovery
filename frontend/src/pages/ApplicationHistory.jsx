@@ -37,7 +37,25 @@ import {
 
 /** The statuses that represent a real outcome, in pipeline order. */
 const OUTCOMES = ['applied', 'interview', 'offer', 'rejected']
+
+/**
+ * Every status this page reads. Still the full set, on purpose: the table lists
+ * whatever the user has actually recorded, so a row saved under Interview or
+ * Offer must keep appearing under All with its own badge, and must keep getting
+ * its board column enriched. Trimming this would hide existing records rather
+ * than simplify the interface.
+ */
 const ALL_TRACKED = [...OUTCOMES, 'saved', 'skipped']
+
+/**
+ * The statuses this page offers as filter tabs, alongside All.
+ *
+ * Narrower than ALL_TRACKED, and deliberately so — it mirrors the three
+ * decisions Find Matches lets the user make. Nothing is removed from the
+ * status vocabulary, the API or the records; a tab that is not here simply
+ * has no shortcut of its own, and its rows are still reachable under All.
+ */
+const FILTERS = ['applied', 'skipped']
 
 export function ApplicationHistory({ navigate }) {
   const { activeResumeId, activeResume } = useActiveResume()
@@ -155,7 +173,12 @@ export function ApplicationHistory({ navigate }) {
         }
       />
 
-      <section className="grid grid-stats">
+      {/* One card now, so the column track is pinned locally. `.grid-stats` is
+          `repeat(auto-fit, minmax(200px, 1fr))`, which would stretch a lone
+          card the full width of the page — a single number in a banner. The
+          override is inline rather than in layout.css because every other
+          page still wants the shared four-across behaviour. */}
+      <section className="grid grid-stats" style={{ gridTemplateColumns: 'minmax(220px, 320px)' }}>
         <StatCard
           label="Applications"
           value={counts.applied}
@@ -164,30 +187,6 @@ export function ApplicationHistory({ navigate }) {
           tone="info"
           hint="Submitted by you"
         />
-        <StatCard
-          label="Interviews"
-          value={counts.interview}
-          loading={loading}
-          icon="users"
-          tone="good"
-          hint="Reached interview stage"
-        />
-        <StatCard
-          label="Offers"
-          value={counts.offer}
-          loading={loading}
-          icon="award"
-          tone="good"
-          hint="Received to date"
-        />
-        <StatCard
-          label="Rejected"
-          value={counts.rejected}
-          loading={loading}
-          icon="ban"
-          tone="bad"
-          hint="Closed without an offer"
-        />
       </section>
 
       <Card flush>
@@ -195,7 +194,7 @@ export function ApplicationHistory({ navigate }) {
           <FilterPill active={filter === 'all'} count={counts.all} onClick={() => setFilter('all')}>
             All
           </FilterPill>
-          {ALL_TRACKED.map((status) => (
+          {FILTERS.map((status) => (
             <FilterPill
               key={status}
               active={filter === status}

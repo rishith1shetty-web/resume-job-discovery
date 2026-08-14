@@ -14,16 +14,19 @@ import { Badge, Button, IconButton, formatDateTime } from './ui.jsx'
  * shows immediately without a page refresh, polling or a socket.
  */
 
-export const STATUSES = [
-  'not_applied',
-  'saved',
-  'applied',
-  'interview',
-  'rejected',
-  'offer',
-  'skipped',
-]
+/**
+ * What the Find Matches dropdown offers: the three decisions a row actually
+ * needs. Applied and Skipped both remove the job from future searches for this
+ * resume; Not applied leaves it eligible.
+ *
+ * Shorter than the status vocabulary on purpose. The API still accepts every
+ * `ApplicationStatus`, and rows recorded under an older status keep it — see
+ * `optionsFor` below, which adds the current value back so an existing Saved or
+ * Interview row still renders its own name.
+ */
+export const STATUSES = ['not_applied', 'applied', 'skipped']
 
+/** Labels for every stored status, not only the three offered here. */
 export const STATUS_LABELS = {
   not_applied: 'Not applied',
   saved: 'Saved',
@@ -35,9 +38,9 @@ export const STATUS_LABELS = {
 }
 
 /**
- * Colour per status. `applied`, `interview`, `rejected` and `offer` are the
- * statuses that remove a job from future Find Matches runs for this resume, so
- * they are visually distinct from the ones that leave it eligible.
+ * Colour per status. Every status in `EXCLUDING` removes a job from future
+ * Find Matches runs for this resume, so those are visually distinct from the
+ * ones that leave it eligible.
  */
 export const STATUS_TONES = {
   not_applied: 'neutral',
@@ -49,7 +52,24 @@ export const STATUS_TONES = {
   skipped: 'warn',
 }
 
-const EXCLUDING = new Set(['applied', 'interview', 'rejected', 'offer'])
+/**
+ * Mirrors `INELIGIBLE_STATUSES` in app/matching/eligibility.py. This only
+ * decides the tooltip wording — the exclusion itself is enforced by the search
+ * pipeline, never by the interface.
+ */
+const EXCLUDING = new Set(['applied', 'interview', 'rejected', 'offer', 'skipped'])
+
+/**
+ * The options to render for a row currently holding `status`.
+ *
+ * A `<select>` whose value matches no option renders blank, so a row recorded
+ * as Saved before the dropdown was trimmed would silently lose its status on
+ * screen. Keeping it listed shows the truth and still lets the user move it to
+ * one of the three.
+ */
+function optionsFor(status) {
+  return STATUSES.includes(status) ? STATUSES : [...STATUSES, status]
+}
 
 export function StatusBadge({ status }) {
   return (
@@ -144,9 +164,9 @@ export function ApplicationStatusCell({ jobId, resumeId, initial }) {
           }
           onChange={(event) => save(event.target.value, undefined)}
         >
-          {STATUSES.map((option) => (
+          {optionsFor(status).map((option) => (
             <option key={option} value={option}>
-              {STATUS_LABELS[option]}
+              {STATUS_LABELS[option] ?? option}
             </option>
           ))}
         </select>

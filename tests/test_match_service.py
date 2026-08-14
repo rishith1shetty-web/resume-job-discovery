@@ -31,7 +31,11 @@ from app.matching.eligibility import (
 )
 from app.matching.scoring import QUALIFICATION_THRESHOLD, RejectionCode
 from app.matching.version import SCORING_VERSION
-from app.models.application import Application, ApplicationStatusHistory
+from app.models.application import (
+    APPLIED_STATUSES,
+    Application,
+    ApplicationStatusHistory,
+)
 from app.models.job import Job, JobMatch
 from app.models.profile import ResumeSkill
 from app.services.match_service import (
@@ -480,7 +484,7 @@ async def test_the_same_job_stays_eligible_for_a_different_resume(
 
 @pytest.mark.parametrize(
     "status",
-    [ApplicationStatus.NOT_APPLIED, ApplicationStatus.SAVED, ApplicationStatus.SKIPPED],
+    [ApplicationStatus.NOT_APPLIED, ApplicationStatus.SAVED],
 )
 async def test_saved_and_not_applied_jobs_remain_presentable(
     db_session: AsyncSession, status: ApplicationStatus
@@ -504,6 +508,108 @@ async def test_saved_and_not_applied_jobs_remain_presentable(
     )
 
     assert summary.scored[0].is_presentable is True
+
+
+async def test_a_skipped_job_is_not_offered_to_that_resume_again(
+    db_session: AsyncSession,
+) -> None:
+    """Skipping is a decision, so it excludes exactly as applying does.
+
+    The difference from APPLIED is what it does *not* do: nothing was
+    submitted, so ``applied_at`` stays null and the job never claims to be an
+    application the user made.
+    """
+    user, resume, _ = await analysed_resume(db_session)
+    job = await make_job(db_session, description=STRONG_DESCRIPTION)
+
+    db_session.add(
+        Application(
+            user_id=user.id,
+            resume_id=resume.id,
+            job_id=job.id,
+            status=ApplicationStatus.SKIPPED,
+            notes=TEST_RECORD_MARKER,
+        )
+    )
+    await db_session.flush()
+
+    summary = await score_jobs_for_resume(
+        db_session, resume_id=resume.id, jobs=[job], now=NOW
+    )
+    scored = summary.scored[0]
+
+    assert scored.qualified is True
+    assert scored.eligibility.is_eligible is False
+    assert scored.is_presentable is False
+    assert summary.presentable_count == 0
+    assert job.id in await ineligible_job_ids(db_session, resume_id=resume.id)
+
+
+async def test_a_skipped_job_stays_eligible_for_a_different_resume(
+    db_session: AsyncSession,
+) -> None:
+    """Skipping is resume-scoped. Passing on a job with one resume says
+    nothing about whether it suits another."""
+    user, skipped_resume, _ = await analysed_resume(db_session)
+    other_resume = await make_resume(db_session, user=user)
+    await make_profile(db_session, resume=other_resume)
+    job = await make_job(db_session, description=STRONG_DESCRIPTION)
+
+    db_session.add(
+        Application(
+            user_id=user.id,
+            resume_id=skipped_resume.id,
+            job_id=job.id,
+            status=ApplicationStatus.SKIPPED,
+            notes=TEST_RECORD_MARKER,
+        )
+    )
+    await db_session.flush()
+
+    blocked = await is_eligible(
+        db_session, resume_id=skipped_resume.id, job_id=job.id
+    )
+    open_for_other = await is_eligible(
+        db_session, resume_id=other_resume.id, job_id=job.id
+    )
+
+    assert blocked.is_eligible is False
+    assert open_for_other.is_eligible is True
+    assert await ineligible_job_ids(db_session, resume_id=other_resume.id) == frozenset()
+
+
+def test_skipping_excludes_without_claiming_an_application_was_made() -> None:
+    """The two sets are related but not equal, and must stay that way.
+
+    ``APPLIED_STATUSES`` drives ``applied_at`` and a CHECK constraint on the
+    table; folding SKIPPED into it would record an application the user never
+    submitted.
+    """
+    assert ApplicationStatus.SKIPPED in INELIGIBLE_STATUSES
+    assert ApplicationStatus.SKIPPED not in APPLIED_STATUSES
+    assert APPLIED_STATUSES < INELIGIBLE_STATUSES
+
+
+async def test_a_skipped_job_records_no_submission_time(
+    db_session: AsyncSession,
+) -> None:
+    user, resume, _ = await analysed_resume(db_session)
+    job = await make_job(db_session, description=STRONG_DESCRIPTION)
+
+    application = Application(
+        user_id=user.id,
+        resume_id=resume.id,
+        job_id=job.id,
+        status=ApplicationStatus.SKIPPED,
+        notes=TEST_RECORD_MARKER,
+    )
+    db_session.add(application)
+    await db_session.flush()
+
+    # The CHECK constraint would have rejected this row if SKIPPED had been
+    # made an applied status without a timestamp.
+    assert application.applied_at is None
+    assert application.is_submitted is False
 
 
 async def test_the_excluded_set_is_scoped_to_one_resume(

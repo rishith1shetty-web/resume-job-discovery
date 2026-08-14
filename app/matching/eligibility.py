@@ -2,8 +2,9 @@
 
 The permanent rule (Phase 6 brief, CLAUDE.md sections 9 and 11):
 
-    A canonical job the user has **applied to for a given resume** is excluded
-    from future Find Matches results **for that same resume**. It stays
+    A canonical job the user has **applied to, or skipped, for a given
+    resume** is excluded from future Find Matches results **for that same
+    resume**. It stays
     visible in application history, its match record is never deleted, and the
     same job remains eligible for a different resume.
 
@@ -12,8 +13,12 @@ Everything hangs on the pairing being (resume, canonical job) - resolved
 canonical row, so it cannot come back as a new opportunity under another
 portal's listing.
 
-``NOT_APPLIED``, ``SAVED`` and ``SKIPPED`` stay eligible: the user has not
-committed to any of them.
+``SKIPPED`` is excluded on the same terms: the user has looked at the job and
+decided against it, so offering it again is the same nuisance as offering back
+a job they already applied to. It is a *decision*, not a submission - which is
+why it excludes without stamping ``applied_at``.
+
+``NOT_APPLIED`` and ``SAVED`` stay eligible: the user has not decided either.
 
 # How Phase 7 uses this
 
@@ -40,20 +45,26 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.constants import ApplicationStatus
 from app.models.application import APPLIED_STATUSES, Application
 
-#: Statuses that keep a job in the results. Everything the user has not
-#: actually submitted stays visible.
+#: Statuses that keep a job in the results. Only the two the user has not
+#: decided about: no application, or one saved to look at later.
 ELIGIBLE_STATUSES: frozenset[ApplicationStatus] = frozenset(
     {
         ApplicationStatus.NOT_APPLIED,
         ApplicationStatus.SAVED,
-        ApplicationStatus.SKIPPED,
     }
 )
 
-#: Statuses that remove a job from future results for that resume. Identical
-#: to the set that stamps ``applied_at``: reaching an interview or an outcome
-#: means the application was submitted.
-INELIGIBLE_STATUSES: frozenset[ApplicationStatus] = APPLIED_STATUSES
+#: Statuses that remove a job from future results for that resume.
+#:
+#: A superset of ``APPLIED_STATUSES``, and deliberately not the same set.
+#: ``APPLIED_STATUSES`` answers "was this submitted?" - it stamps ``applied_at``
+#: and is enforced by a CHECK constraint on the table. This one answers "should
+#: we offer it again?", and the answer for SKIPPED is no even though nothing was
+#: submitted. Adding SKIPPED to the other set instead would claim the user
+#: applied to a job they explicitly passed over.
+INELIGIBLE_STATUSES: frozenset[ApplicationStatus] = APPLIED_STATUSES | {
+    ApplicationStatus.SKIPPED
+}
 
 
 @dataclass(frozen=True, slots=True)
@@ -88,14 +99,19 @@ def decide(
         )
 
     if status in INELIGIBLE_STATUSES:
+        decided = (
+            "Skipped for this resume"
+            if status is ApplicationStatus.SKIPPED
+            else "Already applied for this resume"
+        )
         return EligibilityDecision(
             job_id=job_id,
             resume_id=resume_id,
             is_eligible=False,
             status=status,
             reason=(
-                f"Already applied for this resume (status {status.value}). It "
-                "stays in application history and is not offered again."
+                f"{decided} (status {status.value}). It stays in application "
+                "history and is not offered again."
             ),
         )
 
