@@ -172,6 +172,32 @@ PORTAL_SEEDS: tuple[PortalSeed, ...] = (
         ),
     ),
     PortalSeed(
+        slug="google_careers",
+        website_url="https://www.google.com/about/careers/",
+        display_order=22,
+        is_enabled=True,
+        notes=(
+            "Collects from Google's own careers search page, which renders its "
+            "results server-side: the listings arrive inside the page's "
+            "AF_initDataCallback data island, so there is no private API to "
+            "call. No account, no API key, no cookie and no token; the request "
+            "goes out under this project's own user agent, which Google serves "
+            "identically to a browser's. robots.txt permits the results page "
+            "and the individual job pages for this client but disallows "
+            "pagination (?page=) four separate ways, so only page one is read - "
+            "20 listings per query - and breadth comes from querying once per "
+            "same-role title variation. Coverage is one employer: Google and "
+            "the organisations hiring through its careers site, including "
+            "DeepMind and YouTube. The payload carries three timestamps; "
+            "posted_at is taken from the publication one, NOT from the refresh "
+            "timestamp the site's own sort_by=date orders on, because listings "
+            "published months ago are routinely refreshed to the top of that "
+            "ordering. Each record carries the employer's full posting text - "
+            "about, responsibilities and qualifications - and structured "
+            "locations with ISO country codes."
+        ),
+    ),
+    PortalSeed(
         slug="career_pages",
         website_url="https://www.rising-path.example/careers",
         display_order=25,
