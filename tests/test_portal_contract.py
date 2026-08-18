@@ -36,7 +36,7 @@ REGISTERED_SLUGS = registry.slugs
 def test_only_approved_adapters_are_registered() -> None:
     # The rollout order in docs/DECISIONS.md D-001: Jobright and LinkedIn in
     # Phase 4, Hiring Cafe in Phase 9A, ZipRecruiter in Phase 9B, SimplyHired
-    # in Phase 9C, Greenhouse in Phase 9D, Scale.jobs in Phase 9E. A slug appearing here that is not on this list means someone
+    # in Phase 9C, Greenhouse in Phase 9D, Scale.jobs in Phase 9E, Dayforce in Phase 9F. A slug appearing here that is not on this list means someone
     # skipped the one-at-a-time rule.
     assert set(REGISTERED_SLUGS) == {
         "jobright",
@@ -46,6 +46,7 @@ def test_only_approved_adapters_are_registered() -> None:
         "simplyhired",
         "greenhouse",
         "scalejobs",
+        "dayforce",
     }
 
 

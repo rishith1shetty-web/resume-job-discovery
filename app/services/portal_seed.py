@@ -146,6 +146,32 @@ PORTAL_SEEDS: tuple[PortalSeed, ...] = (
         ),
     ),
     PortalSeed(
+        slug="dayforce",
+        website_url="https://jobs.dayforcehcm.com/",
+        display_order=21,
+        is_enabled=True,
+        notes=(
+            "Collects from the public candidate-portal search API "
+            "(POST /api/geo/<clientNamespace>/jobposting/search). No account "
+            "and no API key: the endpoint is guarded by an ordinary "
+            "double-submit CSRF token read from the public /api/auth/csrf, "
+            "which is why it is the one adapter that keeps a cookie session. "
+            "This host's robots.txt carries no User-agent group and no "
+            "Disallow, so no path is closed to this client. Dayforce is an "
+            "ATS, not a job board: it publishes NO cross-company search, so "
+            "coverage is exactly the employers listed in this portal's boards "
+            "option and no wider - mydayforce/alljobs is Dayforce's own "
+            "corporate board, not an aggregate. The API also does not "
+            "paginate: every paging parameter is ignored and at most 25 "
+            "postings come back per query, so breadth comes from querying each "
+            "board once per same-role title variation. Each posting carries "
+            "the employer's full text, a real publication timestamp and "
+            "structured locations with ISO country codes; the employer name "
+            "comes from the board's configuration entry, because the payload "
+            "carries none."
+        ),
+    ),
+    PortalSeed(
         slug="career_pages",
         website_url="https://www.rising-path.example/careers",
         display_order=25,

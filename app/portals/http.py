@@ -110,10 +110,29 @@ class _RateLimiter:
 class PortalHttpClient:
     """Async HTTP client bound to one portal's policy."""
 
-    def __init__(self, *, portal: str, policy: HttpPolicy | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        portal: str,
+        policy: HttpPolicy | None = None,
+        keep_cookies: bool = False,
+    ) -> None:
         self.portal = portal
         self.policy = policy or HttpPolicy()
         self._limiter = _RateLimiter(self.policy.min_interval_seconds)
+        # Off by default, so every existing portal keeps sending each request
+        # from a clean client with no state carried between them.
+        #
+        # A portal that issues a token in one response and validates it on the
+        # next - a double-submit CSRF cookie, say - cannot work that way: the
+        # token and its cookie have to travel together. Opting in keeps one jar
+        # for this client's lifetime, which is one search run.
+        self._cookies: httpx.Cookies | None = httpx.Cookies() if keep_cookies else None
+
+    @property
+    def cookies(self) -> httpx.Cookies | None:
+        """The session jar, when this client was built with ``keep_cookies``."""
+        return self._cookies
 
     def _headers(self) -> dict[str, str]:
         return {
@@ -148,8 +167,12 @@ class PortalHttpClient:
                     timeout=self.policy.timeout_seconds,
                     follow_redirects=True,
                     headers=request_headers,
+                    cookies=self._cookies,
                 ) as client:
                     response = await send(client)
+                    if self._cookies is not None:
+                        # Carry anything the portal set into the next request.
+                        self._cookies.update(response.cookies)
             except httpx.TimeoutException as exc:
                 last_error = PortalTimeoutError(
                     f"Request to {self.portal} timed out after "

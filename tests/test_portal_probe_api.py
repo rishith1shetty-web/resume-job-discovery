@@ -174,7 +174,7 @@ async def test_seeding_does_not_re_enable_a_portal_an_operator_disabled(
 
 def test_only_approved_portals_are_seeded() -> None:
     # Jobright and LinkedIn in Phase 4, Hiring Cafe in Phase 9A, ZipRecruiter
-    # in Phase 9B, SimplyHired in Phase 9C, Greenhouse in Phase 9D, Scale.jobs in Phase 9E. Portals are added one at a time; an
+    # in Phase 9B, SimplyHired in Phase 9C, Greenhouse in Phase 9D, Scale.jobs in Phase 9E, Dayforce in Phase 9F. Portals are added one at a time; an
     # unexpected slug means that gate was skipped.
     #
     # career_pages is the one row here that is not a job board: it is a career
@@ -190,6 +190,7 @@ def test_only_approved_portals_are_seeded() -> None:
         "simplyhired",
         "greenhouse",
         "scalejobs",
+        "dayforce",
         "career_pages",
     }
 
