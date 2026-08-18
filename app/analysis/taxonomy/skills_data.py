@@ -136,6 +136,30 @@ SKILL_ENTRIES: tuple[tuple[str, str, SkillKind, tuple[str, ...], tuple[str, ...]
     ("firewall", "Firewalls", TECH, ("firewalls",), ("cybersecurity",)),
     ("soc", "Security Operations Center", SKILL, ("security operations center",), ("cybersecurity",)),
 
+    # --- Networking and infrastructure ------------------------------------
+    # Corroborating evidence for the networking roles. These are what a
+    # network engineer's resume is actually made of, and without them those
+    # roles would score on their title alone.
+    ("tcp/ip", "TCP/IP", TECH, ("tcp ip", "ipv4", "ipv6"), ("network_infrastructure",)),
+    ("routing", "Routing", SKILL, ("ip routing", "inter-vlan routing"), ("network_infrastructure",)),
+    ("switching", "Switching", SKILL, ("layer 2 switching",), ("network_infrastructure",)),
+    ("cisco", "Cisco", TECH, ("cisco ios", "cisco catalyst", "cisco isr"), ("network_infrastructure",)),
+    ("vlan", "VLAN", TECH, ("vlans",), ("network_infrastructure",)),
+    ("ospf", "OSPF", TECH, (), ("network_infrastructure",)),
+    ("bgp", "BGP", TECH, (), ("network_infrastructure",)),
+    ("eigrp", "EIGRP", TECH, (), ("network_infrastructure",)),
+    ("vpn", "VPN", TECH, ("ipsec vpn", "site-to-site vpn"), ("network_infrastructure",)),
+    ("dns", "DNS", TECH, (), ("network_infrastructure",)),
+    ("dhcp", "DHCP", TECH, (), ("network_infrastructure",)),
+    ("nat", "NAT", TECH, ("network address translation",), ("network_infrastructure",)),
+    ("subnetting", "Subnetting", SKILL, ("ip addressing",), ("network_infrastructure",)),
+    ("wireshark", "Wireshark", TOOL, ("packet capture", "packet analysis"), ("network_infrastructure",)),
+    ("solarwinds", "SolarWinds", TOOL, (), ("network_infrastructure",)),
+    ("network monitoring", "Network Monitoring", SKILL, ("network performance monitoring",), ("network_infrastructure",)),
+    ("load balancing", "Load Balancing", SKILL, ("load balancer",), ("network_infrastructure", "devops_cloud")),
+    ("wireless networking", "Wireless Networking", SKILL, ("wifi", "wlan"), ("network_infrastructure",)),
+    ("network segmentation", "Network Segmentation", SKILL, (), ("network_infrastructure", "cybersecurity")),
+
     # --- Finance and accounting -------------------------------------------
     ("financial modeling", "Financial Modeling", SKILL, ("financial modelling",), ("finance",)),
     ("financial analysis", "Financial Analysis", SKILL, (), ("finance",)),

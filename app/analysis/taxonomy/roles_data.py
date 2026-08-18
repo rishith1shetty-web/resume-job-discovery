@@ -68,6 +68,20 @@ DOMAIN_ENTRIES: tuple[tuple[str, str, tuple[str, ...]], ...] = (
     ("customer_support", "Customer Support & Success",
      ("customer support", "customer success", "customer satisfaction",
       "technical support", "client retention", "help desk")),
+    # Networking and infrastructure operations. Distinct from devops_cloud:
+    # both touch infrastructure, but a network engineer's subject is the
+    # network itself - routing, switching, firewalls, connectivity - not
+    # delivery pipelines or platform automation. Without this domain a
+    # networking resume lands on whichever adjacent domain its incidental
+    # cloud vocabulary happened to hit.
+    #
+    # "network security" is deliberately absent: it already signals
+    # cybersecurity, and one keyword cannot belong to two domains.
+    ("network_infrastructure", "Network & Infrastructure",
+     ("network infrastructure", "network operations", "network engineering",
+      "network administration", "routing and switching", "enterprise network",
+      "network monitoring", "network troubleshooting", "lan/wan",
+      "network connectivity")),
 )
 
 
@@ -440,5 +454,54 @@ ROLE_ENTRIES: tuple[
      ("Customer Success Manager", "Client Success Manager",
       "Customer Success Specialist"),
      ("customer onboarding", "churn reduction", "account management", "crm")),
+
+    # ---------------- Networking and infrastructure ---------------------------
+    # These are separate roles from Customer Support Specialist, IT Support and
+    # Help Desk, and separate from DevOps/Cloud Engineer, for the usual reason:
+    # adjacent jobs get their own rows so they can never leak into one
+    # another's variations.
+    #
+    # Their absence was a real defect, not an omission of coverage. Titles are
+    # only extracted from a resume when they match a known role, so a resume
+    # reading "Network Engineer | June 2024 - Present" had *no* title
+    # extracted at all - while "Network Support Engineer Intern" three jobs
+    # earlier matched the alias "support engineer" and became the most recent
+    # title by default. The fix is that the real titles are now visible; the
+    # qualified forms below ("network support engineer") also matter, because
+    # the matcher prefers the longest known term and so stops reading a
+    # networking title as a support one.
+    ("network_engineer", "Network Engineer", "network_infrastructure",
+     ("network support engineer", "networking engineer", "network systems engineer",
+      "systems network engineer", "network infrastructure engineer",
+      "network operations engineer", "lan/wan engineer"),
+     ("Network Engineer", "Network Systems Engineer",
+      "Network Infrastructure Engineer", "Enterprise Network Engineer",
+      "Network Operations Engineer"),
+     ("tcp/ip", "routing", "switching", "cisco", "vlan", "vpn")),
+
+    ("network_administrator", "Network Administrator", "network_infrastructure",
+     ("network admin", "network systems administrator", "lan administrator",
+      "network operations administrator"),
+     ("Network Administrator", "Network Systems Administrator",
+      "LAN Administrator", "Network Operations Administrator"),
+     ("tcp/ip", "routing", "switching", "dns", "dhcp")),
+
+    # Domain is cybersecurity rather than network_infrastructure: the subject
+    # of the work is the security control, and "network security" already
+    # signals that domain. The role stays distinct from Network Engineer so
+    # neither searches the other's titles.
+    ("network_security_engineer", "Network Security Engineer", "cybersecurity",
+     ("firewall engineer", "network security specialist",
+      "perimeter security engineer"),
+     ("Network Security Engineer", "Firewall Engineer",
+      "Network Security Specialist", "Perimeter Security Engineer"),
+     ("firewall", "vpn", "network segmentation", "tcp/ip")),
+
+    ("noc_engineer", "NOC Engineer", "network_infrastructure",
+     ("noc", "network operations center engineer", "noc analyst",
+      "noc technician", "network operations center technician"),
+     ("NOC Engineer", "NOC Analyst", "Network Operations Center Engineer",
+      "NOC Technician"),
+     ("network monitoring", "tcp/ip", "routing", "incident response")),
 )
 # fmt: on

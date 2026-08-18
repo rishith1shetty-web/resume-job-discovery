@@ -26,6 +26,7 @@ from app.core.constants import ResumeSection, Seniority, SkillKind
 from tests.factories import (
     BACKEND_ENGINEER_RESUME,
     FINANCIAL_ANALYST_RESUME,
+    NETWORK_ENGINEER_RESUME,
     UNPARSEABLE_RESUME,
 )
 
@@ -330,3 +331,213 @@ def test_analysis_uses_no_llm(monkeypatch: pytest.MonkeyPatch) -> None:
 
     profile = analyze_resume_text(FINANCIAL_ANALYST_RESUME, now=NOW)
     assert profile.target_role.key == "financial_analyst"
+
+
+# --- Networking roles ------------------------------------------------------
+#
+# Regression suite for a real misdetection: a resume whose current title is
+# "Network Engineer | June 2024 - Present" was analysed as Customer Support
+# Specialist, DevOps & Cloud, Intern.
+#
+# The cause was that no networking role existed in the taxonomy. Titles are
+# only extracted when they match a *known* role, so all three real titles were
+# invisible, and the one fragment that did match anything matched the alias
+# "support engineer" inside "Network Support Engineer Intern" - the oldest and
+# most junior job on the resume - which then became the most recent title by
+# default and carried the heaviest weight in the system.
+
+
+@pytest.fixture(scope="module")
+def network_profile() -> ResumeProfileData:
+    return analyze_resume_text(NETWORK_ENGINEER_RESUME, now=NOW)
+
+
+def test_a_network_engineer_resume_detects_network_engineer(network_profile) -> None:
+    assert network_profile.target_role.key == "network_engineer"
+    assert network_profile.target_role.display == "Network Engineer"
+    assert network_profile.target_role.confidence >= 0.8
+
+
+def test_support_vocabulary_does_not_win_over_the_stated_role(network_profile) -> None:
+    """The exact defect.
+
+    The resume says "supporting", "troubleshooting", "users", "incidents",
+    "escalations" and "ServiceNow" throughout, and its oldest job is literally
+    a support internship. None of that outranks three plain statements that
+    the candidate is a Network Engineer.
+    """
+    assert network_profile.target_role.key != "customer_support_specialist"
+
+    support_roles = {
+        "customer_support_specialist",
+        "customer_success_manager",
+        "it_support",
+        "help_desk",
+    }
+    assert network_profile.target_role.key not in support_roles
+
+
+def test_the_current_title_outranks_the_intern_title(network_profile) -> None:
+    """All four titles are now visible, and the current one leads.
+
+    Before the fix exactly one title was extracted - the intern one - and it
+    was "most recent" only because nothing else survived extraction.
+    """
+    titles = network_profile.titles
+    assert len(titles) >= 4
+    assert all(title.role_key == "network_engineer" for title in titles)
+
+    recent = next(title for title in titles if title.is_most_recent)
+    assert "intern" not in recent.raw.casefold()
+    assert recent.section is ResumeSection.EXPERIENCE
+
+
+def test_a_network_engineer_is_not_devops_or_cloud(network_profile) -> None:
+    """Requirement 7.
+
+    The resume mentions AWS, Azure, VPC and hybrid cloud, which is how it
+    previously landed on DevOps & Cloud at 0.35 confidence. Those are things
+    this network engineer connects, not what they do.
+    """
+    assert network_profile.domain.key == "network_infrastructure"
+    assert network_profile.domain.display == "Network & Infrastructure"
+    assert network_profile.domain.confidence >= 0.6
+
+
+def test_the_intern_title_no_longer_sets_seniority(network_profile) -> None:
+    """Seniority logic is unchanged; it was being fed the wrong title.
+
+    The reported "Intern" came from a 2020 internship being mistaken for the
+    current job. With the current title correct, no seniority marker applies
+    and seniority falls through to tenure - the existing behaviour, not a new
+    rule.
+    """
+    assert network_profile.seniority is not Seniority.INTERN
+    assert [evidence.kind for evidence in network_profile.seniority_evidence] == [
+        "seniority_from_years"
+    ]
+
+
+def test_network_variations_stay_within_the_same_role(network_profile) -> None:
+    """Requirements 5 and 6: the fix must not broaden the search.
+
+    Every generated title is a re-phrasing of Network Engineer. None of the
+    adjacent jobs appears, including the one this resume was misdetected as.
+    """
+    variations = {title.casefold() for title in network_profile.role_variations}
+
+    assert "network engineer" in variations
+    for forbidden in (
+        "customer support specialist",
+        "help desk specialist",
+        "technical support specialist",
+        "business analyst",
+        "data analyst",
+        "devops engineer",
+        "cloud engineer",
+        "financial analyst",
+    ):
+        assert forbidden not in variations
+
+    for title in network_profile.role_variations:
+        resolved = taxonomy.role_key_for_term(title)
+        assert resolved in (None, "network_engineer"), title
+
+
+@pytest.mark.parametrize(
+    ("title", "expected"),
+    [
+        ("Network Engineer", "network_engineer"),
+        ("Network Support Engineer", "network_engineer"),
+        ("Network Operations Engineer", "network_engineer"),
+        ("Network Administrator", "network_administrator"),
+        ("Network Security Engineer", "network_security_engineer"),
+        ("NOC Engineer", "noc_engineer"),
+        # And the adjacent jobs they must never be confused with.
+        ("Customer Support Specialist", "customer_support_specialist"),
+        ("Technical Support Specialist", "customer_support_specialist"),
+        ("Help Desk Specialist", "customer_support_specialist"),
+    ],
+)
+def test_networking_titles_resolve_apart_from_support_titles(
+    title: str, expected: str
+) -> None:
+    assert taxonomy.role_key_for_term(title) == expected
+
+
+def test_a_qualified_networking_title_beats_the_shorter_support_alias() -> None:
+    """The qualifier decides the role rather than being ignored.
+
+    "Network Support Engineer" contains "support engineer", which is a
+    Customer Support Specialist alias. The matcher prefers the longest known
+    term, so the networking reading wins.
+    """
+    pattern = taxonomy.role_pattern()
+    match = pattern.search("Network Support Engineer Intern")
+
+    assert match is not None
+    assert taxonomy.role_key_for_term(match.group(0)) == "network_engineer"
+
+
+def test_the_networking_roles_are_distinct_from_each_other() -> None:
+    """Four separate rows, so none can search another's titles."""
+    keys = (
+        "network_engineer",
+        "network_administrator",
+        "network_security_engineer",
+        "noc_engineer",
+    )
+    for key in keys:
+        assert taxonomy.get_role(key) is not None
+
+    for key in keys:
+        variations = {title.casefold() for title in taxonomy.get_role(key).variations}
+        for other in keys:
+            if other == key:
+                continue
+            other_canonical = taxonomy.get_role(other).canonical_title.casefold()
+            assert other_canonical not in variations
+
+
+# --- Financial Analyst is unaffected ---------------------------------------
+
+
+def test_adding_networking_roles_left_the_finance_case_alone(finance_profile) -> None:
+    """CLAUDE.md's worked example, re-asserted after the taxonomy change.
+
+    The networking additions introduced a domain and four roles. This pins the
+    finance path against them: same role, same domain, same variations, and
+    still none of the adjacent finance jobs.
+    """
+    assert finance_profile.target_role.key == "financial_analyst"
+    assert finance_profile.domain.key == "finance"
+
+    variations = {title.casefold() for title in finance_profile.role_variations}
+    assert "financial analyst" in variations
+    for forbidden in (
+        "accountant",
+        "auditor",
+        "business analyst",
+        "data analyst",
+        "network engineer",
+        "customer support specialist",
+    ):
+        assert forbidden not in variations
+
+
+def test_a_finance_resume_is_never_read_as_a_networking_role(finance_profile) -> None:
+    networking = {
+        "network_engineer",
+        "network_administrator",
+        "network_security_engineer",
+        "noc_engineer",
+    }
+    assert finance_profile.target_role.key not in networking
+    assert finance_profile.domain.key != "network_infrastructure"
+
+
+def test_a_backend_resume_is_never_read_as_a_networking_role(engineer_profile) -> None:
+    """The backend fixture mentions Kubernetes, Docker and AWS - infrastructure
+    words - and must still be a backend engineer."""
+    assert engineer_profile.target_role.key == "backend_engineer"
+    assert engineer_profile.domain.key != "network_infrastructure"

@@ -72,6 +72,49 @@ SKILLS
 Python, FastAPI, PostgreSQL, Docker, Kubernetes, AWS, REST API, Git
 """
 
+# Modelled on a real resume that was misdetected as Customer Support
+# Specialist. Every property that caused it is preserved: the current role is
+# stated plainly, the *oldest* job is an intern support title, and the body is
+# thick with the incidental support vocabulary - "supporting", "troubleshoot",
+# "users", "incidents", "ServiceNow" - that must not be allowed to outvote it.
+NETWORK_ENGINEER_RESUME = f"""Uday {TEST_RECORD_MARKER} Kumar
+
+PROFESSIONAL SUMMARY
+Network Engineer with 4+ years of experience supporting enterprise network
+infrastructure across insurance, healthcare and technology environments.
+Skilled in troubleshooting complex network issues and supporting hybrid cloud
+connectivity for internal users.
+
+EXPERIENCE
+Network Engineer | Travelers Insurance | June 2024 - Present
+- Support enterprise network infrastructure serving over 2,000 users
+- Administer Cisco routing and switching, VLAN management and OSPF routing
+- Investigate and resolve network incidents involving DNS, DHCP, NAT and VPN
+- Collaborate with cloud engineering teams on AWS and Azure VPC connectivity
+- Use ServiceNow and Jira to manage incidents, requests and escalations
+
+Junior Network Engineer | Cognizant | August 2021 - December 2022
+- Configured routers, switches, VLANs and OSPF routing
+- Managed user connectivity issues related to VPN, DNS and DHCP
+- Performed network diagnostics using Wireshark and packet capture
+
+Network Support Engineer Intern | Mastercard | February 2020 - July 2021
+- Provided first and second-level support for end-user connectivity issues
+- Assisted with troubleshooting VPN, DNS, DHCP and wireless incidents
+- Utilized ServiceNow and Jira to manage tickets and escalations
+
+EDUCATION
+Master of Science in Computer Science, University of Bridgeport, 2024
+
+CERTIFICATIONS
+Cisco Certified Network Associate (CCNA)
+CompTIA Security+
+
+SKILLS
+TCP/IP, Cisco, Routing, Switching, VLAN, OSPF, VPN, DNS, DHCP, NAT,
+Wireshark, SolarWinds, Firewall, Python
+"""
+
 # No recognisable role, section or skill - used for the low-signal path.
 UNPARSEABLE_RESUME = """Hello there
 
