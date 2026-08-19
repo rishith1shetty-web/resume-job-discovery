@@ -19,6 +19,7 @@ import { FindMatches } from './pages/FindMatches.jsx'
 import { ResumeAnalysis } from './pages/ResumeAnalysis.jsx'
 import { ResumeManagement } from './pages/ResumeManagement.jsx'
 import { ActiveResumeProvider, useActiveResume } from './state/ActiveResume.jsx'
+import { SearchSessionProvider } from './state/SearchSession.jsx'
 
 const ROUTES = [
   {
@@ -68,7 +69,12 @@ const DEFAULT_ROUTE = 'dashboard'
 export default function App() {
   return (
     <ActiveResumeProvider>
-      <Shell />
+      {/* Above `Shell`, and therefore above the `key={route}` remount below:
+          a Find Matches result set has to outlive navigation between tabs.
+          It is memory-only, so it still dies with the session. */}
+      <SearchSessionProvider>
+        <Shell />
+      </SearchSessionProvider>
     </ActiveResumeProvider>
   )
 }

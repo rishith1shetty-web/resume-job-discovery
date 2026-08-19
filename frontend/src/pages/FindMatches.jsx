@@ -22,6 +22,7 @@ import { ApplicationStatusCell } from '../components/ApplicationStatus.jsx'
 import { Icon } from '../components/Icon.jsx'
 import { useAsync } from '../hooks/useAsync.js'
 import { useActiveResume } from '../state/ActiveResume.jsx'
+import { useSearchSession } from '../state/SearchSession.jsx'
 import {
   Badge,
   Button,
@@ -50,13 +51,36 @@ const MAX_PORTALS = 8
 
 export function FindMatches({ navigate }) {
   const { activeResumeId, activeResume } = useActiveResume()
+  const { sessionForResume, rememberOutcome, rememberError, rememberForm } =
+    useSearchSession()
   const portals = useAsync((signal) => listPortals({}, signal), [])
 
-  const [selected, setSelected] = useState(() => new Set())
-  const [limit, setLimit] = useState(20)
+  // The results, the chosen boards and the size live in the session store
+  // rather than in this component, because this component is unmounted the
+  // moment the user opens another tab. Reading through `sessionForResume`
+  // means a result set produced by another resume is never visible here — the
+  // isolation is a property of the read, not of a cleanup that might not have
+  // run yet.
+  const session = sessionForResume(activeResumeId)
+  const outcome = session.outcome
+  const error = session.error
+
+  // `busy` stays local: an in-flight request belongs to this mount. If the
+  // user navigates away mid-search the request is not cancelled and its result
+  // is still stored, but a remount must not inherit a spinner it cannot own.
   const [busy, setBusy] = useState(false)
-  const [outcome, setOutcome] = useState(null)
-  const [error, setError] = useState(null)
+
+  const selected = useMemo(
+    () => new Set(session.selectedPortalIds ?? []),
+    [session.selectedPortalIds],
+  )
+  const limit = session.limit ?? 20
+
+  const setSelected = (updater) => {
+    const next = typeof updater === 'function' ? updater(selected) : updater
+    rememberForm(activeResumeId, { selectedPortalIds: [...next] })
+  }
+  const setLimit = (value) => rememberForm(activeResumeId, { limit: value })
 
   const items = portals.data?.items ?? []
   const selectable = useMemo(() => items.filter((portal) => portal.is_selectable), [items])
@@ -65,12 +89,19 @@ export function FindMatches({ navigate }) {
   // Every available board is pre-selected: the product's value is breadth, and
   // making the user tick five boxes before their first search is friction for
   // no gain. Deselecting is still one click.
+  //
+  // Only when this resume has no remembered selection though — `null` means
+  // "never chosen", and an empty array means "deselected everything". Coming
+  // back to the tab must show the boards the user actually chose rather than
+  // silently re-ticking them all.
   useEffect(() => {
-    if (selectable.length > 0 && selected.size === 0) {
-      setSelected(new Set(selectable.slice(0, MAX_PORTALS).map((portal) => portal.id)))
+    if (selectable.length > 0 && session.selectedPortalIds == null) {
+      rememberForm(activeResumeId, {
+        selectedPortalIds: selectable.slice(0, MAX_PORTALS).map((portal) => portal.id),
+      })
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [selectable])
+  }, [selectable, session.selectedPortalIds, activeResumeId])
 
   const chosen = [...selected].filter((id) => selectable.some((portal) => portal.id === id))
   const tooMany = chosen.length > MAX_PORTALS
@@ -86,13 +117,19 @@ export function FindMatches({ navigate }) {
 
   async function search(event) {
     event.preventDefault()
+    // Pinned for the duration: the active resume could change while a long
+    // search is running, and the answer belongs to the resume that asked.
+    const searchedResumeId = activeResumeId
     setBusy(true)
-    setError(null)
-    setOutcome(null)
     try {
-      setOutcome(await startSearchRun({ resumeId: activeResumeId, portalIds: chosen, limit }))
+      const result = await startSearchRun({
+        resumeId: searchedResumeId,
+        portalIds: chosen,
+        limit,
+      })
+      rememberOutcome(searchedResumeId, result)
     } catch (searchError) {
-      setError(searchError)
+      rememberError(searchedResumeId, searchError)
     } finally {
       setBusy(false)
     }
@@ -382,24 +419,31 @@ function CareerPageCard({ page, resumeId, onDecided }) {
 }
 
 function CareerPages({ pages, resumeId }) {
-  // Cards the user has decided about in this session, keyed the way the server
-  // keys them — by career URL. Held here rather than mutating `run`, so the
-  // search response stays the record of what the search returned.
-  const [decided, setDecided] = useState(() => new Map())
+  // Cards the user has decided about, keyed the way the server keys them — by
+  // career URL. Held in the session store rather than in this component for
+  // the same reason the results are: the cached outcome still contains these
+  // cards, because the server only stops returning them on the *next* search.
+  // Kept here in component state instead, navigating away and back would
+  // resurrect pages the user had already applied to or skipped.
+  //
+  // This is display bookkeeping only. The decision itself is already saved in
+  // the database by the time it lands here.
+  const { sessionForResume, rememberCareerDecision } = useSearchSession()
+  const decided = sessionForResume(resumeId).decidedCareerPages
 
-  const visible = pages.filter((page) => !decided.has(page.official_career_url))
+  const visible = pages.filter((page) => !(page.official_career_url in decided))
 
   function handleDecided(page, status) {
-    setDecided((current) => {
-      const next = new Map(current)
-      next.set(page.official_career_url, { company: page.company_name, status })
-      return next
+    rememberCareerDecision({
+      officialCareerUrl: page.official_career_url,
+      company: page.company_name,
+      status,
     })
   }
 
   if (pages.length === 0) return null
 
-  const recorded = [...decided.values()]
+  const recorded = Object.values(decided)
 
   return (
     <Card
