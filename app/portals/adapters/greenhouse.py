@@ -80,10 +80,23 @@ logger = get_logger(__name__)
 API_BASE = "https://boards-api.greenhouse.io/v1/boards"
 
 #: Employers whose public Greenhouse boards are read unless an operator
-#: configures otherwise. Chosen for breadth rather than as a recommendation,
-#: and every one was confirmed to resolve when this adapter was written.
+#: configures otherwise. Chosen for breadth rather than as a recommendation.
 #: Override with ``portal_configs.options["board_tokens"]``.
+#:
+#: Every token here was verified live, not inferred from a company name: it was
+#: confirmed to resolve against ``/v1/boards/<token>/jobs`` *and* to report the
+#: expected employer in its own ``company_name``. That second half matters -
+#: thirty plausible-looking tokens (``doordash``, ``plaid``, ``wayfair``,
+#: ``zillow``, ``etsy`` and more) return 404 and do not exist, so a name is a
+#: hypothesis rather than a token.
+#:
+#: Coverage is exactly this list: Greenhouse publishes no cross-company search
+#: (see the module docstring), so an employer that is not named here is not
+#: searched. Per-board yield is low - a board carries roughly 0.1-0.3 relevant,
+#: US, in-window openings at any instant - so breadth comes from the number of
+#: employers rather than from any single one.
 DEFAULT_BOARD_TOKENS: tuple[str, ...] = (
+    # Original eight.
     "stripe",
     "databricks",
     "brex",
@@ -92,6 +105,26 @@ DEFAULT_BOARD_TOKENS: tuple[str, ...] = (
     "chime",
     "flexport",
     "robinhood",
+    # Verified additions carrying finance-analyst openings when measured.
+    "esri",
+    "checkr",
+    "enova",
+    "mark43",
+    "melio",
+    # Verified additions carrying data-analyst openings when measured.
+    "lyft",
+    "samsara",
+    "anthropic",
+    "sofi",
+    "peloton",
+    # Verified boards of large US employers with substantial finance
+    # organisations. These carried no in-window opening when measured; they are
+    # here because a board is a standing subscription to an employer, not a
+    # snapshot of one day's postings.
+    "coinbase",
+    "block",
+    "fanduel",
+    "oscar",
 )
 
 _TAG_RE = re.compile(r"<[^>]+>")
