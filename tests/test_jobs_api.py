@@ -462,3 +462,74 @@ async def test_an_applied_job_stays_listed_even_without_a_stored_match(
     titles = [item["title"] for item in response.json()["data"]["items"]]
 
     assert "Applied, never rescored" in titles
+
+
+# --- Rejection reasons serialise ---------------------------------------------
+#
+# The scorer writes objects into ``job_matches.rejection_reasons`` - a code and
+# the sentence shown to the user - while the response schema declared a list of
+# plain strings. Any page containing a rejected match therefore failed response
+# validation and returned 500, which is why the dashboard and the application
+# board both worked around ``GET /jobs`` rather than trusting it.
+
+
+async def test_a_rejected_match_serialises_instead_of_failing_the_page(
+    api_client: AsyncClient, db_session: AsyncSession, settings: Settings
+) -> None:
+    user = await _acting_user(db_session, settings)
+    resume = await make_resume(db_session, user=user)
+    await make_profile(db_session, resume=resume)
+    portal = await make_portal(db_session, slug="rej-a")
+    job = await make_job(db_session)
+    await make_job_source(db_session, job=job, portal=portal)
+    match = await make_match(
+        db_session, resume=resume, job=job, final_score=63.25, qualified=False
+    )
+    match.rejection_reasons = [
+        {
+            "code": "below_threshold",
+            "reason": "Scored 63.25, below the locked 70% threshold.",
+        }
+    ]
+    await db_session.flush()
+
+    response = await api_client.get(f"/api/v1/jobs?resume_id={resume.id}")
+
+    assert response.status_code == 200, response.text
+    row = next(
+        item for item in response.json()["data"]["items"] if item["id"] == str(job.id)
+    )
+    reasons = row["match"]["rejection_reasons"]
+    assert reasons == [
+        {
+            "code": "below_threshold",
+            "reason": "Scored 63.25, below the locked 70% threshold.",
+        }
+    ]
+
+
+async def test_a_legacy_string_rejection_reason_still_serialises(
+    api_client: AsyncClient, db_session: AsyncSession, settings: Settings
+) -> None:
+    """Rows written before the scorer recorded codes must not 500 either."""
+    user = await _acting_user(db_session, settings)
+    resume = await make_resume(db_session, user=user)
+    await make_profile(db_session, resume=resume)
+    portal = await make_portal(db_session, slug="rej-b")
+    job = await make_job(db_session)
+    await make_job_source(db_session, job=job, portal=portal)
+    match = await make_match(
+        db_session, resume=resume, job=job, final_score=50.0, qualified=False
+    )
+    match.rejection_reasons = ["scored below the threshold"]
+    await db_session.flush()
+
+    response = await api_client.get(f"/api/v1/jobs?resume_id={resume.id}")
+
+    assert response.status_code == 200, response.text
+    row = next(
+        item for item in response.json()["data"]["items"] if item["id"] == str(job.id)
+    )
+    assert row["match"]["rejection_reasons"] == [
+        {"code": "unspecified", "reason": "scored below the threshold"}
+    ]

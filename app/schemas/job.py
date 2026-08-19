@@ -10,9 +10,33 @@ from __future__ import annotations
 import uuid
 from datetime import datetime
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from app.core.constants import ApplicationStatus, JobUrlKind, WorkMode
+
+
+class JobRejectionReason(BaseModel):
+    """Why a match failed, as the scorer records it.
+
+    ``job_matches.rejection_reasons`` stores objects - a machine-readable code
+    and the sentence shown to the user - and this used to be declared as a list
+    of plain strings. Any page containing a rejected match therefore failed
+    response validation and returned 500, which is why the dashboard and the
+    application board both work around ``GET /jobs`` rather than trusting it.
+
+    A bare string is still accepted so rows written before the scorer recorded
+    codes keep deserialising instead of turning one old row into a 500.
+    """
+
+    code: str
+    reason: str
+
+    @model_validator(mode="before")
+    @classmethod
+    def _accept_bare_string(cls, value: object) -> object:
+        if isinstance(value, str):
+            return {"code": "unspecified", "reason": value}
+        return value
 
 
 class JobSourceOut(BaseModel):
@@ -54,7 +78,7 @@ class JobMatchOut(BaseModel):
     freshness_score: float
     ranking_score: float
     qualified: bool
-    rejection_reasons: list[str] = Field(default_factory=list)
+    rejection_reasons: list[JobRejectionReason] = Field(default_factory=list)
     scoring_version: str
     matched_at: datetime
 

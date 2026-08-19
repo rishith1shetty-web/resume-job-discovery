@@ -29,6 +29,7 @@ from typing import TYPE_CHECKING
 from uuid import UUID
 
 from sqlalchemy import or_, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -368,11 +369,47 @@ async def _process_one(
             # and fingerprint (see ``_load_candidates``).
             taken_keys={view.canonical_key for view in views},
         )
-        session.add(job)
         # Flush so the job has an id for the source row's foreign key.
-        await session.flush()
-        sources: list[JobSource] = []
-        created_job = True
+        if await _insert_job(session, job):
+            sources: list[JobSource] = []
+            created_job = True
+        else:
+            # Another writer inserted this canonical key between the candidate
+            # lookup and the flush - two searches running at once, most often.
+            # The vacancy is the same one, so adopt the row that won rather
+            # than failing: a duplicate must be idempotent, not fatal.
+            existing = await _job_holding_key(session, job.canonical_key)
+            if existing is None:
+                # Vanishingly unlikely, and not something to paper over: the
+                # key conflicted yet no row holds it, so the assumption behind
+                # the retry does not hold.
+                raise RuntimeError(
+                    "canonical key "
+                    f"{job.canonical_key!r} conflicted but no job holds it."
+                )
+            logger.info(
+                "job_processing_adopted_concurrent_job",
+                portal=portal.slug,
+                canonical_key=job.canonical_key,
+                external_id=normalized.external_id,
+            )
+            job = existing
+            sources = list(existing.sources)
+            _apply_changes(
+                job,
+                merge_into_existing(
+                    existing_title=job.title,
+                    existing_company=job.company,
+                    existing_location=normalize_location(job.location),
+                    existing_work_mode=job.work_mode,
+                    existing_employment_type=job.employment_type,
+                    existing_description=job.description,
+                    existing_posted_at=job.posted_at,
+                    incoming=normalized,
+                ).changed,
+                incoming=normalized,
+            )
+            job.last_seen_at = moment
     else:
         job, sources = by_id[match.job_id]  # type: ignore[index]
         outcome = merge_into_existing(
@@ -417,6 +454,53 @@ async def _process_one(
         changed_fields=changed,
         preferred_application_url=preferred_url,
         preferred_url_kind=preferred_kind,
+    )
+
+
+#: The constraint a concurrent writer trips when it reaches ``jobs`` first.
+_CANONICAL_KEY_CONSTRAINT = "uq_jobs_canonical_key"
+
+
+def _is_canonical_key_conflict(error: IntegrityError) -> bool:
+    """Whether this integrity error is the canonical-key race and nothing else.
+
+    Checked by constraint name rather than by catching ``IntegrityError``
+    broadly, because a foreign-key violation or a not-null violation means
+    something is genuinely wrong and must not be quietly retried as if another
+    writer had simply won a race.
+    """
+    return _CANONICAL_KEY_CONSTRAINT in str(getattr(error, "orig", error))
+
+
+async def _insert_job(session: AsyncSession, job: Job) -> bool:
+    """Try to insert a new canonical job. False if another writer won the key.
+
+    The insert runs inside its own savepoint so that losing the race costs this
+    one statement rather than the whole portal leg: without it the failed flush
+    leaves the session unusable, the orchestrator's leg-level savepoint rolls
+    back, and every listing that portal had already stored is discarded.
+    """
+    savepoint = await session.begin_nested()
+    session.add(job)
+    try:
+        await session.flush()
+    except IntegrityError as exc:
+        await savepoint.rollback()
+        if not _is_canonical_key_conflict(exc):
+            raise
+        # The rollback already detached the pending row; expunging again would
+        # raise. Nothing further to clean up.
+        return False
+    await savepoint.commit()
+    return True
+
+
+async def _job_holding_key(session: AsyncSession, canonical_key: str) -> Job | None:
+    """Re-read the job that now owns a canonical key, with its sources."""
+    return await session.scalar(
+        select(Job)
+        .where(Job.canonical_key == canonical_key)
+        .options(selectinload(Job.sources).selectinload(JobSource.portal))
     )
 
 
