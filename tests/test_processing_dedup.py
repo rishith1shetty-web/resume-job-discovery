@@ -8,9 +8,13 @@ Two halves:
   field, never degrade it.
 
 Cross-portal cases are built from constructed ``RawJob`` records rather than
-live collection. LinkedIn collection is disabled, so a genuine two-portal
-capture does not exist; these are fixtures, and they are not evidence that any
-portal was contacted.
+live collection: capturing one vacancy on two portals at the same moment is not
+something that can be committed as a fixture. These are constructed inputs, and
+they are not evidence that any portal was contacted.
+
+The second source uses an aggregator host that no adapter collects from. That
+is deliberate - what matters to these rules is how ``app.processing.urls``
+classifies the link, not which portal produced it.
 """
 
 from __future__ import annotations
@@ -123,9 +127,9 @@ def test_the_same_ats_application_url_is_a_hard_duplicate_across_portals() -> No
     ats = "https://boards.greenhouse.io/contoso/jobs/4123456?gh_jid=4123456"
     stored = normalize(source="jobright", external_id="jr-1", application_url=ats)
     incoming = normalize(
-        source="linkedin",
+        source="aggregator",
         external_id="li-1",
-        source_url="https://www.linkedin.com/jobs/view/3901234567",
+        source_url="https://www.indeed.com/viewjob?jk=3901234567",
         application_url=ats,
         # Different portals describe the same requisition differently.
         title="Financial Analyst - Corporate",
@@ -143,9 +147,9 @@ def test_the_same_requisition_url_survives_tracking_differences() -> None:
         application_url="https://boards.greenhouse.io/contoso/jobs/41?gh_jid=41"
     )
     incoming = normalize(
-        source="linkedin",
+        source="aggregator",
         external_id="li-2",
-        source_url="https://www.linkedin.com/jobs/view/2",
+        source_url="https://www.indeed.com/viewjob?jk=2",
         application_url=(
             "http://www.boards.greenhouse.io/contoso/jobs/41?gh_src=li&gh_jid=41"
         ),
@@ -177,9 +181,9 @@ def test_a_shared_portal_listing_url_is_not_hard_evidence() -> None:
 def test_same_employer_role_and_place_is_a_probable_duplicate() -> None:
     stored = normalize(source="jobright", external_id="jr-1")
     incoming = normalize(
-        source="linkedin",
+        source="aggregator",
         external_id="li-1",
-        source_url="https://www.linkedin.com/jobs/view/1",
+        source_url="https://www.indeed.com/viewjob?jk=1",
     )
 
     verdict = compare(incoming, as_view(stored))
@@ -191,9 +195,9 @@ def test_same_employer_role_and_place_is_a_probable_duplicate() -> None:
 def test_a_less_specific_location_still_merges() -> None:
     stored = normalize(location="Boston, MA")
     incoming = normalize(
-        source="linkedin",
+        source="aggregator",
         external_id="li-1",
-        source_url="https://www.linkedin.com/jobs/view/1",
+        source_url="https://www.indeed.com/viewjob?jk=1",
         location="Boston",
     )
 
@@ -204,16 +208,16 @@ def test_identical_description_text_raises_confidence() -> None:
     body = "We are hiring a financial analyst to own the monthly close. " * 10
     stored = normalize(description=body)
     incoming = normalize(
-        source="linkedin",
+        source="aggregator",
         external_id="li-1",
-        source_url="https://www.linkedin.com/jobs/view/1",
+        source_url="https://www.indeed.com/viewjob?jk=1",
         description=body,
     )
     without_text = compare(
         normalize(
-            source="linkedin",
+            source="aggregator",
             external_id="li-1",
-            source_url="https://www.linkedin.com/jobs/view/1",
+            source_url="https://www.indeed.com/viewjob?jk=1",
         ),
         as_view(normalize()),
     )
@@ -292,9 +296,9 @@ def test_a_missing_employer_blocks_a_probable_merge() -> None:
 def test_an_unknown_posting_date_does_not_block_a_merge() -> None:
     stored = normalize(posted_at=None)
     incoming = normalize(
-        source="linkedin",
+        source="aggregator",
         external_id="li-1",
-        source_url="https://www.linkedin.com/jobs/view/1",
+        source_url="https://www.indeed.com/viewjob?jk=1",
     )
 
     assert compare(incoming, as_view(stored)).kind is DuplicateKind.PROBABLE
@@ -310,9 +314,9 @@ def test_hard_evidence_beats_probable_evidence() -> None:
         normalize(external_id="exact", application_url=ats), job_id="hard"
     )
     incoming = normalize(
-        source="linkedin",
+        source="aggregator",
         external_id="li-1",
-        source_url="https://www.linkedin.com/jobs/view/1",
+        source_url="https://www.indeed.com/viewjob?jk=1",
         application_url=ats,
     )
 
@@ -336,9 +340,9 @@ def test_the_same_candidates_always_produce_the_same_decision() -> None:
         as_view(normalize(external_id="b"), job_id="b"),
     ]
     incoming = normalize(
-        source="linkedin",
+        source="aggregator",
         external_id="li-1",
-        source_url="https://www.linkedin.com/jobs/view/1",
+        source_url="https://www.indeed.com/viewjob?jk=1",
     )
 
     first, _ = best_match(incoming, views)
@@ -351,9 +355,9 @@ def test_the_same_candidates_always_produce_the_same_decision() -> None:
 def test_a_verdict_serialises_with_its_evidence() -> None:
     verdict = compare(
         normalize(
-            source="linkedin",
+            source="aggregator",
             external_id="li-1",
-            source_url="https://www.linkedin.com/jobs/view/1",
+            source_url="https://www.indeed.com/viewjob?jk=1",
         ),
         as_view(normalize()),
     )
@@ -448,7 +452,7 @@ def test_merging_the_same_source_twice_changes_nothing() -> None:
 
 
 def test_a_merge_records_which_portal_supplied_each_new_value() -> None:
-    incoming = normalize(source="linkedin", description="d" * 900)
+    incoming = normalize(source="aggregator", description="d" * 900)
 
     outcome = merge_into_existing(
         existing_title="Financial Analyst",
@@ -462,7 +466,7 @@ def test_a_merge_records_which_portal_supplied_each_new_value() -> None:
     )
 
     assert "description" in outcome.changed
-    assert outcome.provenance["description"] == "linkedin"
+    assert outcome.provenance["description"] == "aggregator"
 
 
 def test_a_new_source_cannot_degrade_a_stored_field() -> None:

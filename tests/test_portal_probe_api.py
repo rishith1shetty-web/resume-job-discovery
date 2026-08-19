@@ -26,9 +26,6 @@ from app.services.portal_seed import (
 )
 
 BASE = "/api/v1/portals"
-FIXTURE = (
-    Path(__file__).parent / "fixtures" / "portals" / "linkedin_search_results.html"
-)
 
 
 @pytest.fixture
@@ -73,13 +70,13 @@ def stub_jobright(monkeypatch: pytest.MonkeyPatch, jobright_html: str):
 # --- Seeding ----------------------------------------------------------------
 
 
-async def test_seeding_creates_both_phase_4_portals(db_session: AsyncSession) -> None:
+async def test_seeding_creates_the_operational_portals(db_session: AsyncSession) -> None:
     await ensure_portals_seeded(db_session)
 
     slugs = set(
         (await db_session.execute(select(Portal.slug))).scalars().all()
     )
-    assert {"jobright", "linkedin"} <= slugs
+    assert {"jobright", "greenhouse", "google_careers"} <= slugs
 
 
 async def test_seeding_is_idempotent(db_session: AsyncSession) -> None:
@@ -121,7 +118,7 @@ async def test_capability_flags_come_from_the_adapter(
     # The database must not disagree with what the adapter actually does.
     await ensure_portals_seeded(db_session)
 
-    for slug in ("jobright", "linkedin"):
+    for slug in ("jobright", "greenhouse"):
         portal = await db_session.scalar(select(Portal).where(Portal.slug == slug))
         capabilities = registry.create(slug, {}).capabilities
 
@@ -129,18 +126,6 @@ async def test_capability_flags_come_from_the_adapter(
         assert portal.is_implemented is True
         assert portal.supports_date_filter == capabilities.supports_date_filter
         assert portal.requires_auth == capabilities.requires_auth
-
-
-async def test_linkedin_is_seeded_disabled_with_the_reason_recorded(
-    db_session: AsyncSession,
-) -> None:
-    # Its robots.txt disallows automated access, so it must not be enabled.
-    await ensure_portals_seeded(db_session)
-    portal = await db_session.scalar(select(Portal).where(Portal.slug == "linkedin"))
-
-    assert portal is not None
-    assert portal.is_enabled is False
-    assert "robots.txt" in (portal.notes or "")
 
 
 async def test_seeding_does_not_re_enable_a_portal_an_operator_disabled(
@@ -173,11 +158,11 @@ async def test_seeding_does_not_re_enable_a_portal_an_operator_disabled(
 
 
 def test_only_approved_portals_are_seeded() -> None:
-    # Jobright and LinkedIn in Phase 4, Hiring Cafe in Phase 9A, ZipRecruiter
-    # in Phase 9B, SimplyHired in Phase 9C, Greenhouse in Phase 9D, Scale.jobs in
-    # Phase 9E, Dayforce in Phase 9F, Google Careers in Phase 9G. Portals are
-    # added one at a time; an
-    # unexpected slug means that gate was skipped.
+    # Jobright in Phase 4, Hiring Cafe in Phase 9A, SimplyHired in Phase 9C,
+    # Greenhouse in Phase 9D, Scale.jobs in Phase 9E, Dayforce in Phase 9F,
+    # Google Careers in Phase 9G. Portals are added one at a time; an
+    # unexpected slug means that gate was skipped. LinkedIn and ZipRecruiter
+    # were removed in D-005 and must not reappear here.
     #
     # career_pages is the one row here that is not a job board: it is a career
     # source, returning companies rather than listings, and it is backed by
@@ -186,9 +171,7 @@ def test_only_approved_portals_are_seeded() -> None:
     # from.
     assert {seed.slug for seed in PORTAL_SEEDS} == {
         "jobright",
-        "linkedin",
         "hiringcafe",
-        "ziprecruiter",
         "simplyhired",
         "greenhouse",
         "scalejobs",
@@ -196,20 +179,6 @@ def test_only_approved_portals_are_seeded() -> None:
         "google_careers",
         "career_pages",
     }
-
-
-def test_ziprecruiter_is_seeded_disabled_with_the_reason_recorded() -> None:
-    """Implemented and permitted, but it cannot qualify a job.
-
-    The surface ZipRecruiter allows this client to read publishes no posting
-    description, so every listing is rejected as unscoreable. Seeding it
-    enabled would take a share of every search's quota and return nothing.
-    """
-    seed = next(seed for seed in PORTAL_SEEDS if seed.slug == "ziprecruiter")
-
-    assert seed.is_enabled is False
-    assert "llms.txt" in seed.notes
-    assert "description" in seed.notes.lower()
 
 
 def test_hiring_cafe_is_seeded_as_enabled_and_implemented() -> None:
@@ -263,16 +232,31 @@ async def test_the_probe_writes_nothing_to_the_database(
     assert await db_session.scalar(select(func.count()).select_from(Job)) == 0
 
 
-async def test_probing_linkedin_reports_the_access_restriction(
-    api_client: AsyncClient, db_session: AsyncSession
+async def test_a_portal_refusing_access_is_reported_not_raised(
+    api_client: AsyncClient,
+    db_session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """A refusal is a successful diagnostic, not a 500.
+
+    No portal refuses before transport any more - the two that did were
+    removed in D-005 - so the refusal is induced here rather than borrowed
+    from a portal's real state. The guarantee under test is the endpoint's,
+    not any one portal's.
+    """
     await ensure_portals_seeded(db_session)
 
+    async def _blocked(self, url, params=None):  # noqa: ANN001
+        raise PortalBlockedError(
+            "refused access (robots.txt)", portal="jobright"
+        )
+
+    monkeypatch.setattr("app.portals.http.PortalHttpClient.get_text", _blocked)
+
     response = await api_client.post(
-        f"{BASE}/linkedin/probe", json={"queries": ["Financial Analyst"], "limit": 3}
+        f"{BASE}/jobright/probe", json={"queries": ["Financial Analyst"], "limit": 3}
     )
 
-    # A refusal is a successful diagnostic, not a 500.
     assert response.status_code == 200, response.text
     data = response.json()["data"]
     assert data["ok"] is False
@@ -350,6 +334,15 @@ async def test_portals_are_listed_with_their_selectable_state(
     by_slug = {item["slug"]: item for item in response.json()["data"]["items"]}
     assert by_slug["jobright"]["is_implemented"] is True
     assert by_slug["jobright"]["is_selectable"] is True
-    # Implemented but not selectable, because access is not authorised.
-    assert by_slug["linkedin"]["is_implemented"] is True
-    assert by_slug["linkedin"]["is_selectable"] is False
+
+    # And the other branch: implemented, but switched off by an operator, so
+    # the checkbox must not offer it.
+    from tests.factories import make_portal
+
+    disabled = await make_portal(
+        db_session, slug="switched-off", is_implemented=True, is_enabled=False
+    )
+    refreshed = await api_client.get(BASE)
+    rows = {item["slug"]: item for item in refreshed.json()["data"]["items"]}
+    assert rows[disabled.slug]["is_implemented"] is True
+    assert rows[disabled.slug]["is_selectable"] is False

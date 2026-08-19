@@ -34,16 +34,14 @@ REGISTERED_SLUGS = registry.slugs
 
 
 def test_only_approved_adapters_are_registered() -> None:
-    # The rollout order in docs/DECISIONS.md D-001: Jobright and LinkedIn in
-    # Phase 4, Hiring Cafe in Phase 9A, ZipRecruiter in Phase 9B, SimplyHired
-    # in Phase 9C, Greenhouse in Phase 9D, Scale.jobs in Phase 9E, Dayforce in Phase 9F, Google Careers in Phase 9G. A
-    # slug appearing here that is not on this list means someone
-    # skipped the one-at-a-time rule.
+    # The rollout order in docs/DECISIONS.md D-001: Jobright in Phase 4,
+    # Hiring Cafe in Phase 9A, SimplyHired in Phase 9C, Greenhouse in Phase 9D,
+    # Scale.jobs in Phase 9E, Dayforce in Phase 9F, Google Careers in Phase 9G.
+    # A slug appearing here that is not on this list means someone skipped the
+    # one-at-a-time rule. LinkedIn and ZipRecruiter were removed in D-005.
     assert set(REGISTERED_SLUGS) == {
         "jobright",
-        "linkedin",
         "hiringcafe",
-        "ziprecruiter",
         "simplyhired",
         "greenhouse",
         "scalejobs",
@@ -71,9 +69,9 @@ def test_adapters_are_constructed_with_their_options(slug: str) -> None:
 
 
 def test_create_many_preserves_the_callers_order() -> None:
-    adapters = list(registry.create_many(["linkedin", "jobright"]))
+    adapters = list(registry.create_many(["greenhouse", "jobright"]))
 
-    assert [adapter.slug for adapter in adapters] == ["linkedin", "jobright"]
+    assert [adapter.slug for adapter in adapters] == ["greenhouse", "jobright"]
 
 
 def test_an_unregistered_slug_raises_rather_than_returning_none() -> None:
@@ -122,7 +120,7 @@ def _cut_the_network(adapter) -> None:  # noqa: ANN001
     """Stub every verb an adapter might reach for.
 
     Adapters do not all speak the same one - the page-scraped portals GET
-    text, the ZipRecruiter one POSTs JSON-RPC, the Scale.jobs one GETs JSON -
+    text, the Scale.jobs one GETs JSON -
     and a stub that misses the verb in use lets a contract test issue a real
     request to a live portal. Adding a verb to ``PortalHttpClient`` means
     adding it here too.
@@ -177,7 +175,7 @@ async def test_a_failing_portal_raises_a_portal_error_not_a_bare_exception(
     with pytest.raises((PortalError, ConnectionResetError)) as exc_info:
         await adapter.search(request)
 
-    # LinkedIn refuses before any transport call, which is also correct.
+    # An adapter that refuses before any transport call is also correct.
     if isinstance(exc_info.value, PortalError):
         assert exc_info.value.code
         assert exc_info.value.portal in (slug, None)
@@ -186,7 +184,7 @@ async def test_a_failing_portal_raises_a_portal_error_not_a_bare_exception(
 async def test_one_portal_failing_does_not_stop_the_other() -> None:
     """The isolation rule from CLAUDE.md section 18, exercised directly."""
     failing = registry.create("jobright", {})
-    working = registry.create("linkedin", {"access_authorized": True})
+    working = registry.create("google_careers", {})
 
     async def _fail(*_args, **_kwargs) -> str:
         raise TimeoutError("portal down")
@@ -194,7 +192,7 @@ async def test_one_portal_failing_does_not_stop_the_other() -> None:
     from pathlib import Path
 
     fixture = (
-        Path(__file__).parent / "fixtures" / "portals" / "linkedin_search_results.html"
+        Path(__file__).parent / "fixtures" / "portals" / "google_careers_results.html"
     ).read_text(encoding="utf-8")
 
     async def _succeed(*_args, **_kwargs) -> str:
@@ -216,8 +214,8 @@ async def test_one_portal_failing_does_not_stop_the_other() -> None:
             errors[adapter.slug] = exc
 
     assert "jobright" in errors
-    assert "linkedin" in results
-    assert len(results["linkedin"].jobs) > 0
+    assert "google_careers" in results
+    assert len(results["google_careers"].jobs) > 0
 
 
 # --- RawJob contract --------------------------------------------------------

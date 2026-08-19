@@ -52,18 +52,17 @@ def empty_registry() -> PortalRegistry:
 
 
 def test_the_global_registry_holds_only_the_approved_adapters() -> None:
-    # Phase 4 registered Jobright and LinkedIn, in the rollout order recorded
-    # in docs/DECISIONS.md (D-001); Phase 9A added Hiring Cafe, Phase 9B
-    # ZipRecruiter, Phase 9C SimplyHired, Phase 9D Greenhouse, Phase 9E Scale.jobs and
-    # Phase 9F Dayforce and Phase 9G Google Careers. Portals are added one at a time,
-    # so an unexpected slug here means that gate was skipped.
+    # Phase 4 registered Jobright, in the rollout order recorded in
+    # docs/DECISIONS.md (D-001); Phase 9A added Hiring Cafe, Phase 9C
+    # SimplyHired, Phase 9D Greenhouse, Phase 9E Scale.jobs, Phase 9F Dayforce
+    # and Phase 9G Google Careers. Portals are added one at a time, so an
+    # unexpected slug here means that gate was skipped. LinkedIn and
+    # ZipRecruiter were removed in D-005 and must not reappear.
     import app.portals.adapters  # noqa: F401  - registers the adapters
 
     assert set(registry.slugs) == {
         "jobright",
-        "linkedin",
         "hiringcafe",
-        "ziprecruiter",
         "simplyhired",
         "greenhouse",
         "scalejobs",
@@ -117,9 +116,9 @@ def test_adapter_without_slug_is_rejected(empty_registry: PortalRegistry) -> Non
 
 def test_unknown_slug_raises_portal_error(empty_registry: PortalRegistry) -> None:
     with pytest.raises(PortalNotRegisteredError) as exc_info:
-        empty_registry.get("linkedin")
+        empty_registry.get("not-a-portal")
 
-    assert exc_info.value.portal == "linkedin"
+    assert exc_info.value.portal == "not-a-portal"
 
 
 def test_create_many_preserves_caller_order(empty_registry: PortalRegistry) -> None:

@@ -4,7 +4,7 @@ Integration tests. Each runs inside a transaction that is always rolled back,
 so nothing reaches ``resume_job_discovery`` permanently, and every record
 created carries the shared test marker.
 
-Cross-portal cases use constructed ``RawJob`` records. LinkedIn live collection
+Cross-portal cases use constructed ``RawJob`` records. Live collection
 is disabled, so no test here contacts a portal - a second portal is simulated
 by giving a record a different ``source``, and that is a fixture, not evidence
 of live two-portal collection.
@@ -38,7 +38,7 @@ NOW = datetime(2026, 8, 4, 12, 0, tzinfo=UTC)
 async def portals(db_session: AsyncSession) -> tuple[Portal, Portal]:
     """Two throwaway portals, marked so they are obviously not configuration.
 
-    Deliberately not the real jobright and linkedin rows: those are committed
+    Deliberately not the real seeded portal rows: those are committed
     configuration, and a test must not depend on whether an operator has seeded
     them or change anything about them.
     """

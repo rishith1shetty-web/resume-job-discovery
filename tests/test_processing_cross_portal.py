@@ -1,10 +1,10 @@
 """Processing listings from two portals at once, and the preview endpoint.
 
-**These are fixture-based tests, not live verification.** LinkedIn collection
-is disabled by its robots.txt and stays disabled here: the LinkedIn records
-below come from the synthetic fixture committed in Phase 4, and the Jobright
-records from a capture taken then. No portal is contacted by any test in this
-file, and nothing here demonstrates that two portals were collected from live.
+**These are fixture-based tests, not live verification.** The Jobright records
+come from a capture taken in Phase 4. No portal is contacted by any test in
+this file, and nothing here demonstrates that two portals were collected from
+live: the two-portal cases below are constructed records, deliberately, since a
+genuine simultaneous capture is impossible to commit.
 
 What they do show is that the processing layer is portal-agnostic: it merges,
 separates and ranks URLs the same way whichever adapter produced the records.
@@ -60,24 +60,6 @@ def jobright_records() -> list[RawJob]:
     return records
 
 
-@pytest.fixture
-def linkedin_records() -> list[RawJob]:
-    """Synthetic LinkedIn cards. No page was ever fetched from LinkedIn."""
-    from app.portals.adapters.linkedin import LinkedInPortal
-
-    html = (FIXTURES / "linkedin_search_results.html").read_text(encoding="utf-8")
-
-    adapter = LinkedInPortal()
-    # parse_search_results is pure: it takes HTML and returns records. The
-    # adapter's network path stays shut, and no request is made.
-    parsed, _excluded = adapter.parse_search_results(html)
-    records = [
-        raw for record in parsed if (raw := adapter._to_raw_job(record)) is not None
-    ]
-    assert records, "the LinkedIn fixture produced no records"
-    return records
-
-
 async def test_real_jobright_listings_all_normalise(
     db_session: AsyncSession, jobright_records: list[RawJob]
 ) -> None:
@@ -126,19 +108,6 @@ async def test_jobrights_own_job_page_is_kept_as_the_usable_link(
     assert result.jobs_created == len(result.processed)
 
 
-async def test_synthetic_linkedin_cards_normalise_without_contacting_linkedin(
-    db_session: AsyncSession, linkedin_records: list[RawJob]
-) -> None:
-    portal = await make_portal(db_session, slug="li", is_implemented=True)
-
-    result = await process_raw_jobs(
-        db_session, portal=portal, raw_jobs=linkedin_records, now=NOW
-    )
-
-    assert result.rejected == []
-    assert result.jobs_created == len(linkedin_records)
-
-
 # --- Two portals over one vacancy ------------------------------------------
 
 
@@ -147,8 +116,14 @@ def cross_portal_pair(
 ) -> tuple[RawJob, RawJob]:
     """The same vacancy as two portals would describe it.
 
-    Constructed, not collected: a genuine simultaneous capture is impossible
-    while LinkedIn collection is disabled.
+    Constructed, not collected: capturing the same vacancy on two portals at
+    the same moment is not something that can be committed as a fixture.
+
+    The second record deliberately carries an aggregator URL, because that is
+    what the URL-preference rule has to rank *below* an employer or ATS link.
+    The host is one ``app.processing.urls`` still classifies as an aggregator -
+    remaining portals surface such links - so this stays a real input even
+    though no adapter collects from that site.
     """
     first = RawJob(
         external_id="6a71f26571acd469eeda4ea3",
@@ -166,7 +141,7 @@ def cross_portal_pair(
     )
     second = RawJob(
         external_id="3901234567",
-        source="linkedin-like",
+        source="aggregator-like",
         title="Sr. Financial Analyst (Remote)",
         company="Contoso Ltd",
         location="Boston",
@@ -331,15 +306,28 @@ async def test_the_preview_endpoint_stores_nothing(
 
 
 async def test_the_preview_endpoint_reports_a_blocked_portal_as_data(
-    api_client: AsyncClient, db_session: AsyncSession
+    api_client: AsyncClient,
+    db_session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    # LinkedIn refuses before any request; that is a diagnostic, not a 500.
+    """A refusal is a diagnostic, not a 500.
+
+    The two portals that refused before any request were removed in D-005, so
+    the refusal is induced here. What is under test is the endpoint's handling,
+    not any one portal's access state.
+    """
+    from app.portals.exceptions import PortalBlockedError
     from app.services.portal_seed import ensure_portals_seeded
 
     await ensure_portals_seeded(db_session)
 
+    async def _blocked(self, url, params=None):  # noqa: ANN001
+        raise PortalBlockedError("refused access", portal="jobright")
+
+    monkeypatch.setattr("app.portals.http.PortalHttpClient.get_text", _blocked)
+
     response = await api_client.post(
-        f"{BASE}/linkedin/processing-preview",
+        f"{BASE}/jobright/processing-preview",
         json={"queries": ["Financial Analyst"], "limit": 3},
     )
 

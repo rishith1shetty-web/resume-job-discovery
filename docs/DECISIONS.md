@@ -102,3 +102,67 @@ When Jobright and LinkedIn both carry the same vacancy:
 
 Phase 3 must not implement portal collection, URL preference or deduplication
 behaviour; it defines the tables and contracts those phases will populate.
+
+---
+
+## D-005 — LinkedIn and ZipRecruiter removed
+
+**Status:** Recorded (2026-08-18). Implemented the same day.
+
+Both portals are removed from the product entirely — adapter, registry entry,
+seed, fixtures and tests. Neither is disabled-but-present, and neither leaves a
+placeholder.
+
+**LinkedIn.** Its `robots.txt` disallows automated access for this client
+(`User-agent: * / Disallow: /`). The adapter was never permitted to collect and
+never did; it sat behind an `access_authorized` option that no operator could
+honestly set.
+
+**ZipRecruiter.** Access was never the problem: the MCP endpoint ZipRecruiter
+publishes in its own `/llms.txt` answers this project's user agent, read-only
+and unauthenticated. The problem is that `search_jobs` is the only tool it
+publishes, and its records carry no posting description — re-verified live on
+2026-08-18, where the field set was byte-identical to the Phase 9B capture:
+
+    benefits · company · company_logo · days_ago · is_remote
+    job_redirect_url · job_type · location · salary · title
+
+`CLAUDE.md` §7 rejects a posting that cannot be scored, so the portal qualified
+nothing. Padding the description with salary and benefits would have cleared
+that gate with text containing no requirements, responsibilities or skills —
+which would not make a match real, only stop the pipeline from noticing it is
+not. The manifest's newer `/Jobs/[Job-Title]` directory patterns do not reopen
+the HTML surface: `llms.txt` defers permission to `robots.txt`, which grants
+`/` only to a named allow-list this project is not on.
+
+**What was deliberately kept**, because it is not about collecting from either
+site:
+
+- `linkedin.com` and `ziprecruiter.com` in `_AGGREGATOR_HOSTS`
+  (`app/processing/urls.py`). That list names hosts a link may *point at* — it
+  already includes `indeed.com`, `glassdoor.com`, `monster.com` and `dice.com`,
+  none of which are portals here. Remaining portals surface such links, and
+  dropping the entries would let an aggregator redirect outrank a real listing.
+- LinkedIn Easy Apply detection in `app/processing/application_type.py`, for
+  the same reason: other portals carry LinkedIn-sourced listings, and D-002
+  requires those be excluded.
+- `excludeLinkedIn=true` in the Scale.jobs adapter — a parameter that
+  publisher's API defines.
+- Career Pages refusing LinkedIn and ZipRecruiter company URLs as career pages.
+- Every `linkedin_auto_apply` reference. That is the **separate** LinkedIn/Dice
+  project this one must never collide with, and the guardrails naming it are
+  load-bearing.
+
+D-001 through D-004 are left as recorded. They are dated decisions, and the
+policies in them — Easy Apply exclusion, duplicate handling, URL preference —
+still govern the remaining portals even where LinkedIn was the example used to
+state them.
+
+**Removing the rows.** Dropping a slug from `PORTAL_SEEDS` stops a fresh
+database growing the row but does nothing to an existing install, and
+`GET /portals` selects every row — so a retired portal would keep appearing in
+Find Matches. `RETIRED_PORTAL_SLUGS` in `app/services/portal_seed.py` is what
+actually deletes it, through the existing seed script rather than a migration
+(migrations carry schema; portal rows are environment data). It refuses to
+delete a portal any job or search run still references, because that would
+cascade into `job_sources` and destroy real history.

@@ -233,7 +233,7 @@ async def test_the_api_returns_the_top_n_of_one_combined_pool(
 async def test_a_failing_portal_completes_the_run_with_errors(
     api_client: AsyncClient, db_session: AsyncSession, settings: Settings
 ) -> None:
-    # A blocked portal - LinkedIn's real state - is reported, not hidden.
+    # A blocked portal is reported, not hidden.
     resume_id = await _ready_resume(db_session, settings)
     good = build_fake_portal("api-good", jobs=make_jobs("api-good", 5, now=NOW))
     blocked = build_fake_portal(

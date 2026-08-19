@@ -321,7 +321,7 @@ async def test_every_portal_failing_fails_the_run(db_session: AsyncSession) -> N
 async def test_a_portal_failure_is_recorded_with_its_kind(
     db_session: AsyncSession,
 ) -> None:
-    # A blocked portal - LinkedIn's real state - must be reported as blocked
+    # A blocked portal must be reported as blocked
     # rather than as an empty result.
     _, resume = await analysed_resume(db_session)
     blocked = build_fake_portal(

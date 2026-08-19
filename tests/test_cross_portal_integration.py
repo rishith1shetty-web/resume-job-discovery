@@ -41,8 +41,6 @@ from app.portals.adapters.jobright import JobrightPortal
 from app.portals.adapters.scalejobs import PAGE_SIZE as SCALEJOBS_PAGE_SIZE
 from app.portals.adapters.scalejobs import ScaleJobsPortal
 from app.portals.adapters.simplyhired import SimplyHiredPortal
-from app.portals.adapters import ziprecruiter as ziprecruiter_module
-from app.portals.adapters.ziprecruiter import ZipRecruiterPortal
 from app.portals.exceptions import PortalParseError, PortalTimeoutError
 from app.processing.normalize import RejectionReason
 from app.services import search_run_service
@@ -52,25 +50,11 @@ from tests.factories import make_portal, make_profile, make_resume, make_user
 FIXTURES = Path(__file__).parent / "fixtures" / "portals"
 HIRINGCAFE_FIXTURE = FIXTURES / "hiringcafe_financial_analyst.json"
 JOBRIGHT_FIXTURE = FIXTURES / "jobright_financial_analyst.json"
-ZIPRECRUITER_FIXTURE = FIXTURES / "ziprecruiter_financial_analyst.json"
 SIMPLYHIRED_FIXTURE = FIXTURES / "simplyhired_financial_analyst.json"
 GREENHOUSE_FIXTURE = FIXTURES / "greenhouse_financial_analyst.json"
 SCALEJOBS_FIXTURE = FIXTURES / "scalejobs_financial_analyst.json"
 
 NOW = datetime(2026, 8, 4, 12, 0, tzinfo=UTC)
-
-
-class _FrozenDatetime(datetime):
-    """``datetime`` whose ``now()`` is NOW, for relative-date portals.
-
-    Only ``now`` is replaced; construction, arithmetic and comparison are the
-    real ones, so an adapter patched with this behaves normally in every other
-    respect.
-    """
-
-    @classmethod
-    def now(cls, tz=None):  # noqa: D102 - matches datetime.now
-        return NOW if tz is None else NOW.astimezone(tz)
 TAXONOMY = frozenset({"financial-analyst"})
 
 
@@ -138,13 +122,6 @@ class OfflineJobright(JobrightPortal):
         return TAXONOMY
 
 
-class OfflineZipRecruiter(ZipRecruiterPortal):
-    """The real adapter, served from a canned MCP envelope."""
-
-    records: list[dict] = []
-    failure: Exception | None = None
-
-
 class OfflineSimplyHired(SimplyHiredPortal):
     """The real adapter, served from a canned search page."""
 
@@ -175,10 +152,6 @@ _OFFLINE = {
     "greenhouse": (OfflineGreenhouse, _greenhouse_body),
 }
 
-#: ZipRecruiter speaks JSON-RPC rather than serving pages, so it is stubbed at
-#: the other verb. Listed separately because the reset loop covers both.
-_OFFLINE_RPC = {"ziprecruiter": OfflineZipRecruiter}
-
 #: Scale.jobs GETs JSON from a search endpoint, a third verb again.
 _OFFLINE_JSON = {"scalejobs": OfflineScaleJobs}
 
@@ -202,29 +175,9 @@ def offline_http(monkeypatch: pytest.MonkeyPatch) -> None:
         return build_page(adapter_class.records)
 
     async def fake_post_json(self, url, *, payload, headers=None):  # noqa: ANN001
-        adapter_class = _OFFLINE_RPC.get(self.portal)
-        if adapter_class is None:
-            raise AssertionError(f"unexpected request from {self.portal}: {url}")
-
-        if adapter_class.failure is not None:
-            raise adapter_class.failure
-        if payload["method"] == "initialize":
-            return {"result": {"protocolVersion": "2024-11-05", "capabilities": {}}}
-
-        # The live endpoint pages in fives and then repeats its last page; the
-        # fixture is small enough that one page is the whole of it.
-        offset = payload["params"]["arguments"].get("offset", 0)
-        records = adapter_class.records if not offset else []
-        return {
-            "result": {
-                "structuredContent": {
-                    "results": records,
-                    "status": "OK",
-                    "meta": {"count": len(records), "limit": 5, "total": len(records)},
-                    "warnings": [],
-                }
-            }
-        }
+        # No portal exercised in this file POSTs. The stub stays so that one
+        # starting to would fail loudly here rather than reach the network.
+        raise AssertionError(f"unexpected request from {self.portal}: {url}")
 
     async def fake_get_json(self, url, *, params=None):  # noqa: ANN001
         adapter_class = _OFFLINE_JSON.get(self.portal)
@@ -266,7 +219,7 @@ def offline_http(monkeypatch: pytest.MonkeyPatch) -> None:
     for adapter_class, _ in _OFFLINE.values():
         adapter_class.records = []
         adapter_class.failure = None
-    for adapter_class in (*_OFFLINE_RPC.values(), *_OFFLINE_JSON.values()):
+    for adapter_class in _OFFLINE_JSON.values():
         adapter_class.records = []
         adapter_class.failure = None
 
@@ -295,20 +248,6 @@ def build_jobright(
 ) -> OfflineJobright:
     adapter = OfflineJobright(options={"rate_limit_per_minute": 0})
     type(adapter).records = records if records is not None else jobright_records()
-    type(adapter).failure = failure
-    return adapter
-
-
-def ziprecruiter_records() -> list[dict]:
-    data = json.loads(ZIPRECRUITER_FIXTURE.read_text(encoding="utf-8"))
-    return data["Financial Analyst"][0]["results"]
-
-
-def build_ziprecruiter(
-    records: list[dict] | None = None, *, failure: Exception | None = None
-) -> OfflineZipRecruiter:
-    adapter = OfflineZipRecruiter(options={"rate_limit_per_minute": 0})
-    type(adapter).records = records if records is not None else ziprecruiter_records()
     type(adapter).failure = failure
     return adapter
 
@@ -1045,31 +984,6 @@ async def test_the_order_is_stable_between_identical_runs(
     ]
 
 
-# --- ZipRecruiter: collection works, qualification cannot -------------------
-#
-# The surface ZipRecruiter permits this client to read publishes no posting
-# description. The matching engine rejects a posting it cannot read, so these
-# tests assert what actually happens rather than a result the data cannot
-# support. Padding the description to clear that gate is exactly what the
-# product forbids.
-
-
-async def test_a_ziprecruiter_only_search_collects_but_qualifies_nothing(
-    db_session: AsyncSession,
-) -> None:
-    _, resume = await analysed_resume(db_session)
-
-    prepared, outcome = await run_search(
-        db_session, resume=resume, specs=[("ziprecruiter", build_ziprecruiter())]
-    )
-
-    # A completed run that found listings and honestly rejected all of them is
-    # not a failure: it is the 70% threshold doing its job.
-    assert outcome.status is SearchRunStatus.COMPLETED
-    assert prepared.legs[0].raw_count == len(ziprecruiter_records())
-    assert prepared.legs[0].qualified_count == 0
-    assert outcome.results == []
-
 
 async def matches_of(session: AsyncSession, run_id) -> list[JobMatch]:
     """Scored rows belonging to one run.
@@ -1094,462 +1008,6 @@ async def jobs_of(session: AsyncSession, run_id) -> list[Job]:
     return list(
         (await session.scalars(select(Job).where(Job.id.in_(job_ids)))).all()
     )
-
-
-async def test_the_rejection_reason_names_the_missing_description(
-    db_session: AsyncSession,
-) -> None:
-    # The user is told why, not just that nothing came back.
-    _, resume = await analysed_resume(db_session)
-
-    prepared, _ = await run_search(
-        db_session, resume=resume, specs=[("ziprecruiter", build_ziprecruiter())]
-    )
-
-    matches = await matches_of(db_session, prepared.run.id)
-
-    assert matches
-    assert all(not match.qualified for match in matches)
-    reasons = [
-        str(reason).lower()
-        for match in matches
-        for reason in (match.rejection_reasons or [])
-    ]
-    assert any("description" in reason for reason in reasons)
-
-
-async def test_ziprecruiter_listings_still_normalise_and_persist(
-    db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """Rejected for scoring is not the same as discarded.
-
-    The listings are canonicalised and stored with their provenance, so the
-    moment a description source exists they are scoreable without re-fetching.
-
-    ZipRecruiter publishes ``days_ago`` rather than a date, so its timestamps
-    are relative to whenever the adapter runs. ``PortalSearchRequest`` carries
-    no clock - adapters read the wall clock, which is the contract - while the
-    run itself is frozen at NOW. Left alone, the two disagree by however long
-    ago this fixture was recorded, the dates land in the future, and
-    ``normalize_posted_at`` correctly discards them. Freezing the adapter's
-    clock to the same NOW is what makes a relative-date portal testable at all;
-    without it this passes only while the wall clock sits near NOW.
-    """
-    monkeypatch.setattr(ziprecruiter_module, "datetime", _FrozenDatetime)
-
-    _, resume = await analysed_resume(db_session)
-
-    prepared, _ = await run_search(
-        db_session, resume=resume, specs=[("ziprecruiter", build_ziprecruiter())]
-    )
-
-    jobs = await jobs_of(db_session, prepared.run.id)
-    assert len(jobs) == len(ziprecruiter_records())
-    assert all(job.company for job in jobs)
-    assert all(job.posted_at is not None for job in jobs)
-
-    sources = list(
-        (
-            await db_session.scalars(
-                select(JobSource).where(
-                    JobSource.job_id.in_([job.id for job in jobs])
-                )
-            )
-        ).all()
-    )
-    assert len(sources) == len(jobs)
-
-
-async def test_salary_and_work_arrangement_survive_in_the_stored_payload(
-    db_session: AsyncSession,
-) -> None:
-    """Fields the shared contract has no room for are still kept verbatim.
-
-    RawJob carries no salary and no work-mode field, so without this a later
-    scoring version would have to re-query the portal to see them.
-    """
-    _, resume = await analysed_resume(db_session)
-
-    prepared, _ = await run_search(
-        db_session, resume=resume, specs=[("ziprecruiter", build_ziprecruiter())]
-    )
-
-    jobs = await jobs_of(db_session, prepared.run.id)
-    captures = list(
-        (
-            await db_session.scalars(
-                select(RawJobRecord).where(
-                    RawJobRecord.job_id.in_([job.id for job in jobs])
-                )
-            )
-        ).all()
-    )
-
-    assert captures
-    assert all(capture.source == "ziprecruiter" for capture in captures)
-    assert any("salary" in capture.raw_payload for capture in captures)
-    assert any("job_type" in capture.raw_payload for capture in captures)
-    # And the description really is absent, not merely unread.
-    assert all(capture.description is None for capture in captures)
-
-
-# --- ZipRecruiter alongside the other two ----------------------------------
-
-
-async def test_hiring_cafe_still_returns_its_jobs_with_ziprecruiter_selected(
-    db_session: AsyncSession,
-) -> None:
-    # A portal that qualifies nothing must not cost the others their results.
-    _, resume = await analysed_resume(db_session)
-
-    _, outcome = await run_search(
-        db_session,
-        resume=resume,
-        specs=[
-            ("hiringcafe", build_hiringcafe()),
-            ("ziprecruiter", build_ziprecruiter()),
-        ],
-    )
-
-    assert outcome.status is SearchRunStatus.COMPLETED
-    assert outcome.results
-    assert all(carried_by(item, "hiringcafe") for item in outcome.results)
-    assert all(item.final_score >= 70.0 for item in outcome.results)
-
-
-async def test_jobright_is_unaffected_by_ziprecruiter_being_selected(
-    db_session: AsyncSession,
-) -> None:
-    _, resume = await analysed_resume(db_session)
-    qualifying = _mirror_as_jobright(hiringcafe_records()[0])
-
-    # Distinct portal rows per run: the slug is unique, and this test runs the
-    # same search twice on purpose.
-    _, alone = await run_search(
-        db_session, resume=resume, specs=[("jr-alone", build_jobright([qualifying]))]
-    )
-    _, together = await run_search(
-        db_session,
-        resume=resume,
-        specs=[
-            ("jr-together", build_jobright([qualifying])),
-            ("zr-together", build_ziprecruiter()),
-        ],
-    )
-
-    assert [item.final_score for item in alone.results] == [
-        item.final_score for item in together.results
-    ]
-
-
-async def test_all_three_portals_run_in_one_search(
-    db_session: AsyncSession,
-) -> None:
-    _, resume = await analysed_resume(db_session)
-
-    prepared, outcome = await run_search(
-        db_session,
-        resume=resume,
-        specs=[
-            ("jobright", build_jobright()),
-            ("hiringcafe", build_hiringcafe()),
-            ("ziprecruiter", build_ziprecruiter()),
-        ],
-        limit=20,
-    )
-
-    assert outcome.status is SearchRunStatus.COMPLETED
-    assert len(prepared.legs) == 3
-    # Every selected portal is searched; none is skipped once another fills up.
-    assert all(leg.raw_count > 0 for leg in prepared.legs)
-
-
-async def test_three_portal_quotas_are_allocated_evenly(
-    db_session: AsyncSession,
-) -> None:
-    _, resume = await analysed_resume(db_session)
-
-    _, outcome = await run_search(
-        db_session,
-        resume=resume,
-        specs=[
-            ("jobright", build_jobright()),
-            ("hiringcafe", build_hiringcafe()),
-            ("ziprecruiter", build_ziprecruiter()),
-        ],
-        limit=20,
-    )
-
-    # Phase 12: no portal is capped at limit / portal_count. Every leg may in
-    # principle supply the whole request; what it contributes is decided by the
-    # ranking afterwards.
-    assert [leg.target_quota for leg in outcome.portals] == [20, 20, 20]
-    assert sum(leg.selected_count for leg in outcome.portals) <= 20
-
-
-async def test_the_three_portal_result_is_ranked_and_free_of_duplicates(
-    db_session: AsyncSession,
-) -> None:
-    _, resume = await analysed_resume(db_session)
-
-    _, outcome = await run_search(
-        db_session,
-        resume=resume,
-        specs=[
-            ("jobright", build_jobright()),
-            ("hiringcafe", build_hiringcafe()),
-            ("ziprecruiter", build_ziprecruiter()),
-        ],
-    )
-
-    assert_ranked_newest_first(outcome.results)
-
-    job_ids = [item.job_id for item in outcome.results]
-    assert len(job_ids) == len(set(job_ids))
-
-
-# --- Cross-portal deduplication involving ZipRecruiter ----------------------
-
-
-def _match_token(key: str) -> str:
-    """Build a listing token carrying ``key``, the way the live one is built.
-
-    Exercises the real decoder rather than stubbing around it.
-    """
-    import base64
-
-    inner = b"\n" + bytes([len(key)]) + key.encode() + b"\x12$" + b"0" * 36
-    outer = b"\n" + bytes([len(inner)]) + inner
-    return base64.urlsafe_b64encode(outer).decode().rstrip("=")
-
-
-def _mirror_as_ziprecruiter(
-    record: dict, *, key: str = "zrMirrorKey0000000001"
-) -> dict:
-    """Recast one Hiring Cafe listing as the same vacancy on ZipRecruiter."""
-    processed = record["v5_processed_job_data"]
-    return {
-        "title": record["job_information"]["title"],
-        "company": record["enriched_company_data"]["name"],
-        "location": processed.get("formatted_workplace_location"),
-        "is_remote": False,
-        "salary": {"min_annual": 70000, "max_annual": 95000},
-        "company_logo": None,
-        "job_redirect_url": (
-            "https://www.ziprecruiter.com/job-redirect?match_token="
-            + _match_token(key)
-        ),
-        "job_type": "Full-time · On-site",
-        "benefits": "Medical, Dental",
-        "days_ago": 1,
-    }
-
-
-async def test_one_vacancy_on_hiring_cafe_and_ziprecruiter_is_one_job(
-    db_session: AsyncSession,
-) -> None:
-    """The merged job keeps both sources - and stays scoreable.
-
-    ZipRecruiter brings no description, so on its own this vacancy could not
-    be scored. Merged onto the Hiring Cafe record it is, and ZipRecruiter's
-    provenance is still recorded against it.
-    """
-    shared = hiringcafe_records()[0]
-    _, resume = await analysed_resume(db_session)
-
-    _, outcome = await run_search(
-        db_session,
-        resume=resume,
-        specs=[
-            ("hiringcafe", build_hiringcafe([shared])),
-            ("ziprecruiter", build_ziprecruiter([_mirror_as_ziprecruiter(shared)])),
-        ],
-    )
-
-    company = shared["enriched_company_data"]["name"]
-    jobs = [
-        job
-        for job in (await db_session.scalars(select(Job))).all()
-        if job.company == company
-    ]
-    assert len(jobs) == 1, [job.title for job in jobs]
-
-    sources = list(
-        (
-            await db_session.scalars(
-                select(JobSource).where(JobSource.job_id == jobs[0].id)
-            )
-        ).all()
-    )
-    assert len(sources) == 2
-
-    item = next(item for item in outcome.results if item.job_id == jobs[0].id)
-    assert carried_by(item, "hiringcafe")
-    assert carried_by(item, "ziprecruiter")
-
-
-async def test_the_employer_url_wins_over_the_ziprecruiter_board_link(
-    db_session: AsyncSession,
-) -> None:
-    # CLAUDE.md section 9: employer career page, then ATS, then portal listing.
-    # A ziprecruiter.com link must never displace an employer application URL.
-    shared = hiringcafe_records()[0]
-    _, resume = await analysed_resume(db_session)
-
-    _, outcome = await run_search(
-        db_session,
-        resume=resume,
-        specs=[
-            ("hiringcafe", build_hiringcafe([shared])),
-            ("ziprecruiter", build_ziprecruiter([_mirror_as_ziprecruiter(shared)])),
-        ],
-    )
-
-    assert outcome.results
-    item = outcome.results[0]
-    assert "ziprecruiter.com" not in item.preferred_application_url
-    assert item.preferred_url_kind in {
-        JobUrlKind.ATS.value,
-        JobUrlKind.EMPLOYER_CAREER.value,
-    }
-
-
-async def test_rediscovering_a_ziprecruiter_listing_creates_no_second_job(
-    db_session: AsyncSession,
-) -> None:
-    """The listing URL rotates per request; the job key inside it does not.
-
-    Without that key the same vacancy would be filed as new on every search.
-    """
-    _, resume = await analysed_resume(db_session)
-    record = _mirror_as_ziprecruiter(hiringcafe_records()[0])
-    company = record["company"]
-
-    async def stored_for_this_company() -> list[Job]:
-        return list(
-            (
-                await db_session.scalars(select(Job).where(Job.company == company))
-            ).all()
-        )
-
-    first_prepared, _ = await run_search(
-        db_session,
-        resume=resume,
-        specs=[("zr-first", build_ziprecruiter([record]))],
-    )
-    after_first = await stored_for_this_company()
-
-    # Same vacancy, freshly issued token - exactly what a re-search returns.
-    rotated = dict(record)
-    rotated["job_redirect_url"] = (
-        "https://www.ziprecruiter.com/job-redirect?match_token="
-        + _match_token("zrMirrorKey0000000001")
-        + "&tsid=100000500"
-    )
-    second_prepared, _ = await run_search(
-        db_session,
-        resume=resume,
-        specs=[("zr-second", build_ziprecruiter([rotated]))],
-    )
-    after_second = await stored_for_this_company()
-
-    assert len(after_first) == 1
-    # The rotated token must not file the same vacancy a second time.
-    assert len(after_second) == 1
-    assert after_first[0].id == after_second[0].id
-    assert first_prepared.run.id != second_prepared.run.id
-
-
-# --- Failure isolation, in every direction ---------------------------------
-
-
-async def test_ziprecruiter_failing_still_returns_the_other_portals_jobs(
-    db_session: AsyncSession,
-) -> None:
-    _, resume = await analysed_resume(db_session)
-
-    _, outcome = await run_search(
-        db_session,
-        resume=resume,
-        specs=[
-            ("hiringcafe", build_hiringcafe()),
-            (
-                "ziprecruiter",
-                build_ziprecruiter(
-                    failure=PortalTimeoutError("timed out", portal="ziprecruiter")
-                ),
-            ),
-        ],
-    )
-
-    assert outcome.status is SearchRunStatus.COMPLETED_WITH_ERRORS
-    assert outcome.results
-    assert all(carried_by(item, "hiringcafe") for item in outcome.results)
-
-    failed = [leg for leg in outcome.portals if leg.failed]
-    assert len(failed) == 1
-    assert failed[0].portal_slug.endswith("ziprecruiter")
-    assert failed[0].error
-
-
-async def test_another_portal_failing_does_not_stop_ziprecruiter_collecting(
-    db_session: AsyncSession,
-) -> None:
-    _, resume = await analysed_resume(db_session)
-
-    _, outcome = await run_search(
-        db_session,
-        resume=resume,
-        specs=[
-            (
-                "hiringcafe",
-                build_hiringcafe(
-                    failure=PortalParseError("bad page", portal="hiringcafe")
-                ),
-            ),
-            ("ziprecruiter", build_ziprecruiter()),
-        ],
-    )
-
-    assert outcome.status is SearchRunStatus.COMPLETED_WITH_ERRORS
-
-    by_slug = {leg.portal_slug.rsplit("-", 1)[-1]: leg for leg in outcome.portals}
-    assert by_slug["hiringcafe"].failed
-    # It still ran and still collected, even though nothing it found qualified.
-    assert not by_slug["ziprecruiter"].failed
-    assert by_slug["ziprecruiter"].collected_count > 0
-
-
-async def test_all_three_failing_fails_the_run_with_every_error_recorded(
-    db_session: AsyncSession,
-) -> None:
-    _, resume = await analysed_resume(db_session)
-
-    _, outcome = await run_search(
-        db_session,
-        resume=resume,
-        specs=[
-            (
-                "jobright",
-                build_jobright(failure=PortalTimeoutError("t", portal="jobright")),
-            ),
-            (
-                "hiringcafe",
-                build_hiringcafe(failure=PortalParseError("p", portal="hiringcafe")),
-            ),
-            (
-                "ziprecruiter",
-                build_ziprecruiter(
-                    failure=PortalTimeoutError("t", portal="ziprecruiter")
-                ),
-            ),
-        ],
-    )
-
-    assert outcome.status is SearchRunStatus.FAILED
-    assert outcome.results == []
-    assert all(leg.failed for leg in outcome.portals)
-    assert all(leg.error for leg in outcome.portals)
 
 
 # --- SimplyHired through the real pipeline ---------------------------------

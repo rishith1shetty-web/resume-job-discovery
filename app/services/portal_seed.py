@@ -6,13 +6,16 @@ the adapter's own declared capabilities rather than restating them here.
 
 Idempotent. Running it twice changes nothing, and it never enables a portal the
 operator has since disabled.
+
+It also removes portals the product has retired - see ``RETIRED_PORTAL_SLUGS``.
+Dropping a seed alone would leave the row behind on every existing install.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -123,29 +126,6 @@ PORTAL_SEEDS: tuple[PortalSeed, ...] = (
         ),
     ),
     PortalSeed(
-        slug="ziprecruiter",
-        website_url="https://www.ziprecruiter.com/",
-        display_order=17,
-        # Disabled deliberately, and not for an access reason: the adapter is
-        # permitted to collect and does. It is disabled because the surface it
-        # is permitted to read publishes no posting description, so every
-        # listing is rejected as unscoreable and the portal would take a share
-        # of every search's quota while returning nothing. Flip this to True to
-        # select it anyway.
-        is_enabled=False,
-        notes=(
-            "Collects through the job-search MCP endpoint that ZipRecruiter "
-            "publishes in its own /llms.txt manifest (read only, no auth). "
-            "Its robots.txt is deny-by-default for this client - "
-            "'User-agent: * / Allow: /llms.txt / Disallow: /' - so no "
-            "ziprecruiter.com page is ever requested. Disabled because that "
-            "endpoint returns no job description: title, company, location, "
-            "salary, benefits and age only. The matching engine rejects a "
-            "posting it cannot read, so the portal currently qualifies no "
-            "jobs. Enabling it needs a description source, not a code change."
-        ),
-    ),
-    PortalSeed(
         slug="dayforce",
         website_url="https://jobs.dayforcehcm.com/",
         display_order=21,
@@ -218,29 +198,76 @@ PORTAL_SEEDS: tuple[PortalSeed, ...] = (
             "allocation."
         ),
     ),
-    PortalSeed(
-        slug="linkedin",
-        website_url="https://www.linkedin.com/",
-        display_order=20,
-        # Disabled deliberately: robots.txt refuses automated access.
-        is_enabled=False,
-        notes=(
-            "Disabled: LinkedIn's robots.txt disallows automated access for "
-            "this client (User-agent: * / Disallow: /). The adapter is "
-            "implemented and tested but will not collect until an operator "
-            "who holds LinkedIn's permission sets the portal option "
-            "'access_authorized' to true. Easy Apply listings are excluded "
-            "when it does run."
-        ),
-    ),
 )
 
 
+#: Portals that were once seeded and must no longer exist (D-005).
+#:
+#: Dropping a slug from ``PORTAL_SEEDS`` stops a *fresh* database from growing
+#: the row, but it does nothing to an installation that already has one - and
+#: ``GET /portals`` selects every row, so a retired portal would keep appearing
+#: in Find Matches forever. Listing it here is what actually removes it.
+#:
+#: Deliberately not a migration: migrations carry schema, and portal rows are
+#: environment data owned by this script (see app/scripts/seed_portals.py).
+RETIRED_PORTAL_SLUGS: frozenset[str] = frozenset({"linkedin", "ziprecruiter"})
+
+
+async def _retire_portals(
+    session: AsyncSession, slugs: frozenset[str]
+) -> dict[str, str]:
+    """Delete rows for portals that are no longer part of the product.
+
+    Refuses to delete a portal that any job or search run still references.
+    Removing it would cascade into ``job_sources`` and take real discovery and
+    application history with it, and losing a user's history is a worse outcome
+    than an unused row lingering. Such a portal is reported instead, so an
+    operator can decide, rather than being silently kept or silently destroyed.
+    """
+    from app.models.job import JobSource
+    from app.models.search import SearchRunPortal
+
+    actions: dict[str, str] = {}
+
+    for slug in sorted(slugs):
+        portal = await session.scalar(select(Portal).where(Portal.slug == slug))
+        if portal is None:
+            continue
+
+        referencing = await session.scalar(
+            select(func.count())
+            .select_from(JobSource)
+            .where(JobSource.portal_id == portal.id)
+        ) or 0
+        referencing += await session.scalar(
+            select(func.count())
+            .select_from(SearchRunPortal)
+            .where(SearchRunPortal.portal_id == portal.id)
+        ) or 0
+
+        if referencing:
+            logger.warning(
+                "retired_portal_still_referenced",
+                slug=slug,
+                references=referencing,
+            )
+            actions[slug] = f"kept ({referencing} references)"
+            continue
+
+        await session.delete(portal)
+        actions[slug] = "removed"
+
+    return actions
+
+
 async def ensure_portals_seeded(
-    session: AsyncSession, *, seeds: tuple[PortalSeed, ...] = PORTAL_SEEDS
+    session: AsyncSession,
+    *,
+    seeds: tuple[PortalSeed, ...] = PORTAL_SEEDS,
+    retired: frozenset[str] = RETIRED_PORTAL_SLUGS,
 ) -> dict[str, str]:
     """Create or refresh the portal rows. Returns slug -> action taken."""
-    actions: dict[str, str] = {}
+    actions: dict[str, str] = await _retire_portals(session, retired)
 
     for seed in seeds:
         adapter = registry.get(seed.slug) if registry.is_registered(seed.slug) else None
