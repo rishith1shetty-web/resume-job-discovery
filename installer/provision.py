@@ -91,7 +91,12 @@ REQUIRED_TABLES = (
     "applications",
     "application_status_history",
     "portal_errors",
+    "career_page_interactions",
 )
+
+#: Key on Alembic's ``Config.attributes`` that names the connection to migrate
+#: with. Kept in sync with ``migrations/env.py``; the two are a contract.
+MIGRATION_URL_ATTRIBUTE = "sqlalchemy_url"
 
 
 # --- Exit codes -------------------------------------------------------------
@@ -425,6 +430,9 @@ def run_migrations(url: str, progress: Progress) -> None:
     this was trying to reach. Schema changes arrive through the installer,
     which is the only thing that ever holds the administrator password.
 
+    Saying so is not enough on its own: ``url`` has to survive the trip into
+    Alembic, and once did not. See the comment on the attribute below.
+
     Run in-process rather than by shelling out to the `alembic` command: the
     packaged build has no console scripts and no source tree, so the CLI is
     not available to it.
@@ -437,13 +445,6 @@ def run_migrations(url: str, progress: Progress) -> None:
     from alembic import command
     from alembic.config import Config
 
-    from app.core.config import get_settings
-
-    # env.py reads application settings, so the settings cache is pointed at
-    # this URL before Alembic imports it.
-    os.environ["DATABASE_URL"] = url
-    get_settings.cache_clear()
-
     script_location = paths.bundle_root() / "migrations"
     if not script_location.is_dir():
         raise ProvisionError(
@@ -453,7 +454,20 @@ def run_migrations(url: str, progress: Progress) -> None:
 
     config = Config()
     config.set_main_option("script_location", str(script_location))
-    config.set_main_option("sqlalchemy.url", url)
+
+    # THIS is what decides the role the migration runs as. It is passed through
+    # `attributes` rather than `set_main_option` for two reasons, and both have
+    # already cost an installation:
+    #
+    #   * env.py used to overwrite the ini URL with the one from application
+    #     settings, discarding whatever was set here. On an upgrade those
+    #     settings resolve to the stored runtime credential, so the DDL ran as
+    #     the application role and PostgreSQL refused it.
+    #
+    #   * `set_main_option` writes into a ConfigParser that interpolates `%`,
+    #     and this URL carries a percent-encoded administrator password. A `%`
+    #     in that password would raise before a connection was attempted.
+    config.attributes[MIGRATION_URL_ATTRIBUTE] = url
 
     try:
         command.upgrade(config, "head")

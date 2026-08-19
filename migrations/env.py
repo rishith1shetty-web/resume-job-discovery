@@ -1,7 +1,21 @@
 """Alembic environment (async).
 
-The database URL comes from application settings, so migrations and the
-running app can never drift apart or point at different databases.
+# Which database gets migrated
+
+Normally the URL comes from application settings, so migrations and the running
+app can never drift apart or point at different databases.
+
+A caller may override that by setting ``config.attributes["sqlalchemy_url"]``,
+and when it does, it wins. That is not a convenience: the installer must apply
+DDL as the PostgreSQL administrator, while application settings deliberately
+resolve to the least-privilege runtime role once a credential has been stored.
+Reading settings unconditionally here meant an upgrade over an existing
+installation migrated as the runtime role and failed with "permission denied
+for schema public" - see ``installer/provision.py``.
+
+The override is passed through ``config.attributes`` rather than
+``set_main_option`` because the latter writes into a ConfigParser that performs
+``%``-interpolation, and a URL carries percent-encoded credentials.
 """
 
 from __future__ import annotations
@@ -14,8 +28,6 @@ from sqlalchemy import pool
 from sqlalchemy.engine import Connection
 from sqlalchemy.ext.asyncio import async_engine_from_config
 
-from app.core.config import get_settings
-
 # Importing app.models attaches every table to Base.metadata. Autogenerate
 # only sees what is imported, so this import must not be removed.
 from app.models import Base
@@ -25,10 +37,26 @@ config = context.config
 if config.config_file_name is not None:
     fileConfig(config.config_file_name)
 
-settings = get_settings()
-config.set_main_option("sqlalchemy.url", settings.sqlalchemy_url)
-
 target_metadata = Base.metadata
+
+#: Key a caller sets on ``Config.attributes`` to choose the connection itself.
+URL_ATTRIBUTE = "sqlalchemy_url"
+
+
+def database_url() -> str:
+    """The database to migrate.
+
+    Settings are read lazily, and only when no URL was supplied: a caller that
+    named its own connection should not also have to satisfy application
+    configuration it is not going to use.
+    """
+    supplied = config.attributes.get(URL_ATTRIBUTE)
+    if supplied:
+        return str(supplied)
+
+    from app.core.config import get_settings
+
+    return get_settings().sqlalchemy_url
 
 
 def _configure(connection: Connection) -> None:
@@ -46,7 +74,7 @@ def _configure(connection: Connection) -> None:
 def run_migrations_offline() -> None:
     """Emit SQL to stdout without connecting (``alembic upgrade head --sql``)."""
     context.configure(
-        url=settings.sqlalchemy_url,
+        url=database_url(),
         target_metadata=target_metadata,
         literal_binds=True,
         dialect_opts={"paramstyle": "named"},
@@ -63,8 +91,14 @@ def _do_run_migrations(connection: Connection) -> None:
 
 
 async def run_migrations_online() -> None:
+    # The URL is placed in the engine's configuration dict rather than back
+    # into the ini section, so it never passes through ConfigParser
+    # interpolation on the way.
+    configuration = dict(config.get_section(config.config_ini_section, {}))
+    configuration["sqlalchemy.url"] = database_url()
+
     connectable = async_engine_from_config(
-        config.get_section(config.config_ini_section, {}),
+        configuration,
         prefix="sqlalchemy.",
         poolclass=pool.NullPool,
     )
