@@ -254,3 +254,84 @@ export function updateApplication(jobId, resumeId, { status, notes }, signal) {
     signal,
   })
 }
+
+// --- Career pages ----------------------------------------------------------
+//
+// A career page is a company's recruiting site, not a vacancy, so these are
+// separate from `/applications`. The same two decisions apply — Applied and
+// Skipped, both of which stop the page being offered again for this resume —
+// and nothing here applies to anything on the user's behalf.
+//
+// Career pages are not stored server-side, so the whole page is sent and the
+// server derives its stable identity from the canonicalised URL. That is what
+// makes two runs surfacing the same page with different tracking parameters
+// resolve to one decision.
+
+/** The fields the API needs to identify and record a career page. */
+function careerPageBody(page) {
+  return {
+    company_name: page.company_name,
+    official_career_url: page.official_career_url,
+    relevant_role: page.relevant_role ?? null,
+    location: page.location ?? null,
+  }
+}
+
+/**
+ * Mark a career page Applied or Skipped for one resume.
+ *
+ * Idempotent: sending the decision the page already has returns the same
+ * record and a message saying nothing changed, so a double click is safe.
+ */
+export function decideCareerPage(page, resumeId, { status, notes }, signal) {
+  const body = { ...careerPageBody(page), status }
+  if (notes !== undefined) body.notes = notes
+
+  return requestWithMessage('/career-pages/decision', {
+    method: 'PATCH',
+    query: { resume_id: resumeId },
+    body,
+    signal,
+  })
+}
+
+/** Undo a decision, making the page eligible for this resume again. */
+export function clearCareerPageDecision(page, resumeId, signal) {
+  return requestWithMessage('/career-pages/decision', {
+    method: 'DELETE',
+    query: {
+      resume_id: resumeId,
+      official_career_url: page.official_career_url,
+      company_name: page.company_name,
+    },
+    signal,
+  })
+}
+
+/** One career page's recorded decision, or nulls when there is none. */
+export function getCareerPageState(page, resumeId, signal) {
+  return request('/career-pages/state', {
+    query: {
+      resume_id: resumeId,
+      official_career_url: page.official_career_url,
+      company_name: page.company_name,
+    },
+    signal,
+  })
+}
+
+/**
+ * Career pages the user has acted on, for Application History.
+ *
+ * Every item carries `kind: "career_page"` so a merged history list can show
+ * which rows are companies rather than individual jobs.
+ */
+export function listCareerPageDecisions(
+  { resumeId, status, page = 1, pageSize = 100 } = {},
+  signal,
+) {
+  return request('/career-pages', {
+    query: { resume_id: resumeId, status, page, page_size: pageSize },
+    signal,
+  })
+}

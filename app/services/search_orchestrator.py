@@ -100,6 +100,7 @@ from app.careers.base import (
     CareerPageSource,
     career_registry,
 )
+from app.careers.identity import career_page_key
 from app.careers.source import collect_discovery_listings
 from app.core.logging import get_logger
 from app.matching.eligibility import ineligible_job_ids
@@ -131,6 +132,7 @@ from app.search.depth import ExhaustionReason, SearchDepth
 from app.search.freshness import freshness_score, is_eligible_age
 from app.search.queries import QueryPlan, build_query_plan
 from app.processing.normalize import RejectionReason
+from app.services import career_page_service
 from app.services.job_processing import process_raw_jobs
 from app.services.match_service import load_match_profile, score_jobs_for_resume
 
@@ -546,6 +548,17 @@ async def _run_career_lane(
     """
     listings = [job for collected in collections for job in collected.jobs]
 
+    # The career-lane counterpart of the job lane's `excluded` set, read once
+    # per run. A career page the user has already applied to or skipped under
+    # *this* resume is not offered again, exactly as a job is not - and for the
+    # same reason. Applied here on the server, before anything is returned, so
+    # the rule holds for every client rather than for the one that remembers to
+    # filter (CLAUDE.md section 11).
+    decided = await career_page_service.ineligible_career_page_keys(
+        session, resume_id=run.resume_id
+    )
+    suppressed = 0
+
     if not listings:
         # Career Pages was selected on its own, so there is nothing to reuse.
         adapters = await _career_discovery_adapters(
@@ -597,6 +610,19 @@ async def _run_career_lane(
                 )
             )
 
+        if decided:
+            kept = []
+            for career_page in discovery.pages:
+                key = career_page_key(
+                    official_career_url=career_page.official_career_url,
+                    company_name=career_page.company_name,
+                )
+                if key is not None and key in decided:
+                    suppressed += 1
+                    continue
+                kept.append(career_page)
+            discovery.pages = kept
+
         outcome.career_pages.extend(discovery.pages)
 
         leg.status = (
@@ -624,6 +650,16 @@ async def _run_career_lane(
                 f"({classify_error(error).value}): {error}"
             )
 
+    if suppressed:
+        # Said out loud rather than silently shortening the list: the user is
+        # entitled to know why a company they acted on is no longer offered.
+        outcome.warnings.append(
+            f"{suppressed} company career page{'s' if suppressed != 1 else ''} "
+            "you already applied to or skipped with this resume "
+            f"{'were' if suppressed != 1 else 'was'} left out. "
+            "They stay in your application history."
+        )
+
     await session.flush()
 
     logger.info(
@@ -631,6 +667,7 @@ async def _run_career_lane(
         search_run_id=str(run.id),
         listings=len(listings),
         returned=outcome.career_page_count,
+        suppressed=suppressed,
     )
 
 

@@ -1707,6 +1707,17 @@
   width: 100%;
 }
 
+/* The Applied/Skip pair. Sits under the link rather than beside it: the link
+   is where the user goes, and these record what they did once they are back. */
+.career-card-actions {
+  display: flex;
+  gap: var(--space-2);
+}
+
+.career-card-actions .btn {
+  flex: 1;
+}
+
 .career-card-reason {
   margin: 0;
 }

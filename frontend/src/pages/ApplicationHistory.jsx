@@ -9,11 +9,23 @@
  *
  * Statuses are recorded by the user after they apply on the employer's own
  * site. Nothing here submits anything.
+ *
+ * Two kinds of record share this page: individual job applications, and
+ * decisions about a company's career page. They are listed together because
+ * the user made both decisions in the same place and wants them in one
+ * history — but they are never conflated. Each row carries a Type badge, and a
+ * career page row is not a job application: applying to a career page does not
+ * apply to the jobs on it, and the two are stored in separate tables.
  */
 
 import { useMemo, useState } from 'react'
 
-import { listApplicationHistory, listApplications, listJobs } from '../api/endpoints.js'
+import {
+  listApplicationHistory,
+  listApplications,
+  listCareerPageDecisions,
+  listJobs,
+} from '../api/endpoints.js'
 import { STATUS_LABELS, StatusBadge } from '../components/ApplicationStatus.jsx'
 import { Icon } from '../components/Icon.jsx'
 import { useAsync } from '../hooks/useAsync.js'
@@ -100,13 +112,52 @@ export function ApplicationHistory({ navigate }) {
     { immediate: Boolean(activeResumeId) },
   )
 
+  // Career page decisions for this resume. Best-effort in the same way the
+  // board column is: if this fails the job applications still list, because a
+  // history that hides records is worse than one missing a category.
+  const careerPages = useAsync(
+    (signal) =>
+      activeResumeId
+        ? listCareerPageDecisions({ resumeId: activeResumeId, pageSize: 200 }, signal)
+        : Promise.resolve(null),
+    [activeResumeId],
+    { immediate: Boolean(activeResumeId) },
+  )
+
   const portalsByJob = useMemo(() => {
     const map = {}
     for (const job of jobs.data ?? []) map[job.id] = job.portals ?? []
     return map
   }, [jobs.data])
 
-  const items = applications.data?.items ?? []
+  // One list, two kinds. Career page decisions are mapped onto the same row
+  // shape the table already renders so the merge needs no second table, and
+  // `kind` keeps them distinguishable rather than blended.
+  const items = useMemo(() => {
+    const jobRows = (applications.data?.items ?? []).map((item) => ({
+      ...item,
+      kind: 'job',
+    }))
+
+    const careerRows = (careerPages.data?.items ?? []).map((item) => ({
+      id: item.id,
+      kind: 'career_page',
+      job_id: null,
+      // The company is the subject of a career page record, so it leads. The
+      // role is what the search matched, shown as the secondary line.
+      job_title: item.relevant_role || 'Career page',
+      company: item.company_name,
+      application_url: item.official_career_url,
+      status: item.status,
+      applied_at: item.applied_at,
+      status_changed_at: item.updated_at,
+      updated_at: item.updated_at,
+      notes: item.notes,
+      has_notes: Boolean(item.notes),
+    }))
+
+    return [...jobRows, ...careerRows]
+  }, [applications.data, careerPages.data])
 
   const counts = useMemo(() => {
     const tally = { all: items.length }
@@ -153,7 +204,9 @@ export function ApplicationHistory({ navigate }) {
     )
   }
 
-  const loading = applications.loading
+  // Both kinds settle before the table renders, so career page rows do not
+  // appear a beat after the job rows and shift the list under the cursor.
+  const loading = applications.loading || careerPages.loading
 
   return (
     <div className="stack">
@@ -256,10 +309,10 @@ export function ApplicationHistory({ navigate }) {
           </EmptyState>
         ) : (
           <Table
-            columns={['Job', 'Company', 'Board', 'Date applied', 'Last updated', 'Status', 'Notes']}
+            columns={['Role', 'Company', 'Type', 'Board', 'Date applied', 'Last updated', 'Status', 'Notes']}
             rows={visible}
             renderRow={(item) => (
-              <tr key={item.id}>
+              <tr key={`${item.kind}:${item.id}`}>
                 <td style={{ maxWidth: 300 }}>
                   {item.application_url ? (
                     <a href={item.application_url} target="_blank" rel="noreferrer noopener">
@@ -270,6 +323,19 @@ export function ApplicationHistory({ navigate }) {
                   )}
                 </td>
                 <td>{orDash(item.company)}</td>
+                {/* A career page is a company's recruiting site, not a
+                    vacancy. Labelling it plainly is the difference between
+                    an honest history and one that implies the user applied
+                    to jobs they never saw. */}
+                <td>
+                  {item.kind === 'career_page' ? (
+                    <Badge tone="accent" title="A company career page, not an individual job posting.">
+                      Career page
+                    </Badge>
+                  ) : (
+                    <Badge tone="neutral">Job</Badge>
+                  )}
+                </td>
                 <td>
                   <div className="chip-row">
                     {(portalsByJob[item.job_id] ?? []).map((slug) => (

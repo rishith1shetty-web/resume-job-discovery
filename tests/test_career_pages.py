@@ -1062,13 +1062,53 @@ async def test_the_search_response_carries_career_pages_separately(
         assert "application_status" not in page
 
 
-def test_career_pages_need_no_new_table() -> None:
+def test_discovered_career_pages_are_never_stored() -> None:
     """Requirement 13, asserted rather than left as a claim in a report.
 
-    Career pages are transient discovery output. Nothing persists them, so no
-    model was added and no migration exists for them.
+    Career pages are transient discovery output: a run computes them, the
+    summary counts them, and nothing keeps them. There is no table of career
+    pages and no model that would let one be written.
+
+    This originally asserted that no table name contained "career" at all.
+    That proxy stopped expressing the guarantee once users could mark a page
+    Applied or Skipped: ``career_page_interactions`` stores a *decision the
+    user made*, keyed by the page's canonical URL, and holds no discovered
+    page. The guarantee is unchanged and is now stated directly - the decision
+    table is named explicitly so a future table of pages would still fail here.
     """
     from app.db.base import Base
 
     tables = set(Base.metadata.tables)
-    assert not any("career" in name for name in tables)
+
+    stored_pages = {
+        name
+        for name in tables
+        if "career" in name and name != "career_page_interactions"
+    }
+    assert stored_pages == set(), (
+        f"career pages must stay transient; unexpected table(s): {stored_pages}"
+    )
+
+
+def test_the_career_page_decision_table_holds_decisions_not_pages() -> None:
+    """The one career table stores what a user chose, not what was discovered.
+
+    A discovered page has a relevance score, an opening count, the portals that
+    evidenced it and the titles seen. None of that belongs to a decision, and
+    none of it is stored - so this table can never quietly become a cache of
+    search results.
+    """
+    from app.models.career_page import CareerPageInteraction
+
+    columns = set(CareerPageInteraction.__table__.columns.keys())
+
+    assert {"user_id", "resume_id", "career_page_key", "status"} <= columns
+    for discovery_only in (
+        "relevance",
+        "opening_count",
+        "sources",
+        "matched_titles",
+        "url_kind",
+        "reason",
+    ):
+        assert discovery_only not in columns, discovery_only

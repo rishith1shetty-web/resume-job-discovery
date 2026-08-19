@@ -17,7 +17,7 @@
 
 import { useEffect, useMemo, useRef, useState } from 'react'
 
-import { listPortals, startSearchRun } from '../api/endpoints.js'
+import { decideCareerPage, listPortals, startSearchRun } from '../api/endpoints.js'
 import { ApplicationStatusCell } from '../components/ApplicationStatus.jsx'
 import { Icon } from '../components/Icon.jsx'
 import { useAsync } from '../hooks/useAsync.js'
@@ -284,56 +284,156 @@ function SearchProgress({ count }) {
  * publishes.
  *
  * Rendered as cards rather than as rows in the matches table, and deliberately
- * so: these are not vacancies. There is no score ring, no posted date and no
- * status control, because a career page has none of those things — it is a
- * place to go and look. The single action is an ordinary link to the
- * employer's own site. Nothing here applies to anything, and opening the link
- * records nothing.
+ * so: these are not vacancies. There is no score ring and no posted date,
+ * because a career page has none of those things.
+ *
+ * What it does share with a job row is the decision the user makes about it.
+ * Applied and Skipped are recorded per resume and both stop the page being
+ * offered again by later searches — the same lifecycle a job has, for the same
+ * reason: being shown a company you have already dealt with is the nuisance
+ * this product exists to remove.
+ *
+ * Two things this does NOT mean, and the API enforces both:
+ *   • applying to a career page is not applying to the jobs listed on it;
+ *   • skipping one does not skip that company's individual jobs.
+ *
+ * The link is still an ordinary anchor. Nothing here applies to anything —
+ * the user applies on the employer's own site and tells us what they did.
  */
-function CareerPages({ pages }) {
+function CareerPageCard({ page, resumeId, onDecided }) {
+  const [pending, setPending] = useState(null)
+  const [error, setError] = useState(null)
+
+  async function decide(status) {
+    // A second click while the first is in flight is ignored rather than sent.
+    // The endpoint is idempotent either way, but not firing is cheaper than
+    // relying on it.
+    if (pending) return
+
+    setPending(status)
+    setError(null)
+    try {
+      await decideCareerPage(page, resumeId, { status })
+      // Only after the server has confirmed. Removing the card first would
+      // show the user a state the backend might have rejected.
+      onDecided(page, status)
+    } catch (err) {
+      setError(err.message || 'Could not record that. Try again.')
+      setPending(null)
+    }
+  }
+
+  return (
+    <article className="career-card">
+      <div className="career-card-head">
+        <h4 className="career-card-company">{page.company_name}</h4>
+        <Badge tone="neutral">
+          {page.opening_count} open{page.opening_count === 1 ? 'ing' : 'ings'}
+        </Badge>
+      </div>
+
+      <p className="career-card-role">{page.relevant_role}</p>
+
+      <p className="xs subtle row" style={{ gap: 'var(--space-1)' }}>
+        <Icon name="pin" size={13} />
+        {page.location}
+      </p>
+
+      {/* rel=noreferrer noopener on an external link the user opens
+          themselves; target=_blank so the search they waited for is
+          still here when they come back. */}
+      <a
+        className="btn btn-default career-card-link"
+        href={page.official_career_url}
+        target="_blank"
+        rel="noreferrer noopener"
+        title={page.reason}
+      >
+        View official careers
+        <Icon name="external" size={14} />
+      </a>
+
+      <div className="career-card-actions">
+        <Button
+          size="sm"
+          variant="primary"
+          disabled={Boolean(pending)}
+          onClick={() => decide('applied')}
+          title="Record that you applied on this company's site. It will not be shown again for this resume."
+        >
+          {pending === 'applied' ? 'Saving…' : 'Applied'}
+        </Button>
+        <Button
+          size="sm"
+          variant="default"
+          disabled={Boolean(pending)}
+          onClick={() => decide('skipped')}
+          title="Not interested. It will not be shown again for this resume."
+        >
+          {pending === 'skipped' ? 'Saving…' : 'Skip'}
+        </Button>
+      </div>
+
+      {error ? <p className="xs bad">{error}</p> : null}
+
+      <p className="xs subtle career-card-reason">{page.reason}</p>
+    </article>
+  )
+}
+
+function CareerPages({ pages, resumeId }) {
+  // Cards the user has decided about in this session, keyed the way the server
+  // keys them — by career URL. Held here rather than mutating `run`, so the
+  // search response stays the record of what the search returned.
+  const [decided, setDecided] = useState(() => new Map())
+
+  const visible = pages.filter((page) => !decided.has(page.official_career_url))
+
+  function handleDecided(page, status) {
+    setDecided((current) => {
+      const next = new Map(current)
+      next.set(page.official_career_url, { company: page.company_name, status })
+      return next
+    })
+  }
+
   if (pages.length === 0) return null
+
+  const recorded = [...decided.values()]
 
   return (
     <Card
-      title={`Career pages (${pages.length})`}
-      subtitle="Companies hiring for your role in the US right now. Apply on the company's own site — these are not job listings and are separate from the matches above."
+      title={`Career pages (${visible.length})`}
+      subtitle="Companies hiring for your role in the US right now. Apply on the company's own site, then mark it — it will not be offered again for this resume."
       actions={<Badge tone="accent">Official pages only</Badge>}
     >
-      <div className="grid grid-3">
-        {pages.map((page) => (
-          <article key={page.official_career_url + page.company_name} className="career-card">
-            <div className="career-card-head">
-              <h4 className="career-card-company">{page.company_name}</h4>
-              <Badge tone="neutral">
-                {page.opening_count} open{page.opening_count === 1 ? 'ing' : 'ings'}
-              </Badge>
-            </div>
+      {recorded.length > 0 ? (
+        <p className="xs subtle" style={{ marginBottom: 'var(--space-3)' }}>
+          Recorded this session:{' '}
+          {recorded
+            .map((entry) => `${entry.company} (${entry.status === 'applied' ? 'Applied' : 'Skipped'})`)
+            .join(', ')}
+          . They are in Application History.
+        </p>
+      ) : null}
 
-            <p className="career-card-role">{page.relevant_role}</p>
-
-            <p className="xs subtle row" style={{ gap: 'var(--space-1)' }}>
-              <Icon name="pin" size={13} />
-              {page.location}
-            </p>
-
-            {/* rel=noreferrer noopener on an external link the user opens
-                themselves; target=_blank so the search they waited for is
-                still here when they come back. */}
-            <a
-              className="btn btn-default career-card-link"
-              href={page.official_career_url}
-              target="_blank"
-              rel="noreferrer noopener"
-              title={page.reason}
-            >
-              View official careers
-              <Icon name="external" size={14} />
-            </a>
-
-            <p className="xs subtle career-card-reason">{page.reason}</p>
-          </article>
-        ))}
-      </div>
+      {visible.length === 0 ? (
+        <p className="subtle">
+          You have acted on every career page from this search. They are in
+          Application History.
+        </p>
+      ) : (
+        <div className="grid grid-3">
+          {visible.map((page) => (
+            <CareerPageCard
+              key={page.official_career_url + page.company_name}
+              page={page}
+              resumeId={resumeId}
+              onDecided={handleDecided}
+            />
+          ))}
+        </div>
+      )}
     </Card>
   )
 }
@@ -430,7 +530,7 @@ function SearchOutcome({ outcome, resumeId }) {
         )}
       </Card>
 
-      <CareerPages pages={run.career_pages ?? []} />
+      <CareerPages pages={run.career_pages ?? []} resumeId={resumeId} />
 
       <details className="group">
         <summary>

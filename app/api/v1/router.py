@@ -9,6 +9,7 @@ from fastapi import APIRouter
 
 from app.api.v1.routes import (
     applications,
+    career_pages,
     config,
     health,
     jobs,
@@ -28,4 +29,5 @@ api_router.include_router(portals.router)
 api_router.include_router(search_runs.router)
 api_router.include_router(jobs.router)
 api_router.include_router(applications.router)
+api_router.include_router(career_pages.router)
 api_router.include_router(system.router)

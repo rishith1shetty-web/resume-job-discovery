@@ -11,7 +11,8 @@ from app.models import Base, Portal, PortalConfig, Resume, User
 
 def test_defined_tables_match_the_completed_phases() -> None:
     # Phase 1 foundation, Phase 2 resume intelligence, Phase 3 job/search/
-    # application data. That completes the CLAUDE.md section 12 table set.
+    # application data - the CLAUDE.md section 12 table set - plus the one
+    # table added since for career page decisions.
     assert set(Base.metadata.tables) == {
         # Phase 1
         "users",
@@ -33,6 +34,12 @@ def test_defined_tables_match_the_completed_phases() -> None:
         "applications",
         "application_status_history",
         "portal_errors",
+        # Career page interactions. Not part of the section 12 set, and
+        # deliberately its own table rather than a nullable job_id on
+        # `applications`: a career page is a company's recruiting site, not a
+        # vacancy, so it has no `jobs` row to point at. It stores the user's
+        # Applied/Skipped decision, never a discovered page.
+        "career_page_interactions",
     }
 
 
