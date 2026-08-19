@@ -42,8 +42,13 @@ from app.processing.dedup import DuplicateVerdict, ExistingJobView, best_match
 from app.processing.locations import normalize_location
 from app.processing.merge import merge_into_existing
 from app.processing.normalize import (
+    MAX_COMPANY_LENGTH,
+    MAX_EMPLOYMENT_TYPE_LENGTH,
+    MAX_LOCATION_LENGTH,
+    MAX_TITLE_LENGTH,
     NormalizedJob,
     RejectedJob,
+    clamp_display,
     normalize_raw_job,
 )
 from app.processing.text import stable_hash
@@ -633,21 +638,31 @@ def _raw_record(
     job_id: UUID | None = None,
     rejection_reason: str | None = None,
 ) -> RawJobRecord:
-    """The capture exactly as the portal returned it, for the audit trail."""
+    """The capture as the portal returned it, for the audit trail.
+
+    Text fields are held to the same column widths normalisation enforces. This
+    row is written in the same transaction as the job, so an over-long value
+    here would roll the portal's leg back just as surely - and losing the whole
+    audit trail to preserve the last few characters of one location would be
+    the wrong trade. ``raw_payload`` still carries the portal's untouched
+    response, so nothing is actually lost.
+    """
     return RawJobRecord(
         search_run_portal_id=search_run_portal.id,
         portal_id=portal.id,
         job_id=job_id,
         external_id=raw.external_id,
         source=raw.source,
-        title=raw.title,
-        company=raw.company,
-        location=raw.location,
+        title=clamp_display(raw.title, MAX_TITLE_LENGTH),
+        company=clamp_display(raw.company, MAX_COMPANY_LENGTH),
+        location=clamp_display(raw.location, MAX_LOCATION_LENGTH),
         description=raw.description,
         source_url=raw.source_url,
         application_url=raw.application_url,
         posted_at=raw.posted_at,
-        employment_type=raw.employment_type,
+        employment_type=clamp_display(
+            raw.employment_type, MAX_EMPLOYMENT_TYPE_LENGTH
+        ),
         raw_payload=raw.raw_payload or {},
         status=status,
         rejection_reason=rejection_reason,

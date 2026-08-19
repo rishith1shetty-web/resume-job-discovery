@@ -39,6 +39,27 @@ Known limitations, stated up front
   on. The *application* URL is the employer's own ATS link, which is more
   direct than any board page would be.
 
+Breadth: the base role and its own location variants
+----------------------------------------------------
+Because a page cannot be paged, twenty listings per slug is the ceiling for one
+slug - and reading only the base slug left most of this portal uncollected. The
+taxonomy publishes location variants of a role (``financial-analyst-austin-tx``,
+``financial-analyst-california``), each a separate allowed page carrying its own
+twenty listings. Measured live, eight such slugs returned 152 distinct US
+listings where the base slug alone returned twenty.
+
+Two rules keep that expansion honest:
+
+* A variant must **start with the matched base slug**, so it is by construction
+  the same role. This is what stops the fan-out from wandering into an adjacent
+  occupation, which CLAUDE.md section 3 forbids.
+* The remainder must be a **US state or city-plus-state**, so a role modifier
+  that merely looks like a suffix (``...-manager``) is not mistaken for a place.
+
+Slug pages are fetched once per run and reused, because the run asks this
+adapter for each same-role title variation in turn and those resolve to
+overlapping slug sets. Without that the same page would be fetched six times.
+
 Privacy
 -------
 ``job_information`` carries ``viewedByUsers`` and ``appliedFromUsers``: arrays
@@ -68,8 +89,9 @@ from app.portals.base import (
     RawJob,
     declare_application_type,
 )
-from app.portals.exceptions import PortalParseError
+from app.portals.exceptions import PortalError, PortalParseError
 from app.portals.http import HttpPolicy, PortalHttpClient
+from app.processing.us_locations import is_us_location_slug
 
 logger = get_logger(__name__)
 
@@ -89,6 +111,13 @@ _PRIVATE_FIELDS = ("viewedByUsers", "appliedFromUsers")
 #: matching layer would reject them as unscoreable anyway, and a stub would
 #: look like a real posting.
 _MIN_USEFUL_DESCRIPTION = 80
+
+#: Taxonomy pages read for one role: the base slug plus its location variants.
+#: Bounded because each slug is its own request. At the default rate limit of
+#: thirty per minute ten slugs cost about twenty-five seconds, comfortably
+#: inside the ninety-second ceiling one adapter call is given. Raise it with
+#: ``portal_configs.options["max_slugs"]`` without a deployment.
+MAX_SLUGS_PER_ROLE = 10
 
 
 def slugify_role(role: str) -> str:
@@ -116,6 +145,19 @@ class HiringCafePortal(BasePortal):
         self._http = PortalHttpClient(
             portal=self.slug, policy=HttpPolicy.from_options(self.options)
         )
+        configured = self.options.get("max_slugs")
+        self._max_slugs = (
+            configured
+            if isinstance(configured, int)
+            and not isinstance(configured, bool)
+            and configured > 0
+            else MAX_SLUGS_PER_ROLE
+        )
+        #: Slug -> records, for this adapter's lifetime, which is one run. The
+        #: run asks for each same-role title variation separately and those
+        #: resolve to overlapping slug sets, so without this the same page
+        #: would be requested once per variation.
+        self._pages: dict[str, list[dict[str, Any]]] = {}
 
     @property
     def capabilities(self) -> PortalCapabilities:
@@ -143,30 +185,57 @@ class HiringCafePortal(BasePortal):
         taxonomy = await self._load_taxonomy()
         seen: set[str] = set()
         jobs: list[RawJob] = []
+        attempted = 0
+        failure: PortalError | None = None
 
         for query in request.queries:
             if len(jobs) >= request.limit:
                 break
 
-            slug = self._match_slug(query, taxonomy)
-            if slug is None:
+            slugs = self._match_slugs(query, taxonomy, max_slugs=self._max_slugs)
+            if not slugs:
                 logger.info(
                     "hiringcafe_no_taxonomy_match", portal=self.slug, query=query
                 )
                 continue
 
-            html = await self._http.get_text(f"{BASE_URL}/jobs/{slug}")
-            for record in self._extract_records(html):
-                raw = self._to_raw_job(record, slug=slug)
-                if raw is None:
-                    continue
-                identity = raw.external_id or raw.source_url
-                if identity in seen:
-                    continue
-                seen.add(identity)
-                jobs.append(raw)
+            for slug in slugs:
                 if len(jobs) >= request.limit:
                     break
+
+                attempted += 1
+                try:
+                    records = await self._records_for(slug)
+                except PortalError as exc:
+                    # One unavailable page costs that city's listings, not the
+                    # portal's. The pass keeps whatever the other slugs gave.
+                    failure = exc
+                    logger.info(
+                        "hiringcafe_slug_unavailable",
+                        portal=self.slug,
+                        slug=slug,
+                        error=exc.message,
+                    )
+                    continue
+
+                for record in records:
+                    raw = self._to_raw_job(record, slug=slug)
+                    if raw is None:
+                        continue
+                    identity = raw.external_id or raw.source_url
+                    if identity in seen:
+                        # The same vacancy is listed under several places.
+                        continue
+                    seen.add(identity)
+                    jobs.append(raw)
+                    if len(jobs) >= request.limit:
+                        break
+
+        if failure is not None and not jobs and attempted:
+            # Nothing was collected and every page attempted failed: that is
+            # the portal being unavailable, and it must be reported as such
+            # rather than as "this role has no matching jobs".
+            raise failure
 
         return PortalSearchResult(
             jobs=jobs,
@@ -177,6 +246,21 @@ class HiringCafePortal(BasePortal):
             next_cursor=None,
             window_applied_by_portal=False,
         )
+
+    async def _records_for(self, slug: str) -> list[dict[str, Any]]:
+        """One taxonomy page's listings, fetched at most once per run.
+
+        No pagination parameter is ever added: ``?page=`` is disallowed, and
+        the URL built here carries no query string at all.
+        """
+        cached = self._pages.get(slug)
+        if cached is not None:
+            return cached
+
+        html = await self._http.get_text(f"{BASE_URL}/jobs/{slug}")
+        records = self._extract_records(html)
+        self._pages[slug] = records
+        return records
 
     async def fetch_description(self, job: RawJob) -> str | None:
         """Descriptions already arrive with the listing.
@@ -242,6 +326,41 @@ class HiringCafePortal(BasePortal):
             if trimmed in taxonomy:
                 return trimmed
         return None
+
+    @staticmethod
+    def _location_variants(base: str, taxonomy: frozenset[str]) -> tuple[str, ...]:
+        """Same-role slugs for particular US places, newest question first.
+
+        Every returned slug begins with ``base``, so this widens *where* the
+        role is searched and never *which* role.
+        """
+        prefix = f"{base}-"
+        return tuple(
+            sorted(
+                slug
+                for slug in taxonomy
+                if slug.startswith(prefix)
+                and is_us_location_slug(slug[len(prefix) :])
+            )
+        )
+
+    @classmethod
+    def _match_slugs(
+        cls, query: str, taxonomy: frozenset[str], *, max_slugs: int
+    ) -> tuple[str, ...]:
+        """The taxonomy pages to read for one role title.
+
+        The base slug always comes first, so a run cut short by a limit has
+        still read the role's own page. Ordering is alphabetical and therefore
+        deterministic: the same resume searched twice reads the same pages.
+        """
+        base = cls._match_slug(query, taxonomy)
+        if base is None:
+            return ()
+        if max_slugs <= 1:
+            return (base,)
+        variants = cls._location_variants(base, taxonomy)
+        return (base, *variants[: max_slugs - 1])
 
     # --- Parsing -----------------------------------------------------------
 
@@ -496,4 +615,10 @@ class HiringCafePortal(BasePortal):
         return parsed if parsed.tzinfo else parsed.replace(tzinfo=UTC)
 
 
-__all__ = ["BASE_URL", "FreshnessWindow", "HiringCafePortal", "slugify_role"]
+__all__ = [
+    "BASE_URL",
+    "MAX_SLUGS_PER_ROLE",
+    "FreshnessWindow",
+    "HiringCafePortal",
+    "slugify_role",
+]

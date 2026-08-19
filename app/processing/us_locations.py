@@ -641,6 +641,26 @@ def _accepted(
     )
 
 
+def is_us_location_slug(segment: str) -> bool:
+    """Whether a hyphenated URL segment names a US place rather than a role.
+
+    Used by the taxonomy-page adapters to tell a portal's *location* variant of
+    a role slug (``financial-analyst-austin-tx``) from a role slug that merely
+    shares its prefix (``financial-analyst-manager``). Accepts a state on its
+    own (``california``, ``new-york``) and a locality qualified by a state
+    abbreviation (``austin-tx``).
+
+    Deliberately strict: a false positive would widen a search to a different
+    occupation, which CLAUDE.md section 3 forbids.
+    """
+    if not segment:
+        return False
+    if segment.replace("-", " ") in US_STATE_NAMES:
+        return True
+    parts = segment.split("-")
+    return len(parts) >= 2 and parts[-1] in US_STATE_ABBREVIATIONS
+
+
 __all__ = [
     "COUNTRY_NAMES_BY_CODE",
     "NON_US_CITIES",
@@ -654,4 +674,5 @@ __all__ = [
     "LocationConfidence",
     "UsLocationVerdict",
     "classify_us_location",
+    "is_us_location_slug",
 ]

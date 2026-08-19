@@ -12,7 +12,7 @@ user that no portal actually published.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
 
 from app.core.constants import JobUrlKind, WorkMode
@@ -37,6 +37,17 @@ from app.processing.urls import NormalizedUrl, normalize_and_classify
 logger = get_logger(__name__)
 
 #: Longest a title or company may be, matching the database columns.
+#:
+#: These are enforced, not advisory. Postgres does not silently truncate an
+#: over-long value: it raises, and because a portal's listings are written
+#: inside that portal's savepoint the raise rolls back the whole leg - so one
+#: unusual record costs every listing the portal collected and the portal
+#: reports zero. That is exactly what a Hiring Cafe posting advertised across
+#: twenty-two cities did, with a 282-character location.
+#:
+#: Enforcing them here rather than widening the columns is deliberate: a
+#: location that long is a list of places, not a place, and the column width is
+#: not what makes it unusable for matching.
 MAX_TITLE_LENGTH = 512
 MAX_COMPANY_LENGTH = 256
 MAX_LOCATION_LENGTH = 256
@@ -163,6 +174,48 @@ class RejectedJob:
     reason: str
 
 
+#: Characters and words a trimmed value must not be left dangling on, so a
+#: shortened list of places reads as a list that stopped rather than as
+#: corrupted text.
+_TRAILING_PUNCTUATION = " ,;|/-&"
+_JOINERS = frozenset({"", "or", "and"})
+
+
+def clamp_display(value: str | None, limit: int) -> str | None:
+    """Trim a user-facing value to its column width, on a word boundary.
+
+    A hard slice would leave a location reading "... or Kansas City or Albuqu",
+    which looks like corrupted data rather than a shortened list. Cutting back
+    to the last whole word avoids that, and the trailing separator goes with it
+    so the result does not end in "or" or a stray comma.
+
+    Falls back to the hard slice when there is no sensible boundary - a single
+    word longer than the column has to be cut somewhere.
+    """
+    if value is None or len(value) <= limit:
+        return value
+
+    cut = value[:limit].rstrip()
+    boundary = cut.rfind(" ")
+    if boundary >= limit // 2:
+        cut = cut[:boundary]
+
+    words = cut.split(" ")
+    while words and words[-1].strip(_TRAILING_PUNCTUATION).casefold() in _JOINERS:
+        words.pop()
+
+    return " ".join(words).rstrip(_TRAILING_PUNCTUATION).rstrip() or value[:limit]
+
+
+def clamp_key(value: str, limit: int) -> str:
+    """Trim a comparison key to its column width.
+
+    Sliced rather than word-trimmed: a key is compared, never read, and the cut
+    has to be the same every time so a job keeps its identity between runs.
+    """
+    return value[:limit]
+
+
 def normalize_employment_type(value: str | None) -> str | None:
     """Fold an employment type to one spelling, or keep the portal's wording."""
     cleaned = clean_display_text(value)
@@ -240,8 +293,20 @@ def normalize_raw_job(
             title=raw.title,
             reason=RejectionReason.NO_TITLE,
         )
+    title = replace(
+        title,
+        display=clamp_display(title.display, MAX_TITLE_LENGTH) or title.display,
+        key=clamp_key(title.key, MAX_TITLE_LENGTH),
+    )
 
     company = normalize_company(raw.company)
+    if company is not None:
+        company = replace(
+            company,
+            display=clamp_display(company.display, MAX_COMPANY_LENGTH)
+            or company.display,
+            key=clamp_key(company.key, MAX_COMPANY_LENGTH),
+        )
 
     source_url = normalize_and_classify(
         raw.source_url,
@@ -264,6 +329,10 @@ def normalize_raw_job(
 
     description = clean_block_text(raw.description)
     location = normalize_location(raw.location, extra_mode_text=title.display)
+    # Clamped before the US gate reads it, so what is judged is what is stored.
+    location = replace(
+        location, display=clamp_display(location.display, MAX_LOCATION_LENGTH)
+    )
 
     # US eligibility. Decided on the location the portal published, before any
     # scoring, deduplication or quota accounting sees the listing, and decided
