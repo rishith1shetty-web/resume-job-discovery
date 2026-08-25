@@ -336,6 +336,13 @@ function SearchProgress({ count }) {
  *
  * The link is still an ordinary anchor. Nothing here applies to anything —
  * the user applies on the employer's own site and tells us what they did.
+ *
+ * Every URL rendered here has been fetched by the server: opened, redirects
+ * followed, checked for a Company-ID or login wall, confirmed to belong to
+ * this employer and confirmed to show job listings. A company whose page
+ * failed any of that is absent from `career_pages` entirely rather than
+ * present without a link, so this component never has to decide whether a URL
+ * is safe to make clickable — an unverified one never arrives.
  */
 function CareerPageCard({ page, resumeId, onDecided }) {
   const [pending, setPending] = useState(null)
@@ -384,7 +391,11 @@ function CareerPageCard({ page, resumeId, onDecided }) {
         href={page.official_career_url}
         target="_blank"
         rel="noreferrer noopener"
-        title={page.reason}
+        title={
+          page.validation_reason
+            ? `${page.reason} ${page.validation_reason}`
+            : page.reason
+        }
       >
         View official careers
         <Icon name="external" size={14} />
@@ -414,6 +425,12 @@ function CareerPageCard({ page, resumeId, onDecided }) {
       {error ? <p className="xs bad">{error}</p> : null}
 
       <p className="xs subtle career-card-reason">{page.reason}</p>
+      {/* Why the destination is trusted, in the server's own words. Shown
+          rather than summarised, because "checked and found browsable" is the
+          claim the user is relying on when they click. */}
+      {page.validation_reason ? (
+        <p className="xs subtle career-card-reason">{page.validation_reason}</p>
+      ) : null}
     </article>
   )
 }
@@ -448,8 +465,8 @@ function CareerPages({ pages, resumeId }) {
   return (
     <Card
       title={`Career pages (${visible.length})`}
-      subtitle="Companies hiring for your role in the US right now. Apply on the company's own site, then mark it — it will not be offered again for this resume."
-      actions={<Badge tone="accent">Official pages only</Badge>}
+      subtitle="Companies hiring for your role in the US right now. Every page below was opened and checked before it was listed. Apply on the company's own site, then mark it — it will not be offered again for this resume."
+      actions={<Badge tone="accent">Verified pages only</Badge>}
     >
       {recorded.length > 0 ? (
         <p className="xs subtle" style={{ marginBottom: 'var(--space-3)' }}>

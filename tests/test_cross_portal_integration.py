@@ -41,7 +41,12 @@ from app.portals.adapters.jobright import JobrightPortal
 from app.portals.adapters.scalejobs import PAGE_SIZE as SCALEJOBS_PAGE_SIZE
 from app.portals.adapters.scalejobs import ScaleJobsPortal
 from app.portals.adapters.simplyhired import SimplyHiredPortal
-from app.portals.exceptions import PortalParseError, PortalTimeoutError
+from app.portals.exceptions import (
+    PortalBlockedError,
+    PortalError,
+    PortalParseError,
+    PortalTimeoutError,
+)
 from app.processing.normalize import RejectionReason
 from app.services import search_run_service
 from app.services.search_orchestrator import execute_search_run
@@ -754,6 +759,68 @@ async def test_jobright_failing_still_returns_hiring_cafe_results(
     assert prepared.legs[0].status is PortalRunStatus.FAILED
     assert prepared.legs[1].status is PortalRunStatus.COMPLETED
     assert all(carried_by(item, "hiringcafe") for item in outcome.results)
+
+
+async def test_the_two_outages_observed_in_production_leave_the_run_usable(
+    db_session: AsyncSession,
+) -> None:
+    """The exact pair seen on 2026-08-25, end to end.
+
+    Hiring Cafe was behind a browser-verification challenge on every path -
+    ``/robots.txt`` included - and Scale.jobs' live inventory was answering 500
+    because *their* upstream proxy returned 407 to them. Neither is our bug and
+    neither is fixable from here, so what this pins down is the behaviour that
+    is ours: the run completes, the surviving portal's jobs reach the user, and
+    the two failures are recorded as failures rather than as portals that
+    happened to find nothing.
+    """
+    qualifying = _mirror_as_jobright(hiringcafe_records()[0])
+    _, resume = await analysed_resume(db_session)
+
+    prepared, outcome = await run_search(
+        db_session,
+        resume=resume,
+        specs=[
+            ("jobright", build_jobright([qualifying])),
+            (
+                "hiringcafe",
+                build_hiringcafe(
+                    failure=PortalBlockedError(
+                        "Hiring Cafe served a browser-verification challenge "
+                        "instead of the page.",
+                        portal="hiringcafe",
+                    )
+                ),
+            ),
+            (
+                "scalejobs",
+                build_scalejobs(
+                    failure=PortalError(
+                        "scalejobs returned HTTP 500.", portal="scalejobs"
+                    )
+                ),
+            ),
+        ],
+    )
+
+    # The run is usable, and honest about being partial.
+    assert outcome.status is SearchRunStatus.COMPLETED_WITH_ERRORS
+    assert outcome.returned_count > 0
+    assert all(carried_by(item, "jobright") for item in outcome.results)
+
+    # Failed, not "completed with nothing found" - the distinction the brief
+    # turns on. A zero count on a COMPLETED leg would be a claim that the
+    # portal was searched and had no matching jobs.
+    assert prepared.legs[0].status is PortalRunStatus.COMPLETED
+    for leg in prepared.legs[1:]:
+        assert leg.status is PortalRunStatus.FAILED
+        assert leg.error, "a failed leg must record why"
+        assert leg.selected_count == 0
+
+    # And the user is told, per portal, rather than left to infer it.
+    warnings = " ".join(outcome.warnings).lower()
+    assert "hiring cafe" in warnings or "hiringcafe" in warnings
+    assert "scale" in warnings
 
 
 async def test_both_portals_failing_fails_the_run_honestly(

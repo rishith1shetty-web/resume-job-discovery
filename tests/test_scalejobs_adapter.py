@@ -699,6 +699,95 @@ async def test_unusable_records_do_not_lose_the_usable_ones(stub_search) -> None
     assert [job.external_id for job in result.jobs] == ["b"]
 
 
+# --- The publisher's own outage ---------------------------------------------
+#
+# On 2026-08-25 `source=live` - the fresh inventory this adapter reads - began
+# answering:
+#
+#     500 {"error":"Request failed with status code 407", ...}
+#
+# That 407 is *their* upstream proxy refusing *them*; their own `/health` and
+# `/api/stats` were failing too, and their hourly sync cron was stopped. The
+# request this adapter sends still matches the endpoint's published contract,
+# so there is nothing here to correct - what matters is that the outage is
+# reported as an outage.
+
+
+async def test_a_five_hundred_is_never_read_as_an_empty_job_list(
+    stub_search,
+) -> None:
+    """The failure mode that would quietly shrink the job pool.
+
+    A portal that errors must not look like a portal with nothing to offer.
+    The adapter raises, the collector marks the leg failed, and the run says
+    so - rather than reporting a successful search that found no jobs.
+    """
+
+    def _raise(_url, _params):
+        raise PortalError("scalejobs returned HTTP 500.", portal="scalejobs")
+
+    stub_search(payload_for=_raise)
+
+    with pytest.raises(PortalError) as exc_info:
+        await _portal().search(
+            PortalSearchRequest(
+                queries=(QUERY,), window=FreshnessWindow.LAST_7D, limit=20
+            )
+        )
+
+    assert "500" in exc_info.value.message
+
+
+async def test_the_live_inventory_is_still_what_is_requested(stub_search) -> None:
+    """The adapter must not quietly fall back to the stale database path.
+
+    Omitting `source=live` reaches the publisher's own AlloyDB copy, which
+    answers 200 - and whose newest listing, measured on 2026-08-25, was 41 days
+    old. Every job in it falls outside the locked 30-day window, so that path
+    would return a successful search containing nothing eligible: an outage
+    dressed up as an empty result, which is exactly what must not happen.
+    """
+    calls = stub_search()
+
+    await _portal().search(
+        PortalSearchRequest(
+            queries=(QUERY,), window=FreshnessWindow.LAST_7D, limit=5
+        )
+    )
+
+    assert calls, "the adapter must actually issue a request"
+    for call in calls:
+        assert call["params"]["source"] == "live"
+
+
+async def test_an_error_on_a_later_page_still_surfaces(stub_search) -> None:
+    """A partial page must not hide a failure behind it."""
+
+    def _pages(_url, params):
+        if int(params.get("skip", 0)) == 0:
+            return {
+                "jobs": [
+                    {
+                        "id": "a",
+                        "title": "Financial Analyst",
+                        "url": "https://boards.greenhouse.io/acme/jobs/1",
+                        "descriptionText": "x" * 300,
+                    }
+                ],
+                "hasMore": True,
+            }
+        raise PortalError("scalejobs returned HTTP 500.", portal="scalejobs")
+
+    stub_search(payload_for=_pages)
+
+    with pytest.raises(PortalError):
+        await _portal(max_pages=2).search(
+            PortalSearchRequest(
+                queries=(QUERY,), window=FreshnessWindow.LAST_30D, limit=20
+            )
+        )
+
+
 # --- Failure isolation ------------------------------------------------------
 
 

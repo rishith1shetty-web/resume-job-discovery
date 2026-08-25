@@ -11,8 +11,9 @@ from app.models import Base, Portal, PortalConfig, Resume, User
 
 def test_defined_tables_match_the_completed_phases() -> None:
     # Phase 1 foundation, Phase 2 resume intelligence, Phase 3 job/search/
-    # application data - the CLAUDE.md section 12 table set - plus the one
-    # table added since for career page decisions.
+    # application data - the CLAUDE.md section 12 table set - plus the two
+    # tables added since: career page decisions, and the career page
+    # validation cache.
     assert set(Base.metadata.tables) == {
         # Phase 1
         "users",
@@ -40,6 +41,12 @@ def test_defined_tables_match_the_completed_phases() -> None:
         # vacancy, so it has no `jobs` row to point at. It stores the user's
         # Applied/Skipped decision, never a discovered page.
         "career_page_interactions",
+        # Career page validation cache. Also outside the section 12 set, and
+        # not a store of results either: one row per career page URL recording
+        # what happened when it was fetched, so a run does not re-open every
+        # employer's site it checked an hour ago. Truncating it loses nothing
+        # but the saved requests.
+        "career_page_validations",
     }
 
 

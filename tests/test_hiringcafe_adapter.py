@@ -20,7 +20,11 @@ from app.portals.adapters.hiringcafe import (
     slugify_role,
 )
 from app.portals.base import PortalSearchRequest
-from app.portals.exceptions import PortalParseError, PortalTimeoutError
+from app.portals.exceptions import (
+    PortalBlockedError,
+    PortalParseError,
+    PortalTimeoutError,
+)
 from app.processing.urls import classify_url
 
 FIXTURE = (
@@ -518,6 +522,107 @@ async def test_a_transport_failure_propagates_as_a_portal_error(
     )
 
     with pytest.raises(PortalTimeoutError):
+        await adapter.search(
+            PortalSearchRequest(
+                queries=("Financial Analyst",),
+                window=FreshnessWindow.LAST_7D,
+                limit=5,
+            )
+        )
+
+
+# --- Bot challenges: reported as a refusal, never satisfied -----------------
+
+#: What hiringcafe.com actually served on 2026-08-25, trimmed. The site is
+#: fronted by a JavaScript bot challenge on every path - `/robots.txt`
+#: included - which is why this adapter collects nothing at present.
+CHALLENGE_HTML = """<!DOCTYPE html><html lang="en"><head>
+<meta charset="utf-8"><title>Vercel Security Checkpoint</title></head>
+<body><h1>Vercel Security Checkpoint</h1>
+<p>We're verifying your browser</p>
+<noscript>Enable JavaScript to continue</noscript>
+</body></html>"""
+
+
+def test_a_challenge_page_is_a_refusal_not_a_format_change(
+    adapter: HiringCafePortal,
+) -> None:
+    """The distinction matters to whoever reads the error.
+
+    The challenge normally arrives as 403 or 429, which the shared HTTP client
+    already classifies. But an interstitial can be served with 200, and then it
+    reaches the parser - which finds no `__NEXT_DATA__` and, before this,
+    reported that Hiring Cafe's page format had changed. That would send
+    somebody to rewrite a parser that is working perfectly well.
+    """
+    with pytest.raises(PortalBlockedError) as exc_info:
+        adapter._extract_records(CHALLENGE_HTML)
+
+    assert "challenge" in exc_info.value.message.lower()
+    # And it says what we are *not* doing about it.
+    assert "rather than attempting to satisfy" in exc_info.value.message
+
+
+def test_a_genuinely_broken_page_is_still_a_parse_error(
+    adapter: HiringCafePortal,
+) -> None:
+    """The challenge check must not swallow real format changes."""
+    with pytest.raises(PortalParseError):
+        adapter._extract_records("<html><body><p>Some other page</p></body></html>")
+
+
+def test_a_challenge_is_not_mistaken_for_a_listing_page(
+    adapter: HiringCafePortal, payload: dict
+) -> None:
+    """A real page mentioning those words in a posting still parses.
+
+    The markers are only looked for at the very top of the document, so a job
+    description that happens to discuss browser verification cannot make a
+    working page look like a block.
+    """
+    html = page_html(payload).replace(
+        "<html>", "<html><!-- just a moment... -->", 1
+    )
+    assert adapter._extract_records(html), "a real page must still parse"
+
+
+async def test_a_challenge_during_search_does_not_become_zero_jobs(
+    adapter: HiringCafePortal, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The behaviour that matters: a blocked portal is not an empty portal."""
+
+    async def fake_taxonomy(self):  # noqa: ANN001
+        return frozenset({"financial-analyst"})
+
+    async def challenged(self, url, **kwargs):  # noqa: ANN001
+        return CHALLENGE_HTML
+
+    monkeypatch.setattr(HiringCafePortal, "_load_taxonomy", fake_taxonomy)
+    monkeypatch.setattr("app.portals.http.PortalHttpClient.get_text", challenged)
+
+    with pytest.raises(PortalBlockedError):
+        await adapter.search(
+            PortalSearchRequest(
+                queries=("Financial Analyst",),
+                window=FreshnessWindow.LAST_7D,
+                limit=5,
+            )
+        )
+
+
+async def test_a_rate_limited_taxonomy_load_is_not_zero_jobs(
+    adapter: HiringCafePortal, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """429 on the sitemap ends the pass loudly, not with an empty result."""
+    from app.portals.exceptions import PortalRateLimitedError
+
+    async def limited(self, url, **kwargs):  # noqa: ANN001
+        raise PortalRateLimitedError("slow down", portal="hiringcafe")
+
+    monkeypatch.setattr(HiringCafePortal, "_taxonomy_cache", None)
+    monkeypatch.setattr("app.portals.http.PortalHttpClient.get_text", limited)
+
+    with pytest.raises(PortalRateLimitedError):
         await adapter.search(
             PortalSearchRequest(
                 queries=("Financial Analyst",),

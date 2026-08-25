@@ -23,8 +23,15 @@ from app.careers.base import (
     CompanyOpening,
     career_registry,
 )
+from app.careers.candidates import career_url_candidates
 from app.careers.discovery import MAX_CAREER_PAGES, discover_career_pages
-from app.careers.verification import VerifiedCareerUrl, verify_career_url
+from app.careers.fetching import CareerPageFetcher
+from app.careers.validation import (
+    ValidationResult,
+    validate_candidate,
+    validate_company,
+)
+from app.careers.verification import CandidateCareerUrl, admit_career_url
 
 __all__ = [
     "MAX_CAREER_PAGES",
@@ -32,10 +39,15 @@ __all__ = [
     "CareerPageDiscovery",
     "CareerPageRequest",
     "CareerPageSource",
+    "CareerPageFetcher",
     "CareerSourceRegistry",
+    "CandidateCareerUrl",
     "CompanyOpening",
-    "VerifiedCareerUrl",
+    "ValidationResult",
+    "admit_career_url",
     "career_registry",
+    "career_url_candidates",
     "discover_career_pages",
-    "verify_career_url",
+    "validate_candidate",
+    "validate_company",
 ]

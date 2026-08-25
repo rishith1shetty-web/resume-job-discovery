@@ -153,7 +153,22 @@ def _career_page_out(page) -> CareerPageOut:
         reason=page.reason,
         sources=list(page.sources),
         matched_titles=list(page.matched_titles),
+        validation_reason=page.validation_reason,
+        last_validated_at=page.last_validated_at,
     )
+
+
+def _verified_career_pages(pages) -> list[CareerPageOut]:
+    """Only pages that were fetched and proved usable.
+
+    The last line of defence, and deliberately a filter at the serialisation
+    boundary rather than a note in a docstring. The orchestrator already
+    returns nothing else, but this is the single point every client passes
+    through, so putting the check here makes "an unverified URL can never
+    become a clickable link" a property of the code rather than of everybody
+    upstream remembering.
+    """
+    return [_career_page_out(page) for page in pages if page.is_verified]
 
 
 def _results_out(run: SearchRun, outcome: SearchOutcome) -> SearchRunResultsOut:
@@ -168,7 +183,7 @@ def _results_out(run: SearchRun, outcome: SearchOutcome) -> SearchRunResultsOut:
         domain=outcome.query_plan.domain_key,
         is_short=outcome.is_short,
         results=[_result_out(item) for item in outcome.results],
-        career_pages=[_career_page_out(page) for page in outcome.career_pages],
+        career_pages=_verified_career_pages(outcome.career_pages),
         portals=[_portal_out(leg) for leg in run.portals],
         queries=[
             ExecutedQueryOut(

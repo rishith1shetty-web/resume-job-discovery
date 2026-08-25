@@ -89,6 +89,25 @@ PREVIOUS_REVISION = "0003_job_search_application"
 CAREER_PAGE_REVISION = "0004_career_page_interactions"
 
 
+def head_revision() -> str:
+    """The current head, read from the migration scripts themselves.
+
+    Not a pinned constant. The bug these tests exist for is "an existing
+    database does not reach head", and pinning the revision number would turn
+    every later migration into a failure of this file rather than a check that
+    the upgrade still works. Read from `ScriptDirectory` so adding a migration
+    extends the assertion instead of breaking it.
+    """
+    from alembic.config import Config
+    from alembic.script import ScriptDirectory
+
+    config = Config(str(paths.PROJECT_ROOT / "alembic.ini"))
+    config.set_main_option(
+        "script_location", str(paths.PROJECT_ROOT / "migrations")
+    )
+    return ScriptDirectory.from_config(config).get_current_head()
+
+
 def _refuse_protected_names(*databases: str) -> None:
     for database in databases:
         if database in PROTECTED_DATABASES:
@@ -536,7 +555,7 @@ def test_the_administrator_applies_the_migration(upgrade: UpgradeObservations) -
 
 
 def test_migration_0004_reaches_head(upgrade: UpgradeObservations) -> None:
-    assert upgrade.revision_after == CAREER_PAGE_REVISION
+    assert upgrade.revision_after == head_revision()
 
 
 def test_career_page_interactions_is_created(upgrade: UpgradeObservations) -> None:
@@ -653,7 +672,7 @@ def test_a_fresh_install_still_migrates_to_head(fresh: FreshObservations) -> Non
     assert fresh.migration_error is None, (
         f"A first installation no longer provisions: {fresh.migration_error!r}"
     )
-    assert fresh.revision == CAREER_PAGE_REVISION
+    assert fresh.revision == head_revision()
 
 
 def test_a_fresh_install_creates_every_table_the_installer_verifies(

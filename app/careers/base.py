@@ -23,7 +23,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any, ClassVar, TypeVar
 
-from app.core.constants import JobUrlKind
+from app.core.constants import CareerPageStatus, JobUrlKind
 from app.core.logging import get_logger
 from app.matching.profile import ResumeMatchProfile
 
@@ -62,6 +62,8 @@ class CareerPage:
     company_key: str
     relevant_role: str
     location: str
+    #: The destination a user is offered. Empty until validation has fetched a
+    #: candidate and proven it, and never populated from an unfetched guess.
     official_career_url: str
     #: Why the URL was accepted: the employer's own domain, or their own space
     #: on an applicant-tracking system.
@@ -75,9 +77,28 @@ class CareerPage:
     #: Titles seen, newest evidence first. Shown as supporting detail.
     matched_titles: tuple[str, ...] = ()
 
+    #: How far this page has got through verification. Only ``VERIFIED`` is
+    #: ever serialised to a client or made clickable; the field exists so that
+    #: rule can be enforced by a check rather than by remembering to filter.
+    status: CareerPageStatus = CareerPageStatus.DISCOVERED
+    #: Observed URLs, strongest first, that validation may expand and fetch.
+    #: Every one came from a posting; none was constructed from a name.
+    candidate_urls: tuple[str, ...] = ()
+    #: What fetching the candidates established, in a sentence.
+    validation_reason: str = ""
+    last_validated_at: datetime | None = None
+
     @property
     def is_employer_domain(self) -> bool:
         return self.url_kind is JobUrlKind.EMPLOYER_CAREER
+
+    @property
+    def is_verified(self) -> bool:
+        """Fetched, inspected and found usable. The only shippable state."""
+        return (
+            self.status is CareerPageStatus.VERIFIED
+            and bool(self.official_career_url)
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -113,6 +134,17 @@ class CareerPageDiscovery:
     off_role_openings: int = 0
     #: Companies merged into another under name normalisation.
     merged_companies: int = 0
+    #: Companies whose candidate URLs were all fetched and none proved usable.
+    #: Distinct from ``unverified_companies``, which never got as far as a
+    #: request: this counts pages that were opened and found wanting.
+    rejected_companies: int = 0
+    #: Candidate URLs actually fetched during validation.
+    urls_checked: int = 0
+    #: How many verified companies this run may return. Carried on the
+    #: discovery rather than applied inside it, because the cap has to be
+    #: applied to *verified* companies: cutting to twenty before anything is
+    #: fetched throws away the employers that turn out to have a usable page.
+    candidate_ceiling: int = 20
     error: Exception | None = None
 
     @property

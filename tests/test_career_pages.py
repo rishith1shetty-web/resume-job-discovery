@@ -26,12 +26,20 @@ from httpx import AsyncClient
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.careers import discover_career_pages, verify_career_url
+from app.careers import admit_career_url, career_url_candidates, discover_career_pages
 from app.careers.base import CareerPageRequest, career_registry
 from app.careers.discovery import MAX_CAREER_PAGES, MIN_CAREER_RELEVANCE
 from app.careers.source import LiveListingCareerSource
 from app.core.config import Settings
-from app.core.constants import ApplicationStatus, JobUrlKind, Seniority, SkillKind
+from tests.fake_career_pages import FakeCareerFetcher, careers_page
+
+from app.core.constants import (
+    ApplicationStatus,
+    CareerPageStatus,
+    JobUrlKind,
+    Seniority,
+    SkillKind,
+)
 from app.matching.profile import ResumeMatchProfile
 from app.models.application import Application
 from app.models.portal import Portal
@@ -164,7 +172,15 @@ def test_a_career_page_carries_the_four_things_it_must() -> None:
     assert page.company_name == "Northwind Analytics"
     assert page.relevant_role == "Financial Analyst"
     assert page.location == "Austin, TX"
-    assert page.official_career_url.startswith("https://careers.northwind-analytics.com")
+    # A discovered page carries *candidates*, not a destination. Nothing has
+    # been fetched yet, so claiming a verified URL here is exactly the mistake
+    # that sent users to Company ID login pages.
+    assert page.official_career_url == ""
+    assert page.status is CareerPageStatus.DISCOVERED
+    assert any(
+        url.startswith("https://careers.northwind-analytics.com")
+        for url in page.candidate_urls
+    )
     # And the things a vacancy has that a company page must not pretend to.
     assert not hasattr(page, "final_score")
     assert not hasattr(page, "posted_at")
@@ -213,7 +229,7 @@ def test_the_reason_states_the_evidence_rather_than_a_match_percentage() -> None
     ],
 )
 def test_third_party_job_boards_are_refused(url: str) -> None:
-    assert verify_career_url(url, company="Northwind Analytics") is None
+    assert admit_career_url(url, company="Northwind Analytics") is None
 
 
 def test_a_rejected_url_removes_the_company_entirely() -> None:
@@ -244,7 +260,7 @@ def test_a_rejected_url_removes_the_company_entirely() -> None:
     ],
 )
 def test_a_malformed_url_is_never_silently_accepted(url: str) -> None:
-    assert verify_career_url(url, company="Northwind Analytics") is None
+    assert admit_career_url(url, company="Northwind Analytics") is None
 
 
 def test_an_unrecognised_host_is_refused_rather_than_assumed_official() -> None:
@@ -254,38 +270,81 @@ def test_an_unrecognised_host_is_refused_rather_than_assumed_official() -> None:
     be anything at all. Guessing would put an unverified link under a heading
     that promises the company's own page.
     """
-    assert verify_career_url("https://random-listings.example/x", company="Acme Corp") is None
+    assert admit_career_url("https://random-listings.example/x", company="Acme Corp") is None
 
 
 def test_a_bare_ats_root_is_not_a_company_career_page() -> None:
     """``boards.greenhouse.io`` is Greenhouse's front door, not an employer's."""
-    assert verify_career_url("https://boards.greenhouse.io", company="Acme Corp") is None
-    assert verify_career_url("https://boards.greenhouse.io/", company="Acme Corp") is None
+    assert admit_career_url("https://boards.greenhouse.io", company="Acme Corp") is None
+    assert admit_career_url("https://boards.greenhouse.io/", company="Acme Corp") is None
 
 
-def test_a_company_specific_ats_board_is_accepted_and_trimmed() -> None:
-    verified = verify_career_url(
+def test_a_company_specific_ats_board_is_admitted_as_a_candidate() -> None:
+    admitted = admit_career_url(
         "https://boards.greenhouse.io/northwindanalytics/jobs/4155555",
         company="Northwind Analytics",
     )
 
-    assert verified is not None
-    assert verified.kind is JobUrlKind.ATS
-    # The employer's board root, not the one vacancy that happened to be seen -
-    # a career page has to outlive the posting that revealed it.
-    assert verified.url == "https://boards.greenhouse.io/northwindanalytics"
-    assert verified.trimmed is True
+    assert admitted is not None
+    assert admitted.kind is JobUrlKind.ATS
+    # Admitted as observed. Trimming happens in `career_url_candidates`, which
+    # proposes several destinations to fetch rather than asserting one.
+    assert admitted.url == (
+        "https://boards.greenhouse.io/northwindanalytics/jobs/4155555"
+    )
 
 
-def test_an_employer_careers_host_is_accepted_and_trimmed_to_its_root() -> None:
-    verified = verify_career_url(
-        "https://careers.northwind-analytics.com/job/12345?utm_source=board",
+def test_the_employer_board_root_is_proposed_without_losing_the_deep_link() -> None:
+    """The fix for the failure that started this work.
+
+    The old rule trimmed to a root and *asserted* it. The board root is still
+    the first thing tried, because it usually is the right destination - but it
+    is now one candidate among several, each of which has to survive being
+    fetched, and the observed URL is kept as the fallback rather than thrown
+    away.
+    """
+    candidates = career_url_candidates(
+        "https://boards.greenhouse.io/northwindanalytics/jobs/4155555",
+        kind=JobUrlKind.ATS,
         company="Northwind Analytics",
     )
 
-    assert verified is not None
-    assert verified.kind is JobUrlKind.EMPLOYER_CAREER
-    assert verified.url == "https://careers.northwind-analytics.com/"
+    assert candidates[0] == "https://boards.greenhouse.io/northwindanalytics"
+    assert (
+        "https://boards.greenhouse.io/northwindanalytics/jobs/4155555" in candidates
+    )
+    # Never the vendor's own front door.
+    assert "https://boards.greenhouse.io/" not in candidates
+
+
+def test_an_employer_careers_host_proposes_its_root_first() -> None:
+    candidates = career_url_candidates(
+        "https://careers.northwind-analytics.com/job/12345?utm_source=board",
+        kind=JobUrlKind.EMPLOYER_CAREER,
+        company="Northwind Analytics",
+    )
+
+    assert candidates[0] == "https://careers.northwind-analytics.com/"
+
+
+def test_a_vendor_tenant_path_is_never_reduced_to_the_vendor_root() -> None:
+    """Measured against real postings, this is what used to break.
+
+    ``recruiting2.ultipro.com/<employer>/JobBoard/<board-id>/OpportunityDetail``
+    was trimmed to ``recruiting2.ultipro.com/``, which serves a 404. Every
+    candidate now keeps the employer's own path segments, and the bare vendor
+    host is not proposed at all.
+    """
+    candidates = career_url_candidates(
+        "https://recruiting2.ultipro.com/ACM1234ACME/JobBoard/"
+        "3347ce03-ba60-4bdc-8af2-26369c80b18f/OpportunityDetail?opportunityId=9",
+        kind=JobUrlKind.ATS,
+        company="Acme Robotics",
+    )
+
+    assert candidates, "the employer's own board path must yield candidates"
+    assert all("ACM1234ACME" in url.upper() for url in candidates)
+    assert "https://recruiting2.ultipro.com/" not in candidates
 
 
 def test_a_lookalike_domain_cannot_claim_a_shorter_company_name() -> None:
@@ -295,9 +354,9 @@ def test_a_lookalike_domain_cannot_claim_a_shorter_company_name() -> None:
     not start with "applebees", so a restaurant chain's careers site cannot
     claim Apple - which the reverse test would have allowed.
     """
-    assert verify_career_url("https://careers.applebees.com/j/1", company="Apple") is None
+    assert admit_career_url("https://careers.applebees.com/j/1", company="Apple") is None
     assert (
-        verify_career_url(
+        admit_career_url(
             "https://careers.veeva.com/j/1", company="Veeva Systems"
         )
         is not None
@@ -311,13 +370,13 @@ def test_a_very_short_domain_label_is_not_evidence_on_its_own() -> None:
     others, so ``careers.bank.com`` proves nothing about which of them it is.
     Refusing costs a card; accepting sends the user somewhere wrong.
     """
-    assert verify_career_url("https://careers.bank.com/j/1", company="Bank of America") is None
-    assert verify_career_url("https://careers.acme.com/j/1", company="Acme Robotics") is None
+    assert admit_career_url("https://careers.bank.com/j/1", company="Bank of America") is None
+    assert admit_career_url("https://careers.acme.com/j/1", company="Acme Robotics") is None
 
 
 def test_a_url_with_no_company_to_check_it_against_is_refused() -> None:
-    assert verify_career_url("https://careers.acme.com/j/1", company=None) is None
-    assert verify_career_url("https://careers.acme.com/j/1", company="  ") is None
+    assert admit_career_url("https://careers.acme.com/j/1", company=None) is None
+    assert admit_career_url("https://careers.acme.com/j/1", company="  ") is None
 
 
 # --- Duplicate companies (requirement 11) -----------------------------------
@@ -512,6 +571,15 @@ def test_an_international_company_is_shown_only_for_its_us_openings() -> None:
 
 
 def test_the_cap_is_twenty_and_is_not_the_requested_job_limit() -> None:
+    """Twenty is the ceiling on *verified* companies, not on discovered ones.
+
+    Discovery deliberately hands the whole ranked pool onward. Roughly half of
+    all candidate career pages fail once they are actually fetched - measured
+    against live employer sites, 24 of 45 - so trimming to twenty before
+    anything is opened would reliably return about eleven. The cap is applied
+    after verification instead, which is what lets a run reach twenty *usable*
+    companies when twenty usable companies exist.
+    """
     assert MAX_CAREER_PAGES == 20
 
     listings = [
@@ -522,7 +590,13 @@ def test_the_cap_is_twenty_and_is_not_the_requested_job_limit() -> None:
         for index in range(35)
     ]
 
-    assert discover(listings).returned_count == MAX_CAREER_PAGES
+    outcome = discover(listings)
+
+    assert outcome.candidate_ceiling == MAX_CAREER_PAGES
+    assert outcome.returned_count == 35, (
+        "discovery must not trim the pool: the companies it cuts are the ones "
+        "that might have been the verifiable ones"
+    )
 
 
 def test_fewer_qualifying_companies_returns_fewer_and_pads_nothing() -> None:
@@ -606,15 +680,42 @@ async def prepare_run(
     return prepared, adapters
 
 
-async def run_search(session, prepared, adapters, *, limit_now=NOW):
+#: Fixture employers and the careers host each one publishes. Shared so the
+#: listings a portal returns and the pages the fetcher serves cannot drift
+#: apart - a company whose page is not served is a company that fails
+#: verification, which is correct behaviour and a confusing test failure.
+CAREER_COMPANIES = (
+    ("Northwind Analytics", "northwind-analytics"),
+    ("Southgate Capital", "southgate-capital"),
+    ("Ridgeline Energy", "ridgeline-energy"),
+)
+
+
+async def run_search(session, prepared, adapters, *, limit_now=NOW, fetcher=None):
     return await execute_search_run(
         session,
         run=prepared.run,
         legs=prepared.legs,
         portals=prepared.portals,
         adapters=adapters,
+        career_fetcher=fetcher if fetcher is not None else career_fetcher(),
         now=limit_now,
     )
+
+
+def career_fetcher(companies=CAREER_COMPANIES) -> FakeCareerFetcher:
+    """A fetcher that serves a real careers page for each fixture employer.
+
+    The career lane verifies by opening the page, so an orchestrator test has
+    to say what those pages serve. Serving them here - rather than skipping
+    verification - means these tests run the shipping code path end to end:
+    candidates are generated, fetched, read for a login wall, checked against
+    the employer and checked for job listings, exactly as in production.
+    """
+    pages = {}
+    for company, slug in companies:
+        pages[f"https://careers.{slug}.com/"] = careers_page(company)
+    return FakeCareerFetcher(pages=pages)
 
 
 def career_listings(portal: str = "boardone") -> list[RawJob]:
@@ -628,13 +729,7 @@ def career_listings(portal: str = "boardone") -> list[RawJob]:
             application_url=f"https://careers.{slug}.com/job/{index}",
             now=NOW,
         )
-        for index, (company, slug) in enumerate(
-            [
-                ("Northwind Analytics", "northwind-analytics"),
-                ("Southgate Capital", "southgate-capital"),
-                ("Ridgeline Energy", "ridgeline-energy"),
-            ]
-        )
+        for index, (company, slug) in enumerate(CAREER_COMPANIES)
     ]
 
 
@@ -1083,11 +1178,35 @@ def test_discovered_career_pages_are_never_stored() -> None:
     stored_pages = {
         name
         for name in tables
-        if "career" in name and name != "career_page_interactions"
+        if "career" in name
+        and name
+        not in {"career_page_interactions", "career_page_validations"}
     }
     assert stored_pages == set(), (
         f"career pages must stay transient; unexpected table(s): {stored_pages}"
     )
+
+    # ``career_page_validations`` is the second named exception, and it earns
+    # the exemption the same way the first one does: it holds a *verdict about
+    # a URL*, not a discovered page. None of what makes a card - the relevance,
+    # the opening count, the matched titles, the portals that supplied the
+    # evidence, the role or the location - has a column here, so no run's
+    # results can accumulate in it however often it is written.
+    from app.models.career_page_validation import CareerPageValidation
+
+    cache_columns = set(CareerPageValidation.__table__.columns.keys())
+    for result_only in (
+        "relevance",
+        "opening_count",
+        "sources",
+        "matched_titles",
+        "relevant_role",
+        "location",
+        "reason",
+        "resume_id",
+        "search_run_id",
+    ):
+        assert result_only not in cache_columns, result_only
 
 
 def test_the_career_page_decision_table_holds_decisions_not_pages() -> None:

@@ -1,82 +1,98 @@
-"""Deciding whether a URL is genuinely a company's official career page.
+"""Deciding whether a URL is worth *fetching* as a company's career page.
 
-This is the rule the feature stands on. A career page that turns out to be an
-Indeed search or a LinkedIn company profile is worse than no result: it sends
-the user to the aggregator they were trying to bypass, under a heading that
-promised the employer's own site.
+This module is a filter, not a verdict. It reads strings - exactly like
+``app.processing.urls`` - and answers one narrow question: is this URL on a
+host that could belong to this employer, so that fetching it might teach us
+something? A URL that passes here is a **candidate**. It becomes verified only
+in ``app.careers.validation``, and only by being fetched and inspected.
 
-Nothing here invents a URL. Every candidate arrives from a posting that was
-actually collected, and this module either accepts it, trims it to that
-company's own careers root, or refuses it. It also never fetches anything - it
-reads strings, exactly like ``app.processing.urls``.
+# What changed, and why
+
+An earlier version of this module was the whole of verification: it accepted a
+URL on the strength of its shape and then trimmed it back to a guessed careers
+root. Measured against real collected postings, that shipped users to
+``recruiting.paylocity.com/`` (a Company ID login page),
+``workforcenow.adp.com/`` (an ADP login redirect), ``recruiting2.ultipro.com/``
+(404), ``deaconess.rec.pro.ukg.net/`` (404) and
+``cvshealth.wd1.myworkdayjobs.com/`` (406) - six dead or gated destinations out
+of twelve, every one of them announced to the user as "official career page
+verified".
+
+Both halves of that failure are gone. The trimming moved to
+``app.careers.candidates``, which preserves the employer's path instead of
+discarding it and proposes *several* candidates rather than asserting one. The
+claim of verification moved to ``app.careers.validation``, which fetches.
+
+What remains here is the cheap refusal that is still worth making before any
+request: an aggregator, a portal listing page, or a host nobody can tie to this
+employer is never worth a round trip.
 
 # The rule
 
-A URL is an official career page when ``classify_url`` - which the project
-already uses to rank application links - returns either:
+A URL is a candidate when ``classify_url`` - which the project already uses to
+rank application links - returns either:
 
 ``EMPLOYER_CAREER``
     The host demonstrably belongs to the employer. That classifier's own
     docstring puts it well: "that is evidence, not a guess."
 
 ``ATS``
-    The employer's own space on an applicant-tracking system, which the brief
-    explicitly allows ("company-specific Greenhouse careers, company-specific
-    Lever careers"). A *bare* ATS root is refused - ``boards.greenhouse.io`` is
-    Greenhouse's front door, not a company's career page.
+    The employer's space on an applicant-tracking system, which the brief
+    explicitly allows. A *bare* vendor root with nothing employer-specific
+    about it is refused here and, if it somehow arrives another way, refused
+    again on the evidence after fetching.
 
 Everything else is refused, which by construction covers LinkedIn, Indeed,
 Glassdoor, ZipRecruiter, Jobright, Hiring Cafe, Scale.jobs and every other host
-in ``_AGGREGATOR_HOSTS``, plus anything unrecognised. Unrecognised is refused
-rather than accepted: an unverifiable URL cannot be shown to be the employer's.
+in ``_AGGREGATOR_HOSTS``, plus anything unrecognised.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass, replace
-from urllib.parse import urlsplit, urlunsplit
+from urllib.parse import urlsplit
 
 from app.core.constants import JobUrlKind
 from app.processing.companies import normalize_company
 from app.processing.text import comparison_key
 from app.processing.urls import normalize_and_classify
 
-#: The two verdicts that mean "the employer's own recruiting page".
+#: The two verdicts that mean "this host could be the employer's recruiting
+#: presence", and so is worth one request to find out.
 ACCEPTED_KINDS: frozenset[JobUrlKind] = frozenset(
     {JobUrlKind.EMPLOYER_CAREER, JobUrlKind.ATS}
 )
 
 #: ATS front doors that address each employer as the first path segment, e.g.
 #: ``boards.greenhouse.io/acme``. A fact about those products, not a company
-#: list: it is what lets a deep posting link be trimmed to the employer's own
-#: board root instead of pointing at one expired vacancy.
-_PATH_ADDRESSED_ATS: frozenset[str] = frozenset(
+#: list: it is what lets ``app.careers.candidates`` propose the employer's own
+#: board root as the first thing to try.
+PATH_ADDRESSED_ATS: frozenset[str] = frozenset(
     {
         "boards.greenhouse.io",
         "job-boards.greenhouse.io",
+        "boards.eu.greenhouse.io",
         "jobs.lever.co",
+        "jobs.eu.lever.co",
         "jobs.ashbyhq.com",
         "jobs.smartrecruiters.com",
+        "careers.smartrecruiters.com",
         "apply.workable.com",
+        "jobs.workable.com",
         "jobs.jobvite.com",
-        "boards.eu.greenhouse.io",
+        "boards.rippling.com",
+        "jobs.gem.com",
     }
 )
 
 #: Host labels that are the product's own, never the employer's. A subdomain
 #: from this set carries no company identity.
-_GENERIC_LABELS: frozenset[str] = frozenset(
+GENERIC_HOST_LABELS: frozenset[str] = frozenset(
     {"www", "boards", "job-boards", "jobs", "apply", "careers", "api", "my", "app"}
 )
 
-#: Path segments that are a careers *section* rather than one vacancy, so a
-#: link can be trimmed back to them safely.
-_CAREERS_SEGMENTS: frozenset[str] = frozenset(
-    {"careers", "career", "jobs", "job", "join-us", "joinus", "work-with-us"}
-)
-
 #: Leading host labels that say "this subdomain is the recruiting site".
-_CAREERS_HOST_LABELS: frozenset[str] = frozenset(
+CAREERS_HOST_LABELS: frozenset[str] = frozenset(
     {"careers", "career", "jobs", "job", "hiring", "recruiting", "talent"}
 )
 
@@ -84,6 +100,34 @@ _CAREERS_HOST_LABELS: frozenset[str] = frozenset(
 #: ``classify_url`` uses six for the general case; five is safe here *because*
 #: more is being required alongside it - see ``_is_employer_careers_host``.
 _MIN_CORROBORATING_LABEL = 5
+
+
+def _labels(host: str) -> list[str]:
+    return [label for label in host.split(".") if label]
+
+
+def _slugify(segment: str) -> str:
+    """A host label or path segment reduced to comparable letters.
+
+    Separators go, so "northwind-analytics" and "fitch_group" compare equal to
+    "northwindanalytics" and "fitchgroup". Company names lose their spaces the
+    same way, which is what puts the two sides in one alphabet.
+    """
+    return comparison_key(segment.replace("-", " ").replace("_", " ")).replace(" ", "")
+
+
+def resembles_company(segment: str, company: str) -> bool:
+    """Whether a host label or path slug looks like this company's name.
+
+    Short segments are ignored: a three-letter slug matches too many names by
+    accident. Used as corroboration and as an ordering hint - never as the sole
+    reason to accept a destination, which only fetching can establish.
+    """
+    slug = _slugify(segment)
+    name = comparison_key(company).replace(" ", "")
+    if len(slug) < 4 or len(name) < 4:
+        return False
+    return slug == name or name.startswith(slug) or slug.startswith(name)
 
 
 def _is_employer_careers_host(host: str, company: str) -> bool:
@@ -103,11 +147,9 @@ def _is_employer_careers_host(host: str, company: str) -> bool:
     start with "applebees", so ``careers.applebees.com`` cannot claim Apple.
     """
     labels = _labels(host)
-    if len(labels) < 3 or labels[0] not in _CAREERS_HOST_LABELS:
+    if len(labels) < 3 or labels[0] not in CAREERS_HOST_LABELS:
         return False
 
-    # Slugified, so a hyphenated domain compares against a spaced company name:
-    # "northwind-analytics" and "Northwind Analytics" are the same word.
     domain_label = _slugify(labels[-2])
     name = comparison_key(company).replace(" ", "")
     if len(domain_label) < _MIN_CORROBORATING_LABEL or len(name) < 4:
@@ -117,17 +159,20 @@ def _is_employer_careers_host(host: str, company: str) -> bool:
 
 
 @dataclass(frozen=True, slots=True)
-class VerifiedCareerUrl:
-    """A URL that passed verification, plus how it was reached."""
+class CandidateCareerUrl:
+    """An observed URL that is worth fetching as this employer's career page.
+
+    Deliberately *not* called verified. It has not been opened. The name is the
+    guard rail: nothing downstream can mistake this for a checked destination,
+    because the type does not claim to be one.
+    """
 
     url: str
     kind: JobUrlKind
     host: str
-    #: True when the URL was trimmed back to the company's careers root rather
-    #: than left pointing at the individual posting it came from.
-    trimmed: bool
     #: True when the host or ATS path segment also resembles the company name.
-    #: Strengthens the reason text; never the sole basis for acceptance.
+    #: Strengthens the later reason text and orders candidates; never on its
+    #: own a reason to show a page to a user.
     name_corroborated: bool
 
     @property
@@ -135,87 +180,19 @@ class VerifiedCareerUrl:
         return self.kind is JobUrlKind.EMPLOYER_CAREER
 
 
-def _labels(host: str) -> list[str]:
-    return [label for label in host.split(".") if label]
-
-
-def _slugify(segment: str) -> str:
-    """A host label or path segment reduced to comparable letters.
-
-    Separators go, so "northwind-analytics" and "fitch_group" compare equal to
-    "northwindanalytics" and "fitchgroup". Company names lose their spaces the
-    same way, which is what puts the two sides in one alphabet.
-    """
-    return comparison_key(segment.replace("-", " ").replace("_", " ")).replace(" ", "")
-
-
-def _resembles(segment: str, company: str) -> bool:
-    """Whether a host label or path slug looks like this company's name.
-
-    Short segments are ignored: a three-letter slug matches too many names by
-    accident.
-    """
-    slug = _slugify(segment)
-    name = comparison_key(company).replace(" ", "")
-    if len(slug) < 4 or len(name) < 4:
-        return False
-    return slug == name or name.startswith(slug) or slug.startswith(name)
-
-
-def _careers_root(url: str, kind: JobUrlKind, company: str) -> tuple[str, bool]:
-    """Trim a posting link back to the company's careers page when that is safe.
-
-    Returns ``(url, trimmed)``. A career page is a *place to look for openings*,
-    so pointing at one specific vacancy - which will expire - is the wrong
-    destination. But a wrong guess is worse than a deep link, so this only
-    trims where the shape of the URL makes the root certain, and otherwise
-    hands back what the posting actually published.
-    """
-    parts = urlsplit(url)
-    host = parts.hostname or ""
-    segments = [segment for segment in parts.path.split("/") if segment]
-
-    if kind is JobUrlKind.ATS:
-        # ``boards.greenhouse.io/acme/jobs/123`` -> ``boards.greenhouse.io/acme``.
-        if host in _PATH_ADDRESSED_ATS and segments:
-            return urlunsplit((parts.scheme, host, f"/{segments[0]}", "", "")), True
-        # ``acme.bamboohr.com/careers/42`` -> the employer's own subdomain root,
-        # but only when the leading label is the employer's rather than the
-        # product's own front door.
-        labels = _labels(host)
-        if len(labels) >= 3 and labels[0] not in _GENERIC_LABELS:
-            return urlunsplit((parts.scheme, host, "/", "", "")), True
-        return url, False
-
-    # The employer's own domain. A dedicated careers host has nothing above its
-    # root to get wrong.
-    labels = _labels(host)
-    if labels and labels[0] in {"careers", "career", "jobs", "job"}:
-        return urlunsplit((parts.scheme, host, "/", "", "")), True
-
-    # ``acme.com/careers/roles/123`` -> ``acme.com/careers``.
-    if segments and segments[0].casefold() in _CAREERS_SEGMENTS:
-        return (
-            urlunsplit((parts.scheme, host, f"/{segments[0]}", "", "")),
-            len(segments) > 1,
-        )
-
-    return url, False
-
-
-def verify_career_url(
+def admit_career_url(
     url: str | None, *, company: str | None
-) -> VerifiedCareerUrl | None:
-    """Accept a URL as a company's official career page, or refuse it.
+) -> CandidateCareerUrl | None:
+    """Accept a URL as worth fetching for this employer, or refuse it.
 
-    Returns None for anything that cannot be shown to belong to the employer -
-    an aggregator, a portal listing, an unusable string, or a host nobody can
-    tie to this company. Refusing is the safe direction: the result set is
-    allowed to be short, but every URL in it has to be what it claims.
+    Returns None for anything that cannot be tied to the employer even in
+    principle - an aggregator, a portal listing, an unusable string, or a bare
+    vendor lobby. Refusing is the safe direction and it is also the cheap one:
+    a refusal here is a request not made.
     """
     if not company or not company.strip():
-        # Without an employer there is nothing to verify the host against, and
-        # a career page with no company is not a result anyone can use.
+        # Without an employer there is nothing to check the host against, and a
+        # career page with no company is not a result anyone can use.
         return None
 
     classified = normalize_and_classify(url, company=company)
@@ -228,9 +205,9 @@ def verify_career_url(
     kind = classified.kind
     if kind not in ACCEPTED_KINDS:
         # One narrow rescue, and only upwards from UNKNOWN: a recruiting
-        # subdomain on the employer's own name. An aggregator or portal
-        # listing is never reconsidered - those are refused on the host, which
-        # no amount of corroboration can change.
+        # subdomain on the employer's own name. An aggregator or portal listing
+        # is never reconsidered - those are refused on the host, which no
+        # amount of corroboration can change.
         if kind is not JobUrlKind.UNKNOWN or not _is_employer_careers_host(
             classified.host, name
         ):
@@ -244,29 +221,34 @@ def verify_career_url(
         host = parts.hostname or ""
         segments = [segment for segment in parts.path.split("/") if segment]
         labels = _labels(host)
-        # A bare ATS root is the product's front page, not an employer's page.
+        # A bare vendor root is the product's front page, not an employer's.
         has_company_space = bool(segments) or (
-            len(labels) >= 3 and labels[0] not in _GENERIC_LABELS
+            len(labels) >= 3 and labels[0] not in GENERIC_HOST_LABELS
         )
         if not has_company_space:
             return None
-        corroborated = any(_resembles(segment, name) for segment in segments[:1]) or (
-            len(labels) >= 3 and _resembles(labels[0], name)
-        )
+        corroborated = any(
+            resembles_company(segment, name) for segment in segments[:1]
+        ) or (len(labels) >= 3 and resembles_company(labels[0], name))
     else:
         # EMPLOYER_CAREER is only returned when the host already matched the
         # employer's name, so corroboration is inherent rather than extra.
         corroborated = True
 
-    final_url, trimmed = _careers_root(classified.url, classified.kind, name)
-
-    return VerifiedCareerUrl(
-        url=final_url,
+    return CandidateCareerUrl(
+        url=classified.url,
         kind=classified.kind,
         host=classified.host,
-        trimmed=trimmed,
         name_corroborated=corroborated,
     )
 
 
-__all__ = ["ACCEPTED_KINDS", "VerifiedCareerUrl", "verify_career_url"]
+__all__ = [
+    "ACCEPTED_KINDS",
+    "CAREERS_HOST_LABELS",
+    "GENERIC_HOST_LABELS",
+    "PATH_ADDRESSED_ATS",
+    "CandidateCareerUrl",
+    "admit_career_url",
+    "resembles_company",
+]

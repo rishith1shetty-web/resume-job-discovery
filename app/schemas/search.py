@@ -243,6 +243,13 @@ class CareerPageOut(BaseModel):
     ``relevance`` is a company-level judgement built from the openings actually
     observed. It is not the 0-100 resume match a scored job carries and is
     never compared against the 70% threshold.
+
+    **Every instance of this model has been fetched.** ``official_career_url``
+    is the end of a redirect chain that was opened, checked for a login or
+    Company-ID wall, confirmed to belong to this employer and confirmed to show
+    job listings. A company whose page failed any of that is absent from the
+    list rather than present without a link, so a client can treat this URL as
+    clickable without checking anything itself.
     """
 
     company_name: str
@@ -251,12 +258,22 @@ class CareerPageOut(BaseModel):
     )
     location: str
     official_career_url: str = Field(
+        min_length=1,
         description=(
-            "The employer's own careers site, or their own space on an "
-            "applicant-tracking system. Never an aggregator or job board."
-        )
+            "A verified, publicly browsable career portal: the employer's own "
+            "careers site, or their own space on an applicant-tracking system. "
+            "Never an aggregator, a vendor front door, a login page or a dead "
+            "link - the URL was fetched and checked before this field was set."
+        ),
     )
     url_kind: str = Field(description="Why the URL was accepted as official.")
+    validation_reason: str = Field(
+        default="",
+        description="What opening the page established, in a sentence.",
+    )
+    last_validated_at: datetime | None = Field(
+        default=None, description="When the page was last fetched and checked."
+    )
     opening_count: int = Field(
         description="Current US openings seen matching the resume's target role."
     )

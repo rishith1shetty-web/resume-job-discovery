@@ -21,6 +21,8 @@ import json
 import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
+from email.utils import parsedate_to_datetime
 
 import httpx
 
@@ -46,6 +48,47 @@ _BLOCKED_STATUSES = frozenset({401, 403, 407, 451})
 _RATE_LIMIT_STATUSES = frozenset({429})
 #: Transient server-side failures worth one more attempt.
 _RETRYABLE_STATUSES = frozenset({500, 502, 503, 504, 522, 524})
+
+#: Longest ``Retry-After`` this client will actually wait out. A portal asking
+#: for two minutes is asking for longer than a search can reasonably hold, so
+#: past this the wait is declined and the portal is reported as rate-limited -
+#: which is the truth, and leaves the other portals to finish.
+MAX_RETRY_AFTER_SECONDS = 30.0
+
+
+def _retry_after_seconds(response: httpx.Response) -> float | None:
+    """How long the server explicitly asked us to wait, if it did.
+
+    ``Retry-After`` comes in two forms: delta-seconds, and an HTTP date. Both
+    are read, because a server that bothers to tell us when to come back has
+    given us the only non-guessed backoff available.
+
+    Returns None when the header is absent or unparseable, which is the signal
+    to *not* retry at all. That distinction is the point of this function: a
+    429 with no stated delay means we have no idea when the portal would
+    welcome us, and inventing an interval is how a client ends up hammering a
+    service that just asked it to stop.
+    """
+    raw = response.headers.get("retry-after")
+    if not raw or not raw.strip():
+        return None
+
+    value = raw.strip()
+    try:
+        return max(0.0, float(value))
+    except ValueError:
+        pass
+
+    try:
+        when = parsedate_to_datetime(value)
+    except (TypeError, ValueError):
+        return None
+    if when is None:
+        return None
+    if when.tzinfo is None:
+        when = when.replace(tzinfo=UTC)
+
+    return max(0.0, (when - datetime.now(UTC)).total_seconds())
 
 
 @dataclass(slots=True)
@@ -211,6 +254,27 @@ class PortalHttpClient:
                     )
 
                 if status in _RATE_LIMIT_STATUSES:
+                    # Retried only on the service's own terms. When it states a
+                    # `Retry-After` we wait exactly that long, once, and try
+                    # again; when it does not, we stop. There is deliberately no
+                    # invented interval here - guessing at a delay after being
+                    # asked to slow down is how a client turns a rate limit
+                    # into a block.
+                    delay = _retry_after_seconds(response)
+                    if (
+                        delay is not None
+                        and delay <= MAX_RETRY_AFTER_SECONDS
+                        and attempt < attempts
+                    ):
+                        logger.info(
+                            "portal_request_retry_after",
+                            portal=self.portal,
+                            attempt=attempt,
+                            delay_seconds=round(delay, 1),
+                        )
+                        await asyncio.sleep(delay)
+                        continue
+
                     raise PortalRateLimitedError(
                         f"{self.portal} rate-limited this client (HTTP {status}). "
                         "Backing off.",

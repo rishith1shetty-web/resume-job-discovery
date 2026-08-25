@@ -32,8 +32,11 @@ from dataclasses import dataclass, field
 from datetime import datetime
 
 from app.careers.base import CareerPage, CareerPageDiscovery, CareerPageRequest
-from app.careers.verification import VerifiedCareerUrl, verify_career_url  # noqa: TC001
-from app.core.constants import JobUrlKind
+from app.careers.verification import (  # noqa: TC001
+    CandidateCareerUrl,
+    admit_career_url,
+)
+from app.core.constants import CareerPageStatus, JobUrlKind
 from app.matching.profile import ResumeMatchProfile
 from app.matching.requirements import extract_requirements
 from app.matching.roles import RoleVerdict, evaluate_role
@@ -99,22 +102,46 @@ class _Accumulator:
 
     company: NormalizedCompany
     best_verdict: RoleVerdict
-    url: VerifiedCareerUrl
+    url: CandidateCareerUrl
     titles: list[str] = field(default_factory=list)
     locations: list[str] = field(default_factory=list)
     sources: list[str] = field(default_factory=list)
     opening_count: int = 0
+    #: Every distinct URL this company's postings pointed at, strongest first.
+    #: Kept in full rather than collapsed to one, because the brief is explicit
+    #: that a company must not be discarded when its first link fails - the
+    #: second posting's link is the evidence that saves it.
+    candidates: list[CandidateCareerUrl] = field(default_factory=list)
+
+    def remember(self, url: CandidateCareerUrl) -> None:
+        """Record another observed URL for this company, without duplicates.
+
+        The employer's own domain sorts ahead of their ATS space, so the
+        candidate most likely to be a browsable careers site is tried first.
+        Ordering only decides what is fetched first; nothing here accepts
+        anything.
+        """
+        if any(existing.url == url.url for existing in self.candidates):
+            return
+        self.candidates.append(url)
+        self.candidates.sort(
+            key=lambda item: (
+                0 if item.kind is JobUrlKind.EMPLOYER_CAREER else 1,
+                0 if item.name_corroborated else 1,
+            )
+        )
 
     def absorb(
         self,
         *,
         verdict: RoleVerdict,
-        url: VerifiedCareerUrl,
+        url: CandidateCareerUrl,
         title: str,
         location: str | None,
         source: str,
     ) -> None:
         self.opening_count += 1
+        self.remember(url)
 
         if _VERDICT_RANK[verdict] < _VERDICT_RANK[self.best_verdict]:
             self.best_verdict = verdict
@@ -139,7 +166,7 @@ class _Accumulator:
 
 @dataclass(frozen=True, slots=True)
 class _Pending:
-    """A qualifying opening whose URL did not verify under its own name."""
+    """A qualifying opening whose URL was not admitted under its own name."""
 
     company: NormalizedCompany
     verdict: RoleVerdict
@@ -211,23 +238,22 @@ def _describe_role(titles: Sequence[str], fallback: str) -> str:
 
 
 def _reason(accumulator: _Accumulator, role_display: str) -> str:
+    """Why this company qualifies, in terms of evidence already in hand.
+
+    Says nothing about the career page. At this point nothing has been
+    fetched, so any claim about the destination would be exactly the claim
+    that used to be false - ``validation_reason`` carries that, and only after
+    a page has been opened.
+    """
     count = accumulator.opening_count
     plural = "s" if count != 1 else ""
-    where = (
-        "the company's own careers site"
-        if accumulator.url.kind is JobUrlKind.EMPLOYER_CAREER
-        else "the company's own applicant-tracking board"
-    )
-    return (
-        f"{count} current US opening{plural} matching {role_display}. "
-        f"Official career page verified as {where}."
-    )
+    return f"{count} current US opening{plural} matching {role_display}."
 
 
 def _find_existing(
     accumulators: list[_Accumulator],
     company: NormalizedCompany,
-    url: VerifiedCareerUrl | None,
+    url: CandidateCareerUrl | None,
 ) -> _Accumulator | None:
     """The accumulator this company belongs to, if one already exists.
 
@@ -325,14 +351,17 @@ def discover_career_pages(
         # The employer's application link first: it is the one most likely to
         # be on their own domain or their own ATS space. The listing URL is
         # tried second, and usually belongs to the portal, which is refused.
-        verified: VerifiedCareerUrl | None = None
+        admitted: list[CandidateCareerUrl] = []
         for candidate in (
             getattr(listing, "application_url", None),
             getattr(listing, "source_url", None),
         ):
-            verified = verify_career_url(candidate, company=company.display)
-            if verified is not None:
-                break
+            accepted = admit_career_url(candidate, company=company.display)
+            if accepted is not None and all(
+                accepted.url != existing.url for existing in admitted
+            ):
+                admitted.append(accepted)
+        verified = admitted[0] if admitted else None
 
         existing = _find_existing(accumulators, company, verified)
 
@@ -364,17 +393,18 @@ def discover_career_pages(
             continue
 
         if existing is None:
-            accumulators.append(
-                _Accumulator(
-                    company=company,
-                    best_verdict=assessment.verdict,
-                    url=verified,
-                    titles=[title],
-                    locations=[location_text] if location_text else [],
-                    sources=[source] if source else [],
-                    opening_count=1,
-                )
+            accumulator = _Accumulator(
+                company=company,
+                best_verdict=assessment.verdict,
+                url=verified,
+                titles=[title],
+                locations=[location_text] if location_text else [],
+                sources=[source] if source else [],
+                opening_count=1,
             )
+            for extra in admitted:
+                accumulator.remember(extra)
+            accumulators.append(accumulator)
             continue
 
         if existing.company.key != company.key:
@@ -386,6 +416,8 @@ def discover_career_pages(
             location=location_text,
             source=source,
         )
+        for extra in admitted:
+            existing.remember(extra)
 
     # --- Reconciliation -----------------------------------------------------
     # An opening whose URL did not verify against the name *that posting* used,
@@ -431,13 +463,21 @@ def discover_career_pages(
                 company_key=accumulator.company.key,
                 relevant_role=_describe_role(accumulator.titles, request.role_display),
                 location=_describe_location(accumulator.locations),
-                official_career_url=accumulator.url.url,
+                # Deliberately empty. A career page has no URL to offer until
+                # one has been fetched and proved; leaving the strongest
+                # candidate here is exactly how an unchecked guess used to
+                # reach users wearing the word "verified".
+                official_career_url="",
                 url_kind=accumulator.url.kind,
                 opening_count=accumulator.opening_count,
                 relevance=relevance,
                 reason=_reason(accumulator, request.role_display),
                 sources=tuple(accumulator.sources),
                 matched_titles=tuple(accumulator.titles[:_MAX_TITLES]),
+                status=CareerPageStatus.DISCOVERED,
+                candidate_urls=tuple(
+                    candidate.url for candidate in accumulator.candidates
+                ),
             )
         )
 
@@ -445,8 +485,13 @@ def discover_career_pages(
     # order is total and two runs over the same listings agree.
     pages.sort(key=lambda page: (-page.relevance, -page.opening_count, page.company_key))
 
-    ceiling = max(0, min(limit, MAX_CAREER_PAGES))
-    discovery.pages = pages[:ceiling]
+    # Everything that qualified is returned. The ceiling is applied *after*
+    # validation, in `app.services.career_page_verification`, because trimming
+    # to twenty here would throw away the companies that turn out to be the
+    # ones with a usable page - which is how a run ends up with eleven cards
+    # when thirty employers were available.
+    discovery.pages = pages
+    discovery.candidate_ceiling = max(0, min(limit, MAX_CAREER_PAGES))
     return discovery
 
 

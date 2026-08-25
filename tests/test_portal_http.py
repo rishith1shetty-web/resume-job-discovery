@@ -16,7 +16,12 @@ from app.portals.exceptions import (
     PortalRateLimitedError,
     PortalTimeoutError,
 )
-from app.portals.http import DEFAULT_USER_AGENT, HttpPolicy, PortalHttpClient
+from app.portals.http import (
+    DEFAULT_USER_AGENT,
+    MAX_RETRY_AFTER_SECONDS,
+    HttpPolicy,
+    PortalHttpClient,
+)
 
 
 def _client(**overrides) -> PortalHttpClient:
@@ -48,8 +53,27 @@ def patch_get(monkeypatch: pytest.MonkeyPatch):
     return _apply
 
 
-def _response(status: int, text: str = "ok") -> httpx.Response:
-    return httpx.Response(status_code=status, text=text, request=httpx.Request("GET", "https://example.invalid"))
+def _response(
+    status: int, text: str = "ok", headers: dict[str, str] | None = None
+) -> httpx.Response:
+    return httpx.Response(
+        status_code=status,
+        text=text,
+        headers=headers,
+        request=httpx.Request("GET", "https://example.invalid"),
+    )
+
+
+@pytest.fixture
+def slept(monkeypatch: pytest.MonkeyPatch) -> list[float]:
+    """Record what the client waited for instead of actually waiting."""
+    waits: list[float] = []
+
+    async def _sleep(seconds: float) -> None:
+        waits.append(seconds)
+
+    monkeypatch.setattr("app.portals.http.asyncio.sleep", _sleep)
+    return waits
 
 
 # --- Policy -----------------------------------------------------------------
@@ -180,15 +204,118 @@ async def test_a_refusal_is_terminal_and_never_retried(patch_get, status: int) -
     assert "bypass" in exc_info.value.message.lower()
 
 
-async def test_rate_limiting_is_reported_not_retried(patch_get) -> None:
+async def test_rate_limiting_without_a_stated_delay_is_not_retried(
+    patch_get,
+) -> None:
     calls = patch_get(lambda attempt, url, params: _response(429))
 
     with pytest.raises(PortalRateLimitedError):
         await _client(max_retries=3).get_text("https://example.invalid")
 
     # Hammering a portal that just asked us to slow down would be the opposite
-    # of respecting the limit.
+    # of respecting the limit. With no `Retry-After` we have no idea when it
+    # would welcome us back, and inventing an interval is a guess.
     assert len(calls) == 1
+
+
+# --- Retry-After: retried only on the service's own terms -------------------
+
+
+async def test_a_stated_retry_after_is_waited_out_and_the_request_retried(
+    patch_get, slept
+) -> None:
+    """The one case where a 429 is retried: the server said when to return."""
+    calls = patch_get(
+        lambda attempt, url, params: _response(429, headers={"Retry-After": "3"})
+        if attempt == 1
+        else _response(200, text="fresh")
+    )
+
+    body = await _client(max_retries=2).get_text("https://example.invalid")
+
+    assert body == "fresh"
+    assert len(calls) == 2
+    # Exactly what was asked for - not the policy's own backoff curve.
+    assert slept == [3.0]
+
+
+async def test_a_retry_after_http_date_is_understood(patch_get, slept) -> None:
+    """The header's other legal form, which a real server may well send."""
+    from datetime import UTC, datetime, timedelta
+    from email.utils import format_datetime
+
+    when = format_datetime(datetime.now(UTC) + timedelta(seconds=5))
+    calls = patch_get(
+        lambda attempt, url, params: _response(429, headers={"Retry-After": when})
+        if attempt == 1
+        else _response(200, text="fresh")
+    )
+
+    assert await _client().get_text("https://example.invalid") == "fresh"
+    assert len(calls) == 2
+    assert slept and 0 < slept[0] <= 6
+
+
+async def test_an_unreasonably_long_retry_after_is_declined(patch_get, slept) -> None:
+    """A portal asking for an hour is asking for longer than a search lasts.
+
+    Waiting it out would hold the whole run open for one portal. Reporting it
+    as rate-limited is both true and lets the other portals finish.
+    """
+    calls = patch_get(
+        lambda attempt, url, params: _response(
+            429, headers={"Retry-After": str(int(MAX_RETRY_AFTER_SECONDS) + 60)}
+        )
+    )
+
+    with pytest.raises(PortalRateLimitedError):
+        await _client(max_retries=3).get_text("https://example.invalid")
+
+    assert len(calls) == 1
+    assert slept == []
+
+
+async def test_a_retry_after_is_honoured_at_most_once(patch_get, slept) -> None:
+    """Bounded by the portal's own retry budget, so it cannot loop."""
+    calls = patch_get(
+        lambda attempt, url, params: _response(429, headers={"Retry-After": "1"})
+    )
+
+    with pytest.raises(PortalRateLimitedError):
+        await _client(max_retries=1).get_text("https://example.invalid")
+
+    # max_retries=1 means two attempts total: one wait, then give up.
+    assert len(calls) == 2
+    assert slept == [1.0]
+
+
+async def test_a_malformed_retry_after_is_treated_as_absent(patch_get, slept) -> None:
+    calls = patch_get(
+        lambda attempt, url, params: _response(
+            429, headers={"Retry-After": "whenever you like"}
+        )
+    )
+
+    with pytest.raises(PortalRateLimitedError):
+        await _client(max_retries=3).get_text("https://example.invalid")
+
+    assert len(calls) == 1
+    assert slept == []
+
+
+async def test_a_refusal_is_still_terminal_even_with_a_retry_after(
+    patch_get, slept
+) -> None:
+    """403 is a refusal, not a rate limit, whatever headers accompany it."""
+    calls = patch_get(
+        lambda attempt, url, params: _response(403, headers={"Retry-After": "1"})
+    )
+
+    with pytest.raises(PortalBlockedError):
+        await _client(max_retries=3).get_text("https://example.invalid")
+
+    assert len(calls) == 1
+    assert slept == []
 
 
 async def test_a_network_error_becomes_a_portal_error(monkeypatch) -> None:

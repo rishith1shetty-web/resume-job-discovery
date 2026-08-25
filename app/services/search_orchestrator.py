@@ -100,6 +100,7 @@ from app.careers.base import (
     CareerPageSource,
     career_registry,
 )
+from app.careers.fetching import CareerPageFetcher
 from app.careers.identity import career_page_key
 from app.careers.source import collect_discovery_listings
 from app.core.logging import get_logger
@@ -132,7 +133,7 @@ from app.search.depth import ExhaustionReason, SearchDepth
 from app.search.freshness import freshness_score, is_eligible_age
 from app.search.queries import QueryPlan, build_query_plan
 from app.processing.normalize import RejectionReason
-from app.services import career_page_service
+from app.services import career_page_service, career_page_verification
 from app.services.job_processing import process_raw_jobs
 from app.services.match_service import load_match_profile, score_jobs_for_resume
 
@@ -342,6 +343,7 @@ async def execute_search_run(
     legs: list[SearchRunPortal],
     portals: list[Portal],
     adapters: dict[uuid.UUID, BasePortal] | None = None,
+    career_fetcher: CareerPageFetcher | None = None,
     now: datetime | None = None,
     query_timeout_seconds: float | None = None,
     portal_budget_seconds: float | None = None,
@@ -354,6 +356,12 @@ async def execute_search_run(
     ``adapters`` lets a caller supply pre-built adapters. Tests use it to inject
     deterministic fixture portals; in normal operation it is None and each
     portal is resolved through the registry.
+
+    ``career_fetcher`` does the same for the career lane's HTTP client, which
+    verifies a company's career page by opening it. Tests inject one driving
+    mocked responses; in normal operation it is None and the lane builds its
+    own. There is no third option where verification is skipped - a page that
+    is not fetched is not verified, and an unverified page is not returned.
     """
     moment = now or datetime.now(UTC)
 
@@ -481,6 +489,7 @@ async def execute_search_run(
             plan=plan,
             outcome=outcome,
             moment=moment,
+            fetcher=career_fetcher,
         )
 
     await _finalise(
@@ -538,6 +547,7 @@ async def _run_career_lane(
     plan: QueryPlan,
     outcome: SearchOutcome,
     moment: datetime,
+    fetcher: CareerPageFetcher | None = None,
 ) -> None:
     """Discover company career pages, isolated from the job results.
 
@@ -610,9 +620,49 @@ async def _run_career_lane(
                 )
             )
 
+        # --- Verification: every URL is fetched before anyone is offered it --
+        #
+        # Discovery produced companies and the URLs their postings pointed at.
+        # None of those has been opened yet, and a `CareerPage` at this point
+        # deliberately carries no `official_career_url` at all. This is the
+        # step that opens them, and only what survives it can be shown.
+        pages: list[CareerPage] = []
+        if error is None and discovery.pages:
+            try:
+                pages = await career_page_verification.verify_career_pages(
+                    session, discovery, now=moment, fetcher=fetcher
+                )
+            except Exception as exc:  # noqa: BLE001 - isolation is the point
+                error = exc
+                logger.warning(
+                    "career_verification_failed",
+                    search_run_id=str(run.id),
+                    source=portal.slug,
+                    error=str(exc),
+                )
+                session.add(
+                    PortalErrorRow(
+                        portal_id=portal.id,
+                        search_run_id=run.id,
+                        search_run_portal_id=leg.id,
+                        kind=classify_error(exc),
+                        message=str(exc)[:2000],
+                        context={
+                            "phase": "career_verification",
+                            "portal": portal.slug,
+                        },
+                    )
+                )
+
+        # Suppression runs *after* verification, not before it. A career page
+        # is identified by the employer and the host their careers presence
+        # lives on, and until a candidate has been fetched and its redirects
+        # followed, that host is not known - so matching a user's earlier
+        # decision against an unverified guess would suppress the wrong page,
+        # or fail to suppress the right one.
         if decided:
             kept = []
-            for career_page in discovery.pages:
+            for career_page in pages:
                 key = career_page_key(
                     official_career_url=career_page.official_career_url,
                     company_name=career_page.company_name,
@@ -621,9 +671,10 @@ async def _run_career_lane(
                     suppressed += 1
                     continue
                 kept.append(career_page)
-            discovery.pages = kept
+            pages = kept
 
-        outcome.career_pages.extend(discovery.pages)
+        discovery.pages = pages
+        outcome.career_pages.extend(pages)
 
         leg.status = (
             PortalRunStatus.FAILED if error is not None else PortalRunStatus.COMPLETED
@@ -631,6 +682,10 @@ async def _run_career_lane(
         # The leg's counters, read in this lane's own terms: listings examined,
         # companies that survived verification, cards returned.
         leg.raw_count = len(listings) if error is None else 0
+        # Companies that reached verification, versus companies whose page was
+        # actually proven usable. The gap between them is the honest measure of
+        # how much of the web's careers plumbing is unusable, and it is exactly
+        # what used to be hidden by never fetching anything.
         leg.qualified_count = discovery.companies_seen
         leg.selected_count = discovery.returned_count
         leg.final_quota = discovery.returned_count
@@ -638,12 +693,26 @@ async def _run_career_lane(
         leg.completed_at = datetime.now(UTC)
 
         if error is None:
-            outcome.warnings.append(
-                f"{portal.display_name}: {discovery.returned_count} verified "
-                f"company career page{'s' if discovery.returned_count != 1 else ''} "
-                "from companies with current US openings. These are companies to "
-                "apply to directly and are separate from the job results."
+            returned = discovery.returned_count
+            message = (
+                f"{portal.display_name}: {returned} verified company career "
+                f"page{'s' if returned != 1 else ''} from companies with "
+                "current US openings. Every URL was opened and checked before "
+                "being listed. These are companies to apply to directly and "
+                "are separate from the job results."
             )
+            if discovery.rejected_companies:
+                # Said out loud rather than quietly returning a short list: a
+                # user who asked for twenty and got eleven is entitled to know
+                # that the other companies had no usable career page, not that
+                # the search failed to find them.
+                message += (
+                    f" {discovery.rejected_companies} further "
+                    f"compan{'ies were' if discovery.rejected_companies != 1 else 'y was'} "
+                    "left out because their career page could not be opened, "
+                    "was behind a login, or showed no job listings."
+                )
+            outcome.warnings.append(message)
         else:
             outcome.warnings.append(
                 f"{portal.display_name} failed "

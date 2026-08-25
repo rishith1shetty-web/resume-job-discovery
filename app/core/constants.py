@@ -222,6 +222,39 @@ class JobUrlKind(StrEnum):
     UNKNOWN = "unknown"
 
 
+class CareerPageStatus(StrEnum):
+    """How far a company's career page has got through verification.
+
+    Only ``VERIFIED`` is ever shown to a user or made clickable. The other
+    members exist so a refusal can be recorded with its cause rather than
+    disappearing silently, which is what makes "why is this company missing?"
+    answerable.
+
+    ``REJECTED`` and ``UNAVAILABLE`` are deliberately different verdicts about
+    different things. Rejected is a statement about the *page*: it is a login
+    wall, a dead URL, the vendor's front door, or another employer's site, and
+    re-asking tomorrow will not change that. Unavailable is a statement about
+    *our request*: the site declined it, timed out, or robots.txt asks us not
+    to fetch it, so we simply do not know. Both omit the company; only the
+    second is worth retrying soon.
+    """
+
+    #: Derived from a real posting, not yet fetched. Never leaves the server.
+    DISCOVERED = "discovered"
+    #: A fetch is in flight. Transient, and never persisted as a final state.
+    VALIDATING = "validating"
+    #: Fetched and proven: reachable, public, this employer's, with jobs on it.
+    VERIFIED = "verified"
+    #: Fetched and disproven. The page is not a usable public career portal.
+    REJECTED = "rejected"
+    #: We were not allowed to look - declined, blocked, or robots-disallowed.
+    UNAVAILABLE = "unavailable"
+    #: Fetched, nothing disqualifying found, but no evidence of jobs either.
+    #: Not shown: absence of proof is not proof, and the brief is explicit that
+    #: omitting a company beats sending a user somewhere unusable.
+    UNVERIFIED = "unverified"
+
+
 # Preference order for the canonical application URL (CLAUDE.md section 9).
 # Lower rank wins. Phase 5 implements the resolution; this is the rule it uses.
 JOB_URL_PREFERENCE: dict[JobUrlKind, int] = {

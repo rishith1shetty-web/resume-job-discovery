@@ -89,7 +89,7 @@ from app.portals.base import (
     RawJob,
     declare_application_type,
 )
-from app.portals.exceptions import PortalError, PortalParseError
+from app.portals.exceptions import PortalBlockedError, PortalError, PortalParseError
 from app.portals.http import HttpPolicy, PortalHttpClient
 from app.processing.us_locations import is_us_location_slug
 
@@ -106,6 +106,40 @@ _SITEMAP_LOC_RE = re.compile(r"<loc>\s*(.*?)\s*</loc>")
 
 #: Account identifiers of other users. Never stored.
 _PRIVATE_FIELDS = ("viewedByUsers", "appliedFromUsers")
+
+#: Phrases that mean "prove you are a browser before you may read this".
+#:
+#: The site is fronted by a JavaScript bot challenge, which normally answers
+#: 403 or 429 - statuses ``PortalHttpClient`` already classifies as a refusal.
+#: This exists for the case where the challenge arrives with **200**, which the
+#: interstitial genuinely can. Without it, a challenge page reaches
+#: ``_extract_records``, which finds no ``__NEXT_DATA__`` and reports that Hiring
+#: Cafe's page format changed - sending whoever reads the error to rewrite a
+#: parser that is working perfectly well.
+#:
+#: Detection only. Nothing here attempts to satisfy a challenge, and the
+#: verdict is always "this portal is unavailable to us" (CLAUDE.md section 15).
+_CHALLENGE_MARKERS = (
+    "vercel security checkpoint",
+    "we're verifying your browser",
+    "checking your browser before accessing",
+    "just a moment...",
+    "enable javascript and cookies to continue",
+    "cf-browser-verification",
+    "/cdn-cgi/challenge-platform",
+)
+
+#: How much of a page is examined for those markers. An interstitial says so
+#: immediately; scanning a whole listing page would risk matching prose in
+#: somebody's job description.
+_CHALLENGE_WINDOW = 4000
+
+
+def _is_challenge_page(html: str) -> bool:
+    """Is this a bot-challenge interstitial rather than a Hiring Cafe page?"""
+    head = html[:_CHALLENGE_WINDOW].casefold()
+    return any(marker in head for marker in _CHALLENGE_MARKERS)
+
 
 #: Composed descriptions shorter than this are not worth returning: the
 #: matching layer would reject them as unscoreable anyway, and a stub would
@@ -368,6 +402,16 @@ class HiringCafePortal(BasePortal):
         """Pull the listing array out of the page's embedded data."""
         match = _NEXT_DATA_RE.search(html)
         if match is None:
+            if _is_challenge_page(html):
+                # Checked before blaming the parser: a challenge served with a
+                # 200 is a refusal wearing a success code, and reporting it as
+                # a format change would be a false statement about Hiring Cafe.
+                raise PortalBlockedError(
+                    "Hiring Cafe served a browser-verification challenge "
+                    "instead of the page. Treating the portal as unavailable "
+                    "rather than attempting to satisfy the challenge.",
+                    portal=self.slug,
+                )
             raise PortalParseError(
                 "Hiring Cafe page did not contain the expected embedded data.",
                 portal=self.slug,

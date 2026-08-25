@@ -92,6 +92,7 @@ REQUIRED_TABLES = (
     "application_status_history",
     "portal_errors",
     "career_page_interactions",
+    "career_page_validations",
 )
 
 #: Key on Alembic's ``Config.attributes`` that names the connection to migrate

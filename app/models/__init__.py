@@ -12,12 +12,16 @@ application_status_history and portal_errors.
 Since then: career_page_interactions, which records the Applied/Skipped
 decision a user makes about a company's career page. Its own table rather than
 a row in ``applications``, because a career page has no ``jobs`` row to
-reference - see the model for why that distinction is worth a table.
+reference - see the model for why that distinction is worth a table. And
+``career_page_validations``, a pure cache of what fetching a career page
+established, so a run does not re-open every employer's site it has already
+checked.
 """
 
 from app.db.base import Base
 from app.models.application import Application, ApplicationStatusHistory
 from app.models.career_page import CareerPageInteraction
+from app.models.career_page_validation import CareerPageValidation
 from app.models.job import Job, JobMatch, JobSource, RawJobRecord
 from app.models.portal import Portal, PortalConfig
 from app.models.profile import ResumeProfile, ResumeSkill, ResumeText
@@ -30,6 +34,7 @@ __all__ = [
     "ApplicationStatusHistory",
     "Base",
     "CareerPageInteraction",
+    "CareerPageValidation",
     "Job",
     "JobMatch",
     "JobSource",
