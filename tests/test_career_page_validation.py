@@ -698,6 +698,371 @@ async def test_companies_past_the_ceiling_are_never_fetched(db_session) -> None:
     )
 
 
+# --- Dynamic discovery: today's market, not yesterday's list ----------------
+
+
+def _serving_named(names: dict[str, bool]) -> FakeCareerFetcher:
+    """A page per company: True serves a real careers page, False a login wall."""
+    pages: dict[str, Page] = {}
+    for name, good in names.items():
+        slug = name.casefold().replace(" ", "")
+        root = f"https://careers.{slug}.com/"
+        pages[root] = careers_page(name) if good else login_page(name)
+    return FakeCareerFetcher(pages=pages)
+
+
+def _run_pool(*names: str) -> CareerPageDiscovery:
+    """What one Find Matches run discovered, from that run's own postings."""
+    discovery = CareerPageDiscovery()
+    discovery.pages = [
+        _discovered(
+            name,
+            f"https://careers.{name.casefold().replace(' ', '')}.com/job/1",
+            relevance=99.0 - index,
+        )
+        for index, name in enumerate(names)
+    ]
+    discovery.candidate_ceiling = 20
+    return discovery
+
+
+@pytest.mark.asyncio
+async def test_a_company_absent_yesterday_appears_today_on_a_new_posting(
+    db_session,
+) -> None:
+    """The behaviour the feature exists for, run as two consecutive searches.
+
+    Day 1 collects a qualifying job at Company A only. Day 2 the market has
+    moved: Company B has posted, so the day's collection contains it, and B is
+    discovered and returned. Nothing was added by hand, and no list of
+    companies survives between the two runs - the only thing that changed is
+    what the portals returned.
+    """
+    day_one = await verify_career_pages(
+        db_session,
+        _run_pool("Company A"),
+        fetcher=_serving_named({"Company A": True, "Company B": True}),
+        now=NOW,
+    )
+    assert [page.company_name for page in day_one] == ["Company A"]
+
+    # Day 2: the same resume, a fresh collection that now includes B.
+    day_two = await verify_career_pages(
+        db_session,
+        _run_pool("Company A", "Company B"),
+        fetcher=_serving_named({"Company A": True, "Company B": True}),
+        now=NOW + timedelta(days=1),
+    )
+
+    names = [page.company_name for page in day_two]
+    assert "Company B" in names, "a newly posting employer must be able to enter"
+    assert set(names) == {"Company A", "Company B"}
+    assert all(page.is_verified and page.official_career_url for page in day_two)
+
+
+@pytest.mark.asyncio
+async def test_the_cache_never_supplies_a_company_discovery_did_not(
+    db_session,
+) -> None:
+    """The cache is a lookup, never a source.
+
+    Company A is validated and cached on day 1. On day 2 the market has moved
+    on and only Company B is hiring, so only B was collected. A must not
+    reappear: a cached verdict answers "is this page still good?", never "who
+    should we show?".
+    """
+    await verify_career_pages(
+        db_session,
+        _run_pool("Company A"),
+        fetcher=_serving_named({"Company A": True}),
+        now=NOW,
+    )
+
+    day_two = await verify_career_pages(
+        db_session,
+        _run_pool("Company B"),
+        fetcher=_serving_named({"Company B": True}),
+        now=NOW + timedelta(minutes=5),
+    )
+
+    names = [page.company_name for page in day_two]
+    assert names == ["Company B"]
+    assert "Company A" not in names, "a cached company must not outlive its posting"
+
+
+@pytest.mark.asyncio
+async def test_a_cache_full_of_other_companies_does_not_hide_a_new_one(
+    db_session,
+) -> None:
+    """A newly discovered employer has no cache row, so it is fetched.
+
+    The cache is keyed on the employer plus their careers host, so an unknown
+    company cannot collide with a stored verdict - it misses, and misses are
+    validated live.
+    """
+    # Fill the cache with twelve rejected companies.
+    crowd = [f"Company {index:02d}" for index in range(12)]
+    await verify_career_pages(
+        db_session,
+        _run_pool(*crowd),
+        fetcher=_serving_named({name: False for name in crowd}),
+        now=NOW,
+    )
+
+    newcomer = _serving_named({**{name: False for name in crowd}, "Newcomer Ltd": True})
+    pages = await verify_career_pages(
+        db_session,
+        _run_pool(*crowd, "Newcomer Ltd"),
+        fetcher=newcomer,
+        now=NOW + timedelta(minutes=5),
+    )
+
+    assert [page.company_name for page in pages] == ["Newcomer Ltd"]
+    assert any("newcomer" in url for url in newcomer.requested), (
+        "the new company must actually be fetched, not answered from cache"
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_newly_discovered_company_still_has_to_pass_validation(
+    db_session,
+) -> None:
+    """Being new is not a way past the safety rules.
+
+    Company B is discovered for the first time and its page is a Company ID
+    wall. It is refused exactly as a long-known employer would be, and carries
+    no URL onward.
+    """
+    pool = _run_pool("Company A", "Company B")
+    fetcher = FakeCareerFetcher(
+        pages={
+            "https://careers.companya.com/": careers_page("Company A"),
+            "https://careers.companyb.com/": company_id_page(),
+        }
+    )
+
+    pages = await verify_career_pages(db_session, pool, fetcher=fetcher, now=NOW)
+
+    # B was discovered, fetched, and refused - so it is simply not there.
+    # A refused page is never returned at all, which is stronger than being
+    # returned with its URL blanked: there is no object for a client to render.
+    assert [page.company_name for page in pages] == ["Company A"]
+    assert pool.rejected_companies == 1
+    assert all(page.official_career_url for page in pages)
+    assert any("companyb" in url for url in fetcher.requested), (
+        "the new company must be fetched, not waved through or skipped"
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_poor_market_still_yields_twenty_when_twenty_exist(
+    db_session,
+) -> None:
+    """The pool is walked past the failures, not truncated to a fixed slice.
+
+    A hundred companies are discovered and only every fifth has a usable page -
+    exactly twenty in total, spread across the whole pool. Bounding the *pool*
+    rather than the *fetching* returned twelve here, because the last forty
+    companies were never opened.
+    """
+    names = [f"Company {index:03d}" for index in range(100)]
+    serving = {name: (index % 5 == 0) for index, name in enumerate(names)}
+
+    pages = await verify_career_pages(
+        db_session,
+        _run_pool(*names),
+        fetcher=_serving_named(serving),
+        now=NOW,
+    )
+
+    assert len(pages) == 20
+    assert len({page.company_name for page in pages}) == 20
+
+
+@pytest.mark.asyncio
+async def test_the_walk_ends_only_on_twenty_verified_or_no_candidates_left(
+    db_session,
+) -> None:
+    """The two stopping conditions, and the proof there is no third.
+
+    Four hundred candidates, none of them usable. Every one is tried - because
+    the only thing that could have stopped earlier is twenty verifying, and
+    none did - and the honest answer, nothing, is returned. A run that stopped
+    at some round number here would be reporting a limit as a result.
+    """
+    names = [f"Company {index:03d}" for index in range(400)]
+    fetcher = _serving_named({name: False for name in names})
+
+    pages = await verify_career_pages(
+        db_session, _run_pool(*names), fetcher=fetcher, now=NOW
+    )
+
+    assert pages == []
+    hosts = {url.split("/", 3)[2] for url in fetcher.requested}
+    assert len(hosts) == 400, "every candidate must have been tried"
+
+
+@pytest.mark.asyncio
+async def test_a_failed_candidate_never_consumes_one_of_the_twenty_slots(
+    db_session,
+) -> None:
+    """Slots are spent by verification, not by attempts.
+
+    Nineteen failures sit ahead of twenty good companies in the ranking. If a
+    failure cost a slot, the run would return one card. It returns twenty.
+    """
+    failures = [f"Bad {index:02d}" for index in range(19)]
+    good = [f"Good {index:02d}" for index in range(20)]
+    serving = {**{name: False for name in failures}, **{name: True for name in good}}
+
+    pages = await verify_career_pages(
+        db_session,
+        _run_pool(*failures, *good),
+        fetcher=_serving_named(serving),
+        now=NOW,
+    )
+
+    assert len(pages) == 20
+    assert {page.company_name for page in pages} == set(good)
+
+
+@pytest.mark.asyncio
+async def test_the_ranking_order_survives_validation(db_session) -> None:
+    """Verified companies come back in discovery's relevance order.
+
+    Validation filters; it does not reorder. The failures interleaved here
+    would shuffle the output if anything downstream re-sorted on completion
+    order, which concurrent fetching makes easy to do by accident.
+    """
+    names: list[str] = []
+    serving: dict[str, bool] = {}
+    for index in range(30):
+        good = f"Good {index:02d}"
+        bad = f"Bad {index:02d}"
+        names += [good, bad]
+        serving[good] = True
+        serving[bad] = False
+
+    pages = await verify_career_pages(
+        db_session, _run_pool(*names), fetcher=_serving_named(serving), now=NOW
+    )
+
+    assert [page.company_name for page in pages] == [
+        f"Good {index:02d}" for index in range(20)
+    ]
+    # Relevance descends, which is the order `_run_pool` assigned.
+    scores = [page.relevance for page in pages]
+    assert scores == sorted(scores, reverse=True)
+
+
+@pytest.mark.asyncio
+async def test_one_company_cannot_take_two_of_the_twenty_slots(db_session) -> None:
+    """Deduplication happens in discovery, and validation cannot undo it.
+
+    Five postings at one employer are one company by the time they reach here,
+    so they occupy one slot - which is what makes "twenty results" mean twenty
+    different employers rather than twenty URLs.
+    """
+    # The real discovery path, so this tests the deduplication that ships
+    # rather than a pool hand-built to already be deduplicated.
+    from tests.test_career_pages import discover, listing
+
+    listings = [
+        listing(
+            company="Northwind Analytics",
+            application_url=f"https://careers.northwind-analytics.com/job/{index}",
+        )
+        for index in range(5)
+    ] + [
+        listing(
+            company="Southgate Capital",
+            application_url="https://careers.southgate-capital.com/job/1",
+        )
+    ]
+
+    discovery = discover(listings)
+
+    assert len(discovery.pages) == 2, "five postings at one employer are one company"
+
+    pages = await verify_career_pages(
+        db_session,
+        discovery,
+        fetcher=FakeCareerFetcher(
+            pages={
+                "https://careers.northwind-analytics.com/": careers_page(
+                    "Northwind Analytics"
+                ),
+                "https://careers.southgate-capital.com/": careers_page(
+                    "Southgate Capital"
+                ),
+            }
+        ),
+        now=NOW,
+    )
+
+    assert len(pages) == 2
+    assert len({page.company_name for page in pages}) == 2
+
+
+@pytest.mark.asyncio
+async def test_every_rejection_rule_still_applies_deep_in_the_pool(
+    db_session,
+) -> None:
+    """Reaching further into the pool must not relax anything.
+
+    One company per failure class the brief names, all ranked behind a run of
+    good ones so they are only reached after the walk has gone deep. Each is
+    still refused, and the single valid company at the very end is still found.
+    """
+    filler = [f"Filler {index:02d}" for index in range(10)]
+    pages_by_url: dict[str, Page] = {
+        f"https://careers.filler{index:02d}.com/": careers_page(f"Filler {index:02d}")
+        for index in range(10)
+    }
+
+    bad = {
+        "Tenant Wall": company_id_page(),
+        "Login Wall": login_page("Login Wall"),
+        "Dead Page": not_found_page(),
+        "Gone Page": gone_page(),
+        "Expired Board": dead_but_two_hundred_page(),
+        "Marketing Only": marketing_page("Marketing Only"),
+    }
+    for name, page in bad.items():
+        slug = name.casefold().replace(" ", "")
+        pages_by_url[f"https://careers.{slug}.com/"] = page
+
+    pages_by_url["https://careers.lastgoodone.com/"] = careers_page("Last Good One")
+
+    pool = _run_pool(*filler, *bad, "Last Good One")
+
+    # The wrong-employer case needs a *neutral* host to be a real test. On the
+    # employer's own domain the domain itself is the evidence and rightly wins;
+    # it is on a shared ATS board that the page has to say whose it is.
+    pool.pages.append(
+        _discovered(
+            "Contoso Freight",
+            "https://boards.greenhouse.io/unrelatedcorp/jobs/1",
+            relevance=50.0,
+        )
+    )
+    pages_by_url["https://boards.greenhouse.io/unrelatedcorp"] = careers_page(
+        "A Completely Different Employer"
+    )
+
+    result = await verify_career_pages(
+        db_session,
+        pool,
+        fetcher=FakeCareerFetcher(pages=pages_by_url),
+        now=NOW,
+    )
+
+    names = {page.company_name for page in result}
+    assert names == set(filler) | {"Last Good One"}
+    for refused in (*bad, "Contoso Freight"):
+        assert refused not in names, refused
+
+
 # --- The cache ---------------------------------------------------------------
 
 

@@ -18,10 +18,23 @@ maximum, not a target: eleven verified companies are returned as eleven.
 # Cost control
 
 Validation is the only part of this project that opens connections to
-arbitrary employers' sites, so it is bounded on every axis: a shared fetcher
-with a per-run response cache, a concurrency limit, a cached verdict per
-employer with a time-to-live, and early exit the moment the ceiling is
-reached. A company past the ceiling is never fetched at all.
+arbitrary employers' sites, so it is bounded on every axis that does not change
+the answer: a shared fetcher with a per-run response cache, a concurrency
+limit, a cached verdict per employer with a time-to-live, at most nine
+candidate URLs per company, and early exit the moment twenty have verified. A
+company past the ceiling is never fetched at all.
+
+What there is deliberately **no** limit on is how many companies may be tried.
+An earlier version capped that, and the cap silently became the result: with a
+hundred companies discovered and twenty usable ones spread through them, only
+the first sixty were opened and twelve came back. A number was deciding the
+outcome where the evidence should have. So the walk now ends on one of two
+conditions only - twenty verified, or no candidates left - and the cost of a
+poor day is paid in requests rather than in missing companies.
+
+That cost is naturally bounded anyway: the pool holds one entry per company
+discovered in this run, and the walk stops as soon as twenty verify, which on
+live data happened after forty-one companies.
 
 # One company, one card
 
@@ -56,13 +69,6 @@ logger = get_logger(__name__)
 #: connection goes to a *different* employer, so no single site sees more than
 #: its own page being requested.
 DEFAULT_CONCURRENCY = 6
-
-#: Companies validated in one run, however many were discovered. A ceiling on
-#: work, not on quality: it is comfortably above the twenty cards a run can
-#: return and the roughly half of candidates that fail, so it only bites when
-#: a search turns up an unusually large pool.
-MAX_COMPANIES_VALIDATED = 60
-
 
 def _cache_key(page: CareerPage) -> str | None:
     """The cache identity for a discovered company.
@@ -169,7 +175,10 @@ async def verify_career_pages(
     """
     moment = now or datetime.now(UTC)
     limit = discovery.candidate_ceiling if ceiling is None else ceiling
-    pool = discovery.pages[:MAX_COMPANIES_VALIDATED]
+    # The whole ranked pool, in discovery's relevance order. Trimming it here
+    # would cap the *result* rather than the work: the companies cut are
+    # exactly the ones that might have verified when the earlier ones did not.
+    pool = discovery.pages
 
     if limit <= 0 or not pool:
         return []
@@ -185,6 +194,9 @@ async def verify_career_pages(
     rejected = 0
     checked_urls = 0
     from_cache = 0
+    #: Companies opened, as opposed to answered from cache. Reported, not
+    #: capped - see the loop below for why there is no cap.
+    validated_live = 0
 
     async def resolve(
         page: CareerPage, owned: CareerPageFetcher
@@ -217,13 +229,22 @@ async def verify_career_pages(
         return settled, outcome.result, len(outcome.attempted)
 
     async def run(owned: CareerPageFetcher) -> None:
-        nonlocal rejected, checked_urls, from_cache
+        nonlocal rejected, checked_urls, from_cache, validated_live
 
         pending = list(pool)
         index = 0
+        # Two stopping conditions, and deliberately only two: twenty companies
+        # have verified, or there are no candidates left. Nothing else may end
+        # the walk, because anything else would be a number deciding the
+        # result rather than the evidence deciding it - which is exactly the
+        # defect this replaced. A candidate that fails costs a request; it must
+        # never cost one of the twenty slots, and it must never stop the search
+        # for the companies ranked behind it.
         while index < len(pending) and len(verified) < limit:
-            # A wave at a time, so the ceiling can stop the next one. Anything
-            # past it is never requested, which is the whole cost control.
+            # A wave at a time, so the ceiling can stop the next one. Once
+            # twenty have verified nothing further is requested, which is what
+            # keeps the ordinary run cheap: the pool is only walked as deep as
+            # a poor day actually requires.
             wave = pending[index : index + concurrency]
             index += len(wave)
 
@@ -244,6 +265,7 @@ async def verify_career_pages(
             if not live:
                 continue
 
+            validated_live += len(live)
             results = await asyncio.gather(
                 *(resolve(page, owned) for page in live)
             )
@@ -283,6 +305,7 @@ async def verify_career_pages(
         rejected=rejected,
         urls_checked=checked_urls,
         from_cache=from_cache,
+        validated_live=validated_live,
         ceiling=limit,
     )
 
@@ -291,6 +314,5 @@ async def verify_career_pages(
 
 __all__ = [
     "DEFAULT_CONCURRENCY",
-    "MAX_COMPANIES_VALIDATED",
     "verify_career_pages",
 ]
