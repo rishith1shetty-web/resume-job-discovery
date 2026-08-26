@@ -17,12 +17,23 @@
 
 import { useEffect, useMemo, useRef, useState } from 'react'
 
-import { decideCareerPage, listPortals, startSearchRun } from '../api/endpoints.js'
+import {
+  decideCareerPage,
+  listApplications,
+  listPortals,
+  startSearchRun,
+} from '../api/endpoints.js'
 import { ApplicationStatusCell } from '../components/ApplicationStatus.jsx'
 import { Icon } from '../components/Icon.jsx'
 import { useAsync } from '../hooks/useAsync.js'
 import { useActiveResume } from '../state/ActiveResume.jsx'
 import { useSearchSession } from '../state/SearchSession.jsx'
+import {
+  APPLICATION_PAGE_SIZE,
+  collectApplicationRecords,
+  statusMapFrom,
+  withPersistedStatuses,
+} from '../state/searchSession.js'
 import {
   Badge,
   Button,
@@ -508,8 +519,89 @@ const RUN_TONES = {
   cancelled: 'neutral',
 }
 
+/**
+ * Every Applied/Skipped decision recorded for this resume, as `jobId -> status`.
+ *
+ * Read from the database on every restore, because that is the only place the
+ * truth lives. The remembered outcome carries the status each job had when the
+ * search *ran*, which stops being true the moment the user changes one - and
+ * changing one is the entire point of the column.
+ *
+ * `loaded` is what removes the race. The status control seeds itself from its
+ * initial value when it mounts and never re-reads it, so mounting it before
+ * this resolves would show `Not applied` and then be unable to correct itself.
+ * The row therefore waits for this, and only this, before rendering that one
+ * cell - the rest of the result appears immediately.
+ */
+function usePersistedStatuses(resumeId) {
+  const [state, setState] = useState({ loaded: false, map: {} })
+
+  useEffect(() => {
+    if (!resumeId) {
+      setState({ loaded: true, map: {} })
+      return undefined
+    }
+
+    const controller = new AbortController()
+    let cancelled = false
+    setState({ loaded: false, map: {} })
+
+    async function load() {
+      let records
+      try {
+        // Paged rather than one large request: a resume accumulates
+        // applications for as long as it is used, and a job whose status was
+        // silently missed would show the exact wrong value this fixes.
+        //
+        // The walk lives in `searchSession.js` so it can be tested against the
+        // shape the endpoint actually returns. `listApplications` resolves to
+        // the unwrapped envelope data, and reading it as though it were still
+        // wrapped is precisely how the first attempt at this fix failed - it
+        // collected nothing, silently, and every row went on saying
+        // `Not applied`.
+        records = await collectApplicationRecords((page) =>
+          listApplications(
+            { resumeId, page, pageSize: APPLICATION_PAGE_SIZE },
+            controller.signal,
+          ),
+        )
+      } catch (loadError) {
+        // A failed lookup must not blank the results. The rows fall back to
+        // the statuses the search returned, which is what they showed before
+        // this existed - degraded, but never wrong in a new way.
+        //
+        // Said out loud rather than swallowed. The failure this path is most
+        // likely to meet is a changed response shape, and a silent `catch` is
+        // the reason that exact fault survived a review once already.
+        if (!cancelled) {
+          console.warn('Could not read persisted application statuses.', loadError)
+          setState({ loaded: true, map: {} })
+        }
+        return
+      }
+      if (!cancelled) setState({ loaded: true, map: statusMapFrom(records) })
+    }
+
+    load()
+    return () => {
+      cancelled = true
+      controller.abort()
+    }
+  }, [resumeId])
+
+  return state
+}
+
 function SearchOutcome({ outcome, resumeId }) {
-  const run = outcome.data ?? outcome
+  const persisted = usePersistedStatuses(resumeId)
+  // The database's answer replaces the snapshot's before anything renders, so
+  // there is no moment at which a stale status is on screen.
+  const merged = useMemo(
+    () => withPersistedStatuses(outcome, persisted.map),
+    [outcome, persisted.map],
+  )
+
+  const run = merged.data ?? merged
   const results = run.results ?? []
   const summary = run.summary ?? {}
 
@@ -585,7 +677,12 @@ function SearchOutcome({ outcome, resumeId }) {
         ) : (
           <div>
             {results.map((job) => (
-              <JobRow key={job.job_id} job={job} resumeId={resumeId} />
+              <JobRow
+                key={job.job_id}
+                job={job}
+                resumeId={resumeId}
+                statusReady={persisted.loaded}
+              />
             ))}
           </div>
         )}
@@ -673,7 +770,7 @@ function SearchNotes({ summary, warnings }) {
   )
 }
 
-function JobRow({ job, resumeId }) {
+function JobRow({ job, resumeId, statusReady = true }) {
   return (
     <article className="job-card">
       <div className="job-main">
@@ -724,11 +821,21 @@ function JobRow({ job, resumeId }) {
           )}
         </div>
 
-        <ApplicationStatusCell
-          jobId={job.job_id}
-          resumeId={resumeId}
-          initial={{ status: job.application_status }}
-        />
+        {/* Mounted only once the persisted status is known. The control seeds
+            itself from `initial` on mount and never re-reads it, so rendering
+            it early would bake in a stale `Not applied` that no later data
+            could correct - which is the bug this whole path exists to fix. */}
+        {statusReady ? (
+          <ApplicationStatusCell
+            jobId={job.job_id}
+            resumeId={resumeId}
+            initial={{ status: job.application_status }}
+          />
+        ) : (
+          <div className="status-cell" aria-busy="true">
+            <span className="xs subtle">Loading status…</span>
+          </div>
+        )}
       </div>
     </article>
   )

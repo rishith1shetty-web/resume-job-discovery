@@ -12,8 +12,12 @@
  * would make yesterday's search reappear tomorrow, which is precisely the
  * behaviour the product does not want.
  *
- * Permanent decisions are unaffected. Applied and Skipped are database-backed
- * and are read from the API every time; nothing here caches or overrides them.
+ * Permanent decisions are unaffected. Applied and Skipped are database-backed,
+ * and `withPersistedStatuses` below is what keeps that true for a *remembered*
+ * result set: the outcome held here is a snapshot taken when the search ran,
+ * so the status inside it is only correct until the user changes one. On
+ * restore the snapshot's statuses are overlaid with what the database
+ * currently says, and the database wins.
  */
 
 /** Nothing searched yet. The state a fresh session starts in. */
@@ -131,4 +135,151 @@ export function withCareerDecision(session, { officialCareerUrl, company, status
 /** Forget everything. Used when the active resume changes. */
 export function clearedSession() {
   return { ...EMPTY_SESSION, decidedCareerPages: {} }
+}
+
+
+/**
+ * `jobId -> status`, from the applications API's own records.
+ *
+ * Keyed on `job_id`, which is the identity the applications table itself uses
+ * — `applications` is unique on `(user_id, resume_id, job_id)` — so this is
+ * the same job identity the rest of the product tracks. No new identifier is
+ * invented here, and nothing is matched on title, company or URL.
+ *
+ * Records without a job id or a status are skipped rather than guessed at: a
+ * malformed row should cost that one row its overlay, not take the page down.
+ */
+export function statusMapFrom(applications) {
+  const map = {}
+  for (const record of applications ?? []) {
+    const jobId = record?.job_id
+    const status = record?.status
+    if (typeof jobId === 'string' && typeof status === 'string') {
+      map[jobId] = status
+    }
+  }
+  return map
+}
+
+/**
+ * A remembered outcome with each job's status refreshed from the database.
+ *
+ * This is the fix for a real bug: marking a job Applied, navigating to
+ * Application History and coming back showed it as Not applied again. The
+ * decision had been saved correctly — Application History proved it — but the
+ * cached outcome still carried the status captured when the search ran, and
+ * remounting the row re-seeded it from that stale snapshot.
+ *
+ * The overlay is deliberately one-directional. A job the user has never
+ * tracked has no application record, so it keeps whatever the search said,
+ * which is `not_applied`. A job that *does* have a record takes the record's
+ * status, whether that decision was made on this page or on another one.
+ *
+ * Returns the outcome unchanged when there is nothing to apply, so a restore
+ * that finds no applications does no work and creates no new objects.
+ */
+export function withPersistedStatuses(outcome, statusMap) {
+  if (!outcome || !statusMap || Object.keys(statusMap).length === 0) return outcome
+
+  const run = outcome.data ?? outcome
+  const results = run.results ?? []
+  if (results.length === 0) return outcome
+
+  let changed = false
+  const merged = results.map((job) => {
+    const persisted = statusMap[job.job_id]
+    if (!persisted || persisted === job.application_status) return job
+    changed = true
+    return { ...job, application_status: persisted }
+  })
+
+  if (!changed) return outcome
+
+  const nextRun = { ...run, results: merged }
+  // The outcome may arrive either bare or inside the API's `{data}` envelope,
+  // and it is stored in whichever shape it arrived in. Rebuild the same shape
+  // rather than normalising, so nothing downstream has to learn a new one.
+  return outcome.data ? { ...outcome, data: nextRun } : nextRun
+}
+
+
+/**
+ * How many applications one request asks for.
+ *
+ * Large enough that a resume's whole history is normally one round trip, small
+ * enough to stay a reasonable response.
+ */
+export const APPLICATION_PAGE_SIZE = 200
+
+/**
+ * A ceiling on paging, so a backend that kept reporting "there is more" could
+ * never spin here forever. At the page size above this is 20,000 applications
+ * for one resume, which is far past any real use.
+ */
+export const MAX_APPLICATION_PAGES = 20
+
+/**
+ * The records and total in one `/applications` page.
+ *
+ * `listApplications` resolves to the *unwrapped* `data` — the API client
+ * strips the `{success, data, message, errors}` envelope in exactly one place
+ * — so a page is `{items, pagination}` and the records are at `page.items`.
+ *
+ * This function exists because getting that wrong is silent. A previous
+ * attempt at this fix read `page.data.items`, unwrapping an envelope that had
+ * already been unwrapped: `items` came back `undefined`, `?? []` turned it
+ * into an empty list, the status map was empty, the overlay below found
+ * nothing to apply, and every row rendered `Not applied` — the exact bug the
+ * code was written to fix, with every test still passing because the tests
+ * only ever exercised the merge and never the shape feeding it.
+ *
+ * So a shape that is not a page is an error rather than an empty result. An
+ * empty list must mean "this resume has no applications", and nothing else.
+ */
+export function applicationPageRecords(page) {
+  if (page === null || page === undefined) return { items: [], total: 0 }
+
+  if (!Array.isArray(page?.items)) {
+    throw new TypeError(
+      'GET /applications did not return a page of records. Expected ' +
+        '`{items, pagination}`, the unwrapped envelope data. Received keys: ' +
+        `${Object.keys(page ?? {}).join(', ') || '(none)'}.`,
+    )
+  }
+
+  const total = page.pagination?.total
+  return {
+    items: page.items,
+    total: typeof total === 'number' ? total : page.items.length,
+  }
+}
+
+/**
+ * Every application record for one resume, following pagination to the end.
+ *
+ * `loadPage(pageNumber)` performs the request and resolves to whatever
+ * `listApplications` resolves to. Passing the loader in rather than calling
+ * the API here is what keeps this file free of transport and testable under
+ * `node --test`, and it means the value this walks is the real one the
+ * endpoint returns rather than a reshaped copy of it.
+ *
+ * Reads to the end deliberately. A partial read would drop the applications on
+ * the later pages, and a dropped record shows as `Not applied` — silently
+ * reintroducing the bug for exactly the resumes with the longest history.
+ */
+export async function collectApplicationRecords(
+  loadPage,
+  { maxPages = MAX_APPLICATION_PAGES } = {},
+) {
+  const records = []
+
+  for (let page = 1; page <= maxPages; page += 1) {
+    const { items, total } = applicationPageRecords(await loadPage(page))
+    records.push(...items)
+    // An empty page ends the walk whatever the total claims: without this a
+    // backend reporting a total it cannot serve would page to the ceiling.
+    if (items.length === 0 || records.length >= total) break
+  }
+
+  return records
 }
