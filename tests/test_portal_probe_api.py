@@ -160,7 +160,7 @@ async def test_seeding_does_not_re_enable_a_portal_an_operator_disabled(
 def test_only_approved_portals_are_seeded() -> None:
     # Jobright in Phase 4, Hiring Cafe in Phase 9A, SimplyHired in Phase 9C,
     # Greenhouse in Phase 9D, Scale.jobs in Phase 9E, Dayforce in Phase 9F,
-    # Google Careers in Phase 9G, Lever in Phase 9H. Portals are added one at a
+    # Google Careers in Phase 9G, Lever in Phase 9H, Ashby in Phase 9I. Portals are added one at a
     # time; an unexpected slug means that gate was skipped. LinkedIn and ZipRecruiter
     # were removed in D-005 and must not reappear here.
     #
@@ -178,6 +178,7 @@ def test_only_approved_portals_are_seeded() -> None:
         "dayforce",
         "google_careers",
         "lever",
+        "ashby",
         "career_pages",
     }
 

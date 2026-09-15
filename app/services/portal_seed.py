@@ -207,6 +207,36 @@ PORTAL_SEEDS: tuple[PortalSeed, ...] = (
         ),
     ),
     PortalSeed(
+        slug="ashby",
+        website_url="https://jobs.ashbyhq.com/",
+        display_order=24,
+        is_enabled=True,
+        notes=(
+            "Collects from Ashby's public, server-rendered board pages "
+            "(/<board> and /<board>/<job>), reading the page's own "
+            "window.__appData island and each job's schema.org JobPosting. "
+            "jobs.ashbyhq.com/robots.txt allows those paths and disallows "
+            "/api/, /b/ and /meeting/, none of which is touched. The "
+            "one-request posting API on api.ashbyhq.com is deliberately NOT "
+            "used: that host answers 401 for robots.txt, and this project "
+            "treats a robots policy it cannot read as a refusal, so the "
+            "slower permitted path is taken rather than opening an exception "
+            "for one portal. Ashby is an ATS, not a job board: it publishes "
+            "NO cross-company search and no board directory, so coverage is "
+            "exactly the employers listed in this portal's boards option and "
+            "no wider. Employer names are read from the board page itself, so "
+            "a board is configured by slug alone and cannot carry a stale "
+            "company name. A slug that does not exist returns HTTP 200 with "
+            "an empty shell, so a board counts as real only when the page "
+            "carries an organisation and a posting list. Titles are filtered "
+            "locally against the same-role variations and only matching jobs "
+            "have their pages opened, so a board of a hundred postings "
+            "normally costs one request. posted_at comes from datePosted, "
+            "the original publication date - Ashby publishes no update or "
+            "refresh timestamp."
+        ),
+    ),
+    PortalSeed(
         slug="career_pages",
         website_url="https://www.rising-path.example/careers",
         display_order=25,

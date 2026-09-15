@@ -37,7 +37,7 @@ def test_only_approved_adapters_are_registered() -> None:
     # The rollout order in docs/DECISIONS.md D-001: Jobright in Phase 4,
     # Hiring Cafe in Phase 9A, SimplyHired in Phase 9C, Greenhouse in Phase 9D,
     # Scale.jobs in Phase 9E, Dayforce in Phase 9F, Google Careers in Phase 9G
-    # and Lever in Phase 9H. A slug appearing here that is not on this list
+    # Lever in Phase 9H and Ashby in Phase 9I. A slug appearing here that is not on this list
     # means someone skipped the one-at-a-time rule. LinkedIn and ZipRecruiter
     # were removed in D-005.
     assert set(REGISTERED_SLUGS) == {
@@ -49,6 +49,7 @@ def test_only_approved_adapters_are_registered() -> None:
         "dayforce",
         "google_careers",
         "lever",
+        "ashby",
     }
 
 

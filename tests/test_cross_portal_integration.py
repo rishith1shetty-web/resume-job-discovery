@@ -38,6 +38,7 @@ from app.models.profile import ResumeSkill
 from app.portals.adapters.hiringcafe import HiringCafePortal
 from app.portals.adapters.greenhouse import GreenhousePortal
 from app.portals.adapters.jobright import JobrightPortal
+from app.portals.adapters.ashby import AshbyPortal
 from app.portals.adapters.lever import LeverPortal
 from app.portals.adapters.scalejobs import PAGE_SIZE as SCALEJOBS_PAGE_SIZE
 from app.portals.adapters.scalejobs import ScaleJobsPortal
@@ -100,6 +101,50 @@ def _greenhouse_body(records: list[dict]) -> str:
     return json.dumps({"jobs": records, "meta": {"total": len(records)}})
 
 
+def _ashby_page(records: list[dict], url: str) -> str:
+    """The board page, or one job page, depending on what was requested.
+
+    Ashby serves both as rendered HTML carrying a ``window.__appData`` island,
+    and job pages additionally carry a ``schema.org`` JobPosting block. Built
+    here rather than replayed so the pipeline tests can control dates and
+    countries; the parsing of Ashby's real markup is pinned in
+    ``tests/test_ashby_adapter.py`` against a live capture.
+    """
+    tail = url.split("jobs.ashbyhq.com/", 1)[-1].strip("/").split("/")
+
+    if len(tail) == 1:
+        postings = [
+            {k: v for k, v in record.items() if k not in ("ld", "org")}
+            for record in records
+        ]
+        return (
+            "<!DOCTYPE html><html><body><script>window.__appData = "
+            + json.dumps(
+                {
+                    "organization": {"name": "Fixture Co"},
+                    "jobBoard": {"jobPostings": postings, "teams": []},
+                }
+            )
+            + ";</script></body></html>"
+        )
+
+    record = next((r for r in records if r["id"] == tail[1]), None)
+    if record is None:
+        raise AssertionError(f"job page requested for unknown posting: {url}")
+
+    posting = {k: v for k, v in record.items() if k not in ("ld", "org")}
+    return (
+        "<!DOCTYPE html><html><head>"
+        '<script type="application/ld+json">'
+        + json.dumps(record["ld"])
+        + "</script></head><body><script>window.__appData = "
+        + json.dumps(
+            {"organization": {"name": record.get("org", "Fixture Co")}, "posting": posting}
+        )
+        + ";</script></body></html>"
+    )
+
+
 def _lever_body(records: list[dict]) -> str:
     """Lever answers with a bare JSON array of postings."""
     return json.dumps(records)
@@ -148,6 +193,13 @@ class OfflineGreenhouse(GreenhousePortal):
     failure: Exception | None = None
 
 
+class OfflineAshby(AshbyPortal):
+    """The real adapter, served from canned board and job pages."""
+
+    records: list[dict] = []
+    failure: Exception | None = None
+
+
 class OfflineLever(LeverPortal):
     """The real adapter, served from a canned postings feed."""
 
@@ -172,6 +224,11 @@ _OFFLINE = {
     "lever": (OfflineLever, _lever_body),
 }
 
+#: Ashby is the one adapter that requests two *kinds* of page - a board page
+#: and then a job page per title match - so its stub needs the URL, which the
+#: shared builder signature above does not carry.
+_OFFLINE_PAGES = {"ashby": OfflineAshby}
+
 #: Scale.jobs GETs JSON from a search endpoint, a third verb again.
 _OFFLINE_JSON = {"scalejobs": OfflineScaleJobs}
 
@@ -185,6 +242,12 @@ def offline_http(monkeypatch: pytest.MonkeyPatch) -> None:
     """
 
     async def fake_get_text(self, url, **kwargs):  # noqa: ANN001
+        paged = _OFFLINE_PAGES.get(self.portal)
+        if paged is not None:
+            if paged.failure is not None:
+                raise paged.failure
+            return _ashby_page(paged.records, url)
+
         entry = _OFFLINE.get(self.portal)
         if entry is None:
             raise AssertionError(f"unexpected request from {self.portal}: {url}")
@@ -240,6 +303,9 @@ def offline_http(monkeypatch: pytest.MonkeyPatch) -> None:
         adapter_class.records = []
         adapter_class.failure = None
     for adapter_class in _OFFLINE_JSON.values():
+        adapter_class.records = []
+        adapter_class.failure = None
+    for adapter_class in _OFFLINE_PAGES.values():
         adapter_class.records = []
         adapter_class.failure = None
 
@@ -344,6 +410,74 @@ def lever_records(
             }
         )
     return records
+
+
+def _as_paragraphs(text: str) -> str:
+    """Wrap a plain description in paragraph tags, as Ashby serves it."""
+    return "</p><p>".join(text.split(chr(10)))
+
+
+#: Ashby postings in the shape the board and job pages publish.
+#:
+#: Each record doubles as a board-page listing and, through its ``ld`` key, the
+#: ``schema.org`` block its job page carries. Dates and countries are set
+#: relative to the run's frozen clock so the freshness and United States gates
+#: are genuinely exercised.
+def ashby_records(
+    count: int = 3, *, country: str = "USA", now: datetime = NOW
+) -> list[dict]:
+    records = []
+    for index in range(count):
+        job_id = f"a000000{index}-0000-4000-8000-00000000000{index}"
+        posted = (now - timedelta(days=index + 1)).date().isoformat()
+        records.append(
+            {
+                "id": job_id,
+                "title": "Financial Analyst",
+                "locationName": "New York, NY",
+                "secondaryLocations": [],
+                "workplaceType": "Hybrid",
+                "employmentType": "FullTime",
+                "compensationTierSummary": None,
+                "org": "Fixture Co",
+                "ld": {
+                    "@context": "https://schema.org",
+                    "@type": "JobPosting",
+                    "title": "Financial Analyst",
+                    "datePosted": posted,
+                    "employmentType": "FULL_TIME",
+                    "hiringOrganization": {"@type": "Organization", "name": "Fixture Co"},
+                    "jobLocation": {
+                        "@type": "Place",
+                        "address": {
+                            "@type": "PostalAddress",
+                            "addressLocality": "New York City",
+                            "addressRegion": "NY",
+                            "addressCountry": country,
+                        },
+                    },
+                    "description": (
+                        "<h2>About the role</h2><p>"
+                        + _as_paragraphs(FINANCE_DESCRIPTION)
+                        + "</p><h2>Minimum Qualifications</h2>"
+                        "<ul><li>Excel and SQL</li><li>Forecasting and budgeting</li></ul>"
+                    ),
+                },
+            }
+        )
+    return records
+
+
+def build_ashby(
+    records: list[dict] | None = None, *, failure: Exception | None = None
+) -> OfflineAshby:
+    # One board keeps the fixture honest about request counts.
+    adapter = OfflineAshby(
+        options={"rate_limit_per_minute": 0, "boards": ["fixtureco"]}
+    )
+    type(adapter).records = records if records is not None else ashby_records()
+    type(adapter).failure = failure
+    return adapter
 
 
 def build_lever(
@@ -509,6 +643,233 @@ async def test_a_hiring_cafe_only_search_returns_its_jobs(
     assert prepared.legs[0].raw_count > 0
     assert all(item.final_score >= 70.0 for item in outcome.results)
     assert all(carried_by(item, "hiringcafe") for item in outcome.results)
+
+
+async def test_an_ashby_only_search_returns_its_jobs(
+    db_session: AsyncSession,
+) -> None:
+    """The real adapter, through the real pipeline, end to end."""
+    _, resume = await analysed_resume(db_session)
+
+    prepared, outcome = await run_search(
+        db_session, resume=resume, specs=[("ashby", build_ashby())]
+    )
+
+    assert outcome.status is SearchRunStatus.COMPLETED
+    assert prepared.legs[0].raw_count == 3
+    assert prepared.legs[0].status is PortalRunStatus.COMPLETED
+    assert outcome.returned_count > 0
+    assert all(item.final_score >= 70.0 for item in outcome.results)
+    assert all(carried_by(item, "ashby") for item in outcome.results)
+    assert_ranked_newest_first(outcome.results)
+
+
+async def test_ashby_results_carry_the_employer_from_the_page(
+    db_session: AsyncSession,
+) -> None:
+    """The board page publishes the organisation; nothing is configured."""
+    _, resume = await analysed_resume(db_session)
+
+    _, outcome = await run_search(
+        db_session, resume=resume, specs=[("ashby", build_ashby())]
+    )
+
+    assert outcome.results
+    assert {item.company for item in outcome.results} == {"Fixture Co"}
+
+
+async def test_ashby_results_link_to_the_employers_own_ats(
+    db_session: AsyncSession,
+) -> None:
+    _, resume = await analysed_resume(db_session)
+
+    _, outcome = await run_search(
+        db_session, resume=resume, specs=[("ashby", build_ashby())]
+    )
+
+    assert outcome.results
+    for item in outcome.results:
+        assert item.preferred_application_url.startswith(
+            "https://jobs.ashbyhq.com/fixtureco/"
+        )
+        assert item.preferred_url_kind == JobUrlKind.ATS.value
+
+
+async def test_an_ashby_posting_outside_the_window_is_excluded(
+    db_session: AsyncSession,
+) -> None:
+    """The 30-day gate is applied to datePosted, unchanged."""
+    _, resume = await analysed_resume(db_session)
+    stale = ashby_records(1)
+    stale[0]["ld"]["datePosted"] = (NOW - timedelta(days=31)).date().isoformat()
+
+    _, outcome = await run_search(
+        db_session, resume=resume, specs=[("ashby", build_ashby(stale))]
+    )
+
+    assert outcome.returned_count == 0
+
+
+async def test_an_ashby_posting_with_no_date_is_excluded(
+    db_session: AsyncSession,
+) -> None:
+    """An unverifiable date is never treated as recent."""
+    _, resume = await analysed_resume(db_session)
+    undated = ashby_records(1)
+    del undated[0]["ld"]["datePosted"]
+
+    prepared, outcome = await run_search(
+        db_session, resume=resume, specs=[("ashby", build_ashby(undated))]
+    )
+
+    # Dropped by the adapter rather than collected and rejected later: a
+    # listing with no date could not pass the gate under any circumstances.
+    assert prepared.legs[0].raw_count == 0
+    assert outcome.returned_count == 0
+
+
+async def test_a_non_us_ashby_posting_is_excluded(
+    db_session: AsyncSession,
+) -> None:
+    _, resume = await analysed_resume(db_session)
+    abroad = ashby_records(2, country="Ireland")
+    for record in abroad:
+        record["locationName"] = "Dublin, Ireland"
+        record["ld"]["jobLocation"]["address"] = {
+            "@type": "PostalAddress",
+            "addressLocality": "Dublin",
+            "addressCountry": "Ireland",
+        }
+
+    _, outcome = await run_search(
+        db_session, resume=resume, specs=[("ashby", build_ashby(abroad))]
+    )
+
+    assert outcome.returned_count == 0
+
+
+async def test_both_united_states_spellings_are_accepted(
+    db_session: AsyncSession,
+) -> None:
+    """Live data carries both spellings; a test against one hides the other."""
+    _, resume = await analysed_resume(db_session)
+    mixed = ashby_records(2)
+    # Distinct vacancies, or canonical grouping would correctly merge two
+    # postings sharing an employer, a title and a place into one job - and the
+    # test would be measuring deduplication rather than the country spelling.
+    mixed[0]["ld"]["jobLocation"]["address"]["addressCountry"] = "USA"
+    mixed[1]["ld"]["jobLocation"]["address"]["addressCountry"] = "United States"
+    mixed[1]["title"] = "Senior Financial Analyst"
+    mixed[1]["ld"]["title"] = "Senior Financial Analyst"
+    mixed[1]["ld"]["jobLocation"]["address"]["addressLocality"] = "Chicago"
+    mixed[1]["ld"]["jobLocation"]["address"]["addressRegion"] = "IL"
+    mixed[1]["locationName"] = "Chicago, IL"
+
+    _, outcome = await run_search(
+        db_session, resume=resume, specs=[("ashby", build_ashby(mixed))]
+    )
+
+    assert outcome.returned_count == 2
+
+
+async def test_an_ashby_failure_is_isolated_to_its_own_leg(
+    db_session: AsyncSession,
+) -> None:
+    """Greenhouse still returns its jobs while Ashby is refused."""
+    _, resume = await analysed_resume(db_session)
+
+    prepared, outcome = await run_search(
+        db_session,
+        resume=resume,
+        specs=[
+            ("greenhouse", build_greenhouse()),
+            (
+                "ashby",
+                build_ashby(failure=PortalBlockedError("blocked", portal="ashby")),
+            ),
+        ],
+    )
+
+    slug_of = {portal.id: portal.slug for portal in prepared.portals}
+    ashby_leg = next(
+        leg for leg in prepared.legs if slug_of[leg.portal_id].endswith("ashby")
+    )
+
+    assert outcome.status is SearchRunStatus.COMPLETED_WITH_ERRORS
+    assert ashby_leg.status is PortalRunStatus.FAILED
+    assert not any(carried_by(item, "ashby") for item in outcome.results)
+    assert all(carried_by(item, "greenhouse") for item in outcome.results)
+
+
+async def test_an_ashby_only_run_that_fails_is_a_failed_run(
+    db_session: AsyncSession,
+) -> None:
+    _, resume = await analysed_resume(db_session)
+
+    prepared, outcome = await run_search(
+        db_session,
+        resume=resume,
+        specs=[
+            (
+                "ashby",
+                build_ashby(failure=PortalBlockedError("blocked", portal="ashby")),
+            )
+        ],
+    )
+
+    assert outcome.status is SearchRunStatus.FAILED
+    assert prepared.legs[0].status is PortalRunStatus.FAILED
+    assert outcome.returned_count == 0
+
+
+# --- Regression guard: Ashby must not disturb the portals already here ------
+
+
+async def test_selecting_greenhouse_alone_makes_no_ashby_request(
+    db_session: AsyncSession,
+) -> None:
+    """Adding a portal must change nothing for a search that does not select it.
+
+    Ashby is registered process-wide by importing ``app.portals.adapters``, so
+    this runs with it registered. ``offline_http`` raises on a request from any
+    portal it was not given, so an Ashby request would fail the run outright -
+    which is the part a result assertion alone would miss.
+    """
+    import app.portals.adapters  # noqa: F401
+    from app.portals.registry import registry
+
+    assert "ashby" in registry.slugs, "guard is vacuous unless Ashby is registered"
+
+    untouched = OfflineAshby.records
+    _, resume = await analysed_resume(db_session)
+
+    prepared, outcome = await run_search(
+        db_session, resume=resume, specs=[("greenhouse", build_greenhouse())]
+    )
+
+    assert outcome.status is SearchRunStatus.COMPLETED
+    assert len(prepared.legs) == 1
+    assert not any(carried_by(item, "ashby") for item in outcome.results)
+    assert all(carried_by(item, "greenhouse") for item in outcome.results)
+    assert OfflineAshby.records == untouched, "Ashby state must be untouched"
+
+
+async def test_ashby_and_an_existing_portal_merge_without_duplicates(
+    db_session: AsyncSession,
+) -> None:
+    _, resume = await analysed_resume(db_session)
+
+    prepared, outcome = await run_search(
+        db_session,
+        resume=resume,
+        specs=[("greenhouse", build_greenhouse()), ("ashby", build_ashby())],
+        limit=20,
+    )
+
+    assert outcome.status is SearchRunStatus.COMPLETED
+    assert len(prepared.legs) == 2
+    keys = [item.job_id for item in outcome.results]
+    assert len(keys) == len(set(keys)), "a canonical job must appear once"
 
 
 async def test_a_lever_only_search_returns_its_jobs(
