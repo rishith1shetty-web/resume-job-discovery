@@ -35,9 +35,10 @@ class Portal(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     # planned integration before its adapter is written.
     adapter_key: Mapped[str | None] = mapped_column(String(64))
 
-    # CLAUDE.md section 4: at most 8 enabled at one time. Enforced in the
-    # service layer, which can return a clear API error; a DB constraint here
-    # would surface as an opaque integrity failure.
+    # CLAUDE.md section 4: at most `MAX_ENABLED_PORTALS` enabled at one time.
+    # Enforced at the API boundary - `SearchRunCreate.selected_portal_ids`
+    # caps how many may be selected for a run - rather than by a constraint
+    # here, which would surface as an opaque integrity failure.
     is_enabled: Mapped[bool] = mapped_column(
         Boolean, default=False, nullable=False, index=True
     )

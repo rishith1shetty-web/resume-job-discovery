@@ -368,7 +368,7 @@ leaf.
    error and lets the run finish as `completed_with_errors`.
 3. **The 70% threshold is locked.** It can be raised, never lowered to fill a
    quota. Enforced by a validator in `app/core/config.py`.
-4. **At most 8 portals enabled** at any time.
+4. **At most 16 portals enabled** at any time.
 5. **No auto-apply concepts** anywhere — not in models, schemas or the OpenAPI
    document. Tests assert this.
 

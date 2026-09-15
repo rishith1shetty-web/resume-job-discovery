@@ -266,7 +266,7 @@ them** — it is what keeps the UI in step with locked backend rules.
       "default_result_limit": 20,
       "min_match_score": 70,
       "min_match_score_locked": true,
-      "max_enabled_portals": 8,
+      "max_enabled_portals": 16,
       "freshness_windows": [
         { "value": "last_24h", "label": "Last 24 hours" },
         { "value": "last_3d", "label": "Last 3 days" },
@@ -427,7 +427,7 @@ them, so the user can see what is coming.
 
 - `requested_limit` accepts **only** 20, 50 or 100. Anything else is a 422 on
   `body.requested_limit`.
-- 1–8 portals, no repeats.
+- 1–16 portals, no repeats.
 - `min_score` is **not** an input. It is always 70 and is returned read-only.
 - 422 when the resume has not been analysed or has no target role — send the
   user to the profile screen rather than showing a generic error.
@@ -507,7 +507,7 @@ The frontend must not work around these; they are validated server-side.
 1. **The 70% match threshold is locked.** Render it read-only. The backend
    rejects any attempt to lower it.
 2. **Result limits are exactly 20, 50, 100.** Any other value is a 422.
-3. **At most 8 portals enabled.** Selecting more is a 422.
+3. **At most 16 portals enabled.** Selecting more is a 422.
 4. **No auto-apply UI.** No Easy Apply badge, apply-priority column, form
    progress, auto-submit result or "Apply" button that posts to this API. The
    only apply action is opening the job URL in a new tab.

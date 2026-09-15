@@ -21,13 +21,19 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import Settings
-from app.core.constants import ApplicationStatus, Seniority, SkillKind
+from app.core.constants import (
+    MAX_ENABLED_PORTALS,
+    ApplicationStatus,
+    Seniority,
+    SkillKind,
+)
 from app.models.application import Application
 from app.models.profile import ResumeSkill
 from app.models.search import SearchRun
 from app.models.user import User
 from app.portals.exceptions import PortalBlockedError
 from app.portals.registry import registry
+from app.search.freshness import is_eligible_age
 from app.services.user_service import get_or_create_default_user
 from tests.conftest import TEST_RECORD_MARKER
 from tests.factories import make_portal, make_profile, make_resume, make_user
@@ -39,7 +45,26 @@ from tests.fake_portals import (
 )
 
 BASE = "/api/v1/search-runs"
-NOW = datetime(2026, 8, 4, 12, 0, tzinfo=UTC)
+
+#: The clock these fixtures are anchored to.
+#:
+#: Real time, deliberately, and this is the one module in the search tests that
+#: has no choice. Every test here drives the run through ``POST /search-runs``
+#: over HTTP, and the route takes no clock: ``execute_search_run`` falls back to
+#: ``datetime.now(UTC)``, so the 30-day eligibility gate is evaluated against
+#: the wall clock no matter what the fixtures say.
+#:
+#: ``tests/test_search_orchestration.py`` freezes an equivalent constant and is
+#: right to - it calls ``execute_search_run(now=NOW)`` directly, so fixture time
+#: and gate time are the same frozen instant. Copying that literal into a module
+#: that cannot inject it is what broke these tests: the fixtures stayed pinned to
+#: 2026-08-04 while the gate moved on, and on 2026-09-03 every listing here
+#: silently aged past ``MAX_ELIGIBLE_AGE`` and the runs started returning
+#: nothing.
+#:
+#: Read once at import so a single run cannot drift mid-suite, and never a
+#: calendar literal, because a literal only postpones the same failure.
+NOW = datetime.now(UTC)
 
 
 async def _acting_user(session: AsyncSession, settings: Settings) -> User:
@@ -82,6 +107,22 @@ async def _searchable_portal(
 
 
 # --- The Find Matches flow --------------------------------------------------
+
+
+def test_the_fixture_clock_is_inside_the_eligibility_window() -> None:
+    """These fixtures must be old enough to be real and new enough to qualify.
+
+    Asserted against production's own gate rather than against a number, so it
+    cannot drift from the rule it protects. It fails the moment someone pins
+    ``NOW`` back to a calendar date, which is the mistake that made six tests in
+    this module return zero results - and which they reported only as a bare
+    ``assert 0 == 6``, naming neither dates nor freshness.
+    """
+    assert is_eligible_age(NOW, datetime.now(UTC)), (
+        "Fixture jobs are outside the 30-day window, so every search in this "
+        "module will qualify nothing. NOW must track the wall clock: this "
+        "module posts over HTTP and cannot inject a clock into the gate."
+    )
 
 
 async def test_a_search_returns_qualified_jobs(
@@ -450,22 +491,61 @@ async def test_a_repeated_portal_is_rejected(
     assert response.status_code == 422
 
 
-async def test_more_than_eight_portals_is_rejected(
-    api_client: AsyncClient, db_session: AsyncSession, settings: Settings
-) -> None:
-    # CLAUDE.md section 4: at most 8 portals at one time.
-    resume_id = await _ready_resume(db_session, settings)
-
-    response = await api_client.post(
+async def _post_portal_ids(
+    api_client: AsyncClient, resume_id: uuid.UUID, count: int
+) -> AsyncClient:
+    return await api_client.post(
         BASE,
         json={
             "resume_id": str(resume_id),
-            "selected_portal_ids": [str(uuid.uuid4()) for _ in range(9)],
+            "selected_portal_ids": [str(uuid.uuid4()) for _ in range(count)],
             "requested_limit": 100,
         },
     )
 
+
+async def test_more_than_the_ceiling_of_portals_is_rejected(
+    api_client: AsyncClient, db_session: AsyncSession, settings: Settings
+) -> None:
+    """One past the ceiling is refused for being too many, and says so."""
+    resume_id = await _ready_resume(db_session, settings)
+
+    response = await _post_portal_ids(
+        api_client, resume_id, MAX_ENABLED_PORTALS + 1
+    )
+
     assert response.status_code == 422
+    error = response.json()["errors"][0]
+    assert error["code"] == "too_long"
+    assert error["field"] == "body.selected_portal_ids"
+    assert str(MAX_ENABLED_PORTALS) in error["message"]
+
+
+@pytest.mark.parametrize("count", [1, 8, 9, MAX_ENABLED_PORTALS])
+async def test_up_to_the_ceiling_passes_the_count_check(
+    api_client: AsyncClient,
+    db_session: AsyncSession,
+    settings: Settings,
+    count: int,
+) -> None:
+    """Counts at or below the ceiling are never refused *for their length*.
+
+    The ids are random, so these still fail - as `portal_not_found`, which is
+    the point. Asserting on the code rather than the status is what makes this
+    a real boundary test: a plain `== 422` would pass just as happily if the
+    length check had rejected them, which is exactly the false positive that
+    raising a maximum invites.
+
+    8 is the previous ceiling and must keep working; 9 is the count that used
+    to be refused and no longer is.
+    """
+    resume_id = await _ready_resume(db_session, settings)
+
+    response = await _post_portal_ids(api_client, resume_id, count)
+
+    codes = {error["code"] for error in response.json()["errors"]}
+    assert "too_long" not in codes, f"{count} portals was refused for length"
+    assert codes == {"portal_not_found"}
 
 
 async def test_an_unknown_portal_is_rejected(

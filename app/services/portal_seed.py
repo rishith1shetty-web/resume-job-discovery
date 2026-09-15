@@ -178,6 +178,35 @@ PORTAL_SEEDS: tuple[PortalSeed, ...] = (
         ),
     ),
     PortalSeed(
+        slug="lever",
+        website_url="https://api.lever.co/v0/postings/",
+        display_order=23,
+        is_enabled=True,
+        notes=(
+            "Collects from Lever's public, no-auth postings feed "
+            "(/v0/postings/<board>?mode=json). api.lever.co's robots.txt "
+            "allows everything with Crawl-delay: 1; the authenticated "
+            "/v1/postings API answers 401 and is never touched. Lever is an "
+            "ATS, not a job board: it publishes NO cross-company search - "
+            "there is no board index, sitemap or directory to enumerate - so "
+            "coverage is exactly the employers listed in this portal's boards "
+            "option and no wider. Add or remove employers there without a "
+            "deployment; every default board was confirmed live and its "
+            "employer name read from that board's own schema.org "
+            "hiringOrganization, because the feed itself carries no company "
+            "name and a slug must never be turned into one. The feed's "
+            "?query=, ?search= and ?workplaceType= parameters are silently "
+            "ignored - they return the whole board - so none is sent, and "
+            "title filtering happens locally against the same-role "
+            "variations. One request returns a board in full, so there is no "
+            "paging. Each posting carries the employer's full text already "
+            "split into named sections, an ISO country code, an explicit "
+            "remote/hybrid/onsite value, and createdAt - the only timestamp "
+            "in the feed, verified against Lever's own schema.org datePosted "
+            "as the original publication date and never a refresh."
+        ),
+    ),
+    PortalSeed(
         slug="career_pages",
         website_url="https://www.rising-path.example/careers",
         display_order=25,

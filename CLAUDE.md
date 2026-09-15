@@ -53,7 +53,7 @@ Do not suggest or search unrelated careers merely because they share keywords. F
 The user may review/correct the detected domain and target role before searching, but the product should not present a broad “suggested roles” workflow.
 
 ## 4. Portal Model
-Support at most 8 enabled portals at one time. The final portal list is not fixed; portals may be added, removed, enabled, or disabled later. Currently discussed possibilities include Jobright, HiringCafe, LinkedIn, Greenhouse, Glassdoor, Scale.jobs, ZipRecruiter, Insight Global, Robert Half, Remote Hunter, Qureos, and SimplyHired. Do not hardcode this list into the search engine.
+Support at most 16 enabled portals at one time. The final portal list is not fixed; portals may be added, removed, enabled, or disabled later. Currently discussed possibilities include Jobright, HiringCafe, LinkedIn, Greenhouse, Glassdoor, Scale.jobs, ZipRecruiter, Insight Global, Robert Half, Remote Hunter, Qureos, and SimplyHired. Do not hardcode this list into the search engine.
 
 Required design:
 - `BasePortal` interface

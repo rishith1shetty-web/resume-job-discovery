@@ -10,7 +10,7 @@ from pydantic import Field, PostgresDsn, field_validator, model_validator
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 from app.core import paths
-from app.core.constants import Environment, LogFormat
+from app.core.constants import MAX_ENABLED_PORTALS, Environment, LogFormat
 
 PROJECT_ROOT = paths.PROJECT_ROOT
 
@@ -107,7 +107,11 @@ class Settings(BaseSettings):
     # CLAUDE.md section 18: the threshold is locked and must never be lowered
     # to fill a quota. It is configurable only so it can be raised.
     min_match_score: int = Field(default=70, ge=70, le=100)
-    max_enabled_portals: int = Field(default=8, ge=1, le=8)
+    # CLAUDE.md section 4. The ceiling itself lives in `app.core.constants`
+    # so this and the request schema cannot drift apart.
+    max_enabled_portals: int = Field(
+        default=MAX_ENABLED_PORTALS, ge=1, le=MAX_ENABLED_PORTALS
+    )
 
     @field_validator("cors_allow_origins", mode="before")
     @classmethod

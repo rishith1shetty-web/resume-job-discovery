@@ -328,6 +328,21 @@ RESULT_LIMIT_OPTIONS: tuple[int, ...] = (20, 50, 100)
 # the `search_runs.min_score` CHECK constraint enforce.
 MIN_MATCH_SCORE_FLOOR: int = 70
 
+# How many portals may be enabled, and therefore selected for one search run
+# (CLAUDE.md section 4).
+#
+# Defined here rather than inline because it is one rule with two enforcement
+# points that must not drift: `Settings.max_enabled_portals`, which bounds the
+# configured value and is what `GET /config` reports, and the `max_length` on
+# `SearchRunCreate.selected_portal_ids`, which is what actually returns the
+# 422. They were separate literals and had to be changed in step; now there is
+# one number to change.
+#
+# A ceiling, not a target. Raising it enables nothing: which portals are on is
+# `portals.is_enabled` in the database, and a portal is only selectable once an
+# adapter is registered for it as well.
+MAX_ENABLED_PORTALS: int = 16
+
 # Scores are percentages on a 0-100 scale, matching the 70% threshold.
 SCORE_MIN: float = 0.0
 SCORE_MAX: float = 100.0

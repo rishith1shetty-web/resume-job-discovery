@@ -60,12 +60,12 @@ async def test_business_rule_error_carries_field_path(app: FastAPI) -> None:
     @app.get("/api/v1/_test/too-many-portals")
     async def _too_many() -> None:
         raise UnprocessableError(
-            message="At most 8 portals may be enabled.",
+            message="At most 16 portals may be enabled.",
             details=[
                 ErrorDetail(
                     code="max_enabled_portals_exceeded",
                     field="body.selected_portal_ids",
-                    message="Select 8 portals or fewer.",
+                    message="Select 16 portals or fewer.",
                 )
             ],
         )

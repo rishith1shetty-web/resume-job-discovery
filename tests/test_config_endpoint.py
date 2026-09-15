@@ -8,6 +8,8 @@ from __future__ import annotations
 
 from httpx import AsyncClient
 
+from app.core.constants import MAX_ENABLED_PORTALS
+
 
 async def test_config_returns_envelope(client: AsyncClient) -> None:
     response = await client.get("/api/v1/config")
@@ -33,10 +35,12 @@ async def test_match_threshold_is_70_and_locked(client: AsyncClient) -> None:
     assert search["min_match_score_locked"] is True
 
 
-async def test_at_most_eight_portals(client: AsyncClient) -> None:
+async def test_the_portal_ceiling_is_reported(client: AsyncClient) -> None:
     search = (await client.get("/api/v1/config")).json()["data"]["search"]
 
-    assert search["max_enabled_portals"] == 8
+    # What the dashboard renders its "select at most N boards" rule from.
+    assert search["max_enabled_portals"] == MAX_ENABLED_PORTALS
+    assert search["max_enabled_portals"] == 16
 
 
 async def test_freshness_windows_are_ordered_newest_first(client: AsyncClient) -> None:

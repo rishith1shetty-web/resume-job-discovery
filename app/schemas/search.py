@@ -19,6 +19,7 @@ from typing import Annotated, Any, Literal
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from app.core.constants import (
+    MAX_ENABLED_PORTALS,
     MIN_MATCH_SCORE_FLOOR,
     ApplicationStatus,
     FreshnessWindow,
@@ -51,12 +52,14 @@ class SearchRunCreate(BaseModel):
     )
 
     resume_id: uuid.UUID
-    # At least one, at most the 8-portal ceiling from CLAUDE.md section 4.
+    # At least one, at most the portal ceiling from CLAUDE.md section 4. This
+    # `max_length` is what actually produces the 422; it reads the shared
+    # constant so raising the ceiling is one edit, not two.
     selected_portal_ids: Annotated[
         list[uuid.UUID],
         Field(
             min_length=1,
-            max_length=8,
+            max_length=MAX_ENABLED_PORTALS,
             description="Portals to search. Every one of them is searched.",
         ),
     ]

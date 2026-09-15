@@ -54,9 +54,9 @@ def empty_registry() -> PortalRegistry:
 def test_the_global_registry_holds_only_the_approved_adapters() -> None:
     # Phase 4 registered Jobright, in the rollout order recorded in
     # docs/DECISIONS.md (D-001); Phase 9A added Hiring Cafe, Phase 9C
-    # SimplyHired, Phase 9D Greenhouse, Phase 9E Scale.jobs, Phase 9F Dayforce
-    # and Phase 9G Google Careers. Portals are added one at a time, so an
-    # unexpected slug here means that gate was skipped. LinkedIn and
+    # SimplyHired, Phase 9D Greenhouse, Phase 9E Scale.jobs, Phase 9F Dayforce,
+    # Phase 9G Google Careers and Phase 9H Lever. Portals are added one at a
+    # time, so an unexpected slug here means that gate was skipped. LinkedIn and
     # ZipRecruiter were removed in D-005 and must not reappear.
     import app.portals.adapters  # noqa: F401  - registers the adapters
 
@@ -68,6 +68,7 @@ def test_the_global_registry_holds_only_the_approved_adapters() -> None:
         "scalejobs",
         "dayforce",
         "google_careers",
+        "lever",
     }
 
 

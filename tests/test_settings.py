@@ -6,7 +6,7 @@ import pytest
 from pydantic import ValidationError
 
 from app.core.config import Settings
-from app.core.constants import Environment
+from app.core.constants import MAX_ENABLED_PORTALS, Environment
 
 
 def _settings(**overrides: object) -> Settings:
@@ -70,9 +70,36 @@ def test_match_threshold_cannot_be_lowered_below_70() -> None:
     assert _settings(min_match_score=85).min_match_score == 85
 
 
-def test_enabled_portal_cap_cannot_exceed_eight() -> None:
+def test_enabled_portal_cap_cannot_exceed_the_ceiling() -> None:
+    # The ceiling is one constant (app.core.constants.MAX_ENABLED_PORTALS) so
+    # the settings bound and the request schema cannot drift apart. Asserted
+    # against the constant rather than a literal: the point is that the bound
+    # *is* the ceiling, not that the ceiling is any particular number.
     with pytest.raises(ValidationError):
-        _settings(max_enabled_portals=9)
+        _settings(max_enabled_portals=MAX_ENABLED_PORTALS + 1)
+
+    assert (
+        _settings(max_enabled_portals=MAX_ENABLED_PORTALS).max_enabled_portals
+        == MAX_ENABLED_PORTALS
+    )
+
+
+def test_the_portal_ceiling_is_sixteen() -> None:
+    # Raised from 8 so further portals can be added without retiring a working
+    # one. A ceiling, not a target: it enables no portal by itself.
+    assert MAX_ENABLED_PORTALS == 16
+
+
+def test_eight_portals_is_still_accepted() -> None:
+    # The previous ceiling must keep working: raising a maximum must not turn
+    # a formerly valid configuration into an invalid one.
+    assert _settings(max_enabled_portals=8).max_enabled_portals == 8
+
+
+def test_a_smaller_cap_is_still_allowed() -> None:
+    # An operator may still pin the cap below the ceiling; raising the ceiling
+    # does not force anyone up to it.
+    assert _settings(max_enabled_portals=3).max_enabled_portals == 3
 
 
 def test_invalid_log_level_is_rejected() -> None:

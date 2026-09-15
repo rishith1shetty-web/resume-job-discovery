@@ -38,6 +38,7 @@ from app.models.profile import ResumeSkill
 from app.portals.adapters.hiringcafe import HiringCafePortal
 from app.portals.adapters.greenhouse import GreenhousePortal
 from app.portals.adapters.jobright import JobrightPortal
+from app.portals.adapters.lever import LeverPortal
 from app.portals.adapters.scalejobs import PAGE_SIZE as SCALEJOBS_PAGE_SIZE
 from app.portals.adapters.scalejobs import ScaleJobsPortal
 from app.portals.adapters.simplyhired import SimplyHiredPortal
@@ -51,6 +52,7 @@ from app.processing.normalize import RejectionReason
 from app.services import search_run_service
 from app.services.search_orchestrator import execute_search_run
 from tests.factories import make_portal, make_profile, make_resume, make_user
+from tests.fake_portals import FINANCE_DESCRIPTION
 
 FIXTURES = Path(__file__).parent / "fixtures" / "portals"
 HIRINGCAFE_FIXTURE = FIXTURES / "hiringcafe_financial_analyst.json"
@@ -98,6 +100,11 @@ def _greenhouse_body(records: list[dict]) -> str:
     return json.dumps({"jobs": records, "meta": {"total": len(records)}})
 
 
+def _lever_body(records: list[dict]) -> str:
+    """Lever answers with a bare JSON array of postings."""
+    return json.dumps(records)
+
+
 def _jobright_html(records: list[dict]) -> str:
     payload = {"props": {"pageProps": {"jobList": records}}}
     return (
@@ -141,6 +148,13 @@ class OfflineGreenhouse(GreenhousePortal):
     failure: Exception | None = None
 
 
+class OfflineLever(LeverPortal):
+    """The real adapter, served from a canned postings feed."""
+
+    records: list[dict] = []
+    failure: Exception | None = None
+
+
 class OfflineScaleJobs(ScaleJobsPortal):
     """The real adapter, served from a canned search response."""
 
@@ -155,6 +169,7 @@ _OFFLINE = {
     "jobright": (OfflineJobright, _jobright_html),
     "simplyhired": (OfflineSimplyHired, _simplyhired_html),
     "greenhouse": (OfflineGreenhouse, _greenhouse_body),
+    "lever": (OfflineLever, _lever_body),
 }
 
 #: Scale.jobs GETs JSON from a search endpoint, a third verb again.
@@ -278,6 +293,72 @@ def build_simplyhired(
 def greenhouse_records() -> list[dict]:
     data = json.loads(GREENHOUSE_FIXTURE.read_text(encoding="utf-8"))
     return [job for board in data.values() for job in board["jobs"]]
+
+
+#: A Lever board's postings, in the shape the live feed serves.
+#:
+#: Built rather than replayed from the capture in
+#: ``tests/fixtures/portals/lever_postings.json``: that capture holds real
+#: engineering and retail roles, and this resume is a Financial Analyst, so
+#: replaying it would prove only that the role gate works. The *shapes* here -
+#: epoch-millisecond ``createdAt``, ISO ``country``, ``categories`` with
+#: ``allLocations`` and ``commitment``, sectioned ``lists`` - are exactly the
+#: capture's, and the parsing of the real payload is pinned in
+#: ``tests/test_lever_adapter.py``.
+def lever_records(
+    count: int = 3, *, country: str = "US", now: datetime = NOW
+) -> list[dict]:
+    records = []
+    for index in range(count):
+        job_id = f"0000000{index}-0000-4000-8000-00000000000{index}"
+        hosted = f"https://jobs.lever.co/fixtureco/{job_id}"
+        records.append(
+            {
+                "id": job_id,
+                "text": "Financial Analyst",
+                "hostedUrl": hosted,
+                "applyUrl": f"{hosted}/apply",
+                # Staggered inside the window so ranking has something to order.
+                "createdAt": int(
+                    (now - timedelta(days=index + 1)).timestamp() * 1000
+                ),
+                "country": country,
+                "workplaceType": "hybrid",
+                "categories": {
+                    "location": "New York, NY",
+                    "allLocations": ["New York, NY"],
+                    "commitment": "Full Time",
+                    "team": "Finance",
+                },
+                "descriptionPlain": FINANCE_DESCRIPTION,
+                "lists": [
+                    {
+                        "text": "Minimum Qualifications",
+                        "content": (
+                            "<ul><li>Excel and SQL</li>"
+                            "<li>Forecasting and budgeting</li></ul>"
+                        ),
+                    }
+                ],
+                "additionalPlain": "We are an equal opportunity employer.",
+            }
+        )
+    return records
+
+
+def build_lever(
+    records: list[dict] | None = None, *, failure: Exception | None = None
+) -> OfflineLever:
+    # One board keeps the fixture honest about request counts.
+    adapter = OfflineLever(
+        options={
+            "rate_limit_per_minute": 0,
+            "boards": [{"slug": "fixtureco", "company": "Fixture Co"}],
+        }
+    )
+    type(adapter).records = records if records is not None else lever_records()
+    type(adapter).failure = failure
+    return adapter
 
 
 def build_greenhouse(
@@ -428,6 +509,205 @@ async def test_a_hiring_cafe_only_search_returns_its_jobs(
     assert prepared.legs[0].raw_count > 0
     assert all(item.final_score >= 70.0 for item in outcome.results)
     assert all(carried_by(item, "hiringcafe") for item in outcome.results)
+
+
+async def test_a_lever_only_search_returns_its_jobs(
+    db_session: AsyncSession,
+) -> None:
+    """The real adapter, through the real pipeline, end to end."""
+    _, resume = await analysed_resume(db_session)
+
+    prepared, outcome = await run_search(
+        db_session, resume=resume, specs=[("lever", build_lever())]
+    )
+
+    assert outcome.status is SearchRunStatus.COMPLETED
+    assert prepared.legs[0].raw_count == 3
+    assert prepared.legs[0].status is PortalRunStatus.COMPLETED
+    assert outcome.returned_count > 0
+    assert all(item.final_score >= 70.0 for item in outcome.results)
+    assert all(carried_by(item, "lever") for item in outcome.results)
+    assert_ranked_newest_first(outcome.results)
+
+
+async def test_lever_results_carry_the_employer_from_configuration(
+    db_session: AsyncSession,
+) -> None:
+    """The feed publishes no company name, so the board must supply it."""
+    _, resume = await analysed_resume(db_session)
+
+    _, outcome = await run_search(
+        db_session, resume=resume, specs=[("lever", build_lever())]
+    )
+
+    assert outcome.results
+    assert {item.company for item in outcome.results} == {"Fixture Co"}
+
+
+async def test_lever_results_link_to_the_employers_own_ats(
+    db_session: AsyncSession,
+) -> None:
+    _, resume = await analysed_resume(db_session)
+
+    _, outcome = await run_search(
+        db_session, resume=resume, specs=[("lever", build_lever())]
+    )
+
+    assert outcome.results
+    for item in outcome.results:
+        assert item.preferred_application_url.startswith(
+            "https://jobs.lever.co/fixtureco/"
+        )
+        assert item.preferred_url_kind == JobUrlKind.ATS.value
+
+
+async def test_a_lever_posting_outside_the_window_is_excluded(
+    db_session: AsyncSession,
+) -> None:
+    """The 30-day gate is applied to createdAt, unchanged."""
+    _, resume = await analysed_resume(db_session)
+    stale = lever_records(1)
+    stale[0]["createdAt"] = int((NOW - timedelta(days=31)).timestamp() * 1000)
+
+    _, outcome = await run_search(
+        db_session, resume=resume, specs=[("lever", build_lever(stale))]
+    )
+
+    assert outcome.returned_count == 0
+
+
+async def test_a_lever_posting_with_no_date_is_excluded(
+    db_session: AsyncSession,
+) -> None:
+    """An unverifiable date is never treated as recent."""
+    _, resume = await analysed_resume(db_session)
+    undated = lever_records(1)
+    del undated[0]["createdAt"]
+
+    _, outcome = await run_search(
+        db_session, resume=resume, specs=[("lever", build_lever(undated))]
+    )
+
+    assert outcome.returned_count == 0
+
+
+async def test_a_non_us_lever_posting_is_excluded(
+    db_session: AsyncSession,
+) -> None:
+    _, resume = await analysed_resume(db_session)
+    abroad = lever_records(2, country="GB")
+    for record in abroad:
+        record["categories"]["location"] = "London"
+        record["categories"]["allLocations"] = ["London"]
+
+    _, outcome = await run_search(
+        db_session, resume=resume, specs=[("lever", build_lever(abroad))]
+    )
+
+    assert outcome.returned_count == 0
+
+
+async def test_a_lever_failure_is_isolated_to_its_own_leg(
+    db_session: AsyncSession,
+) -> None:
+    """Greenhouse still returns its jobs while Lever is refused."""
+    _, resume = await analysed_resume(db_session)
+
+    prepared, outcome = await run_search(
+        db_session,
+        resume=resume,
+        specs=[
+            ("greenhouse", build_greenhouse()),
+            (
+                "lever",
+                build_lever(failure=PortalBlockedError("blocked", portal="lever")),
+            ),
+        ],
+    )
+
+    slug_of = {portal.id: portal.slug for portal in prepared.portals}
+    lever_leg = next(
+        leg for leg in prepared.legs if slug_of[leg.portal_id].endswith("lever")
+    )
+
+    assert outcome.status is SearchRunStatus.COMPLETED_WITH_ERRORS
+    assert lever_leg.status is PortalRunStatus.FAILED
+    assert not any(carried_by(item, "lever") for item in outcome.results)
+    assert all(carried_by(item, "greenhouse") for item in outcome.results)
+
+
+async def test_a_lever_only_run_that_fails_is_a_failed_run(
+    db_session: AsyncSession,
+) -> None:
+    """Nothing succeeded, so the run must not be reported as completed."""
+    _, resume = await analysed_resume(db_session)
+
+    prepared, outcome = await run_search(
+        db_session,
+        resume=resume,
+        specs=[
+            (
+                "lever",
+                build_lever(failure=PortalBlockedError("blocked", portal="lever")),
+            )
+        ],
+    )
+
+    assert outcome.status is SearchRunStatus.FAILED
+    assert prepared.legs[0].status is PortalRunStatus.FAILED
+    assert outcome.returned_count == 0
+
+
+# --- Regression guard: Lever must not disturb the portals already here ------
+
+
+async def test_selecting_greenhouse_alone_is_unaffected_by_lever_existing(
+    db_session: AsyncSession,
+) -> None:
+    """Adding a portal must change nothing for a search that does not select it.
+
+    Lever is registered process-wide by importing ``app.portals.adapters``, so
+    this runs with it registered and asserts the Greenhouse-only run is
+    untouched: no Lever leg, no Lever source, and - because ``offline_http``
+    raises on a request from a portal it was not given - no Lever request
+    either. That last one is the part a result assertion alone would miss.
+    """
+    import app.portals.adapters  # noqa: F401
+    from app.portals.registry import registry
+
+    assert "lever" in registry.slugs, "guard is vacuous unless Lever is registered"
+
+    _, resume = await analysed_resume(db_session)
+
+    prepared, outcome = await run_search(
+        db_session, resume=resume, specs=[("greenhouse", build_greenhouse())]
+    )
+
+    assert outcome.status is SearchRunStatus.COMPLETED
+    assert len(prepared.legs) == 1
+    assert not any(carried_by(item, "lever") for item in outcome.results)
+    assert all(carried_by(item, "greenhouse") for item in outcome.results)
+
+
+async def test_lever_and_an_existing_portal_merge_without_duplicates(
+    db_session: AsyncSession,
+) -> None:
+    _, resume = await analysed_resume(db_session)
+
+    prepared, outcome = await run_search(
+        db_session,
+        resume=resume,
+        specs=[
+            ("greenhouse", build_greenhouse()),
+            ("lever", build_lever()),
+        ],
+        limit=20,
+    )
+
+    assert outcome.status is SearchRunStatus.COMPLETED
+    assert len(prepared.legs) == 2
+    keys = [item.job_id for item in outcome.results]
+    assert len(keys) == len(set(keys)), "a canonical job must appear once"
 
 
 async def test_a_jobright_only_search_still_behaves_as_before(

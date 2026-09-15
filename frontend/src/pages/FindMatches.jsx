@@ -58,7 +58,16 @@ const LIMITS = [
   { value: 100, label: 'Find 100' },
 ]
 
-const MAX_PORTALS = 8
+/**
+ * How many boards may be ticked for one search.
+ *
+ * Mirrors `MAX_ENABLED_PORTALS` in app/core/constants.py, which is what
+ * actually returns the 422. Kept as a literal rather than read from
+ * `GET /config` so the form can be rendered before any request resolves; the
+ * backend remains the authority, and this only stops the user reaching a
+ * refusal they could have been spared.
+ */
+const MAX_PORTALS = 16
 
 export function FindMatches({ navigate }) {
   const { activeResumeId, activeResume } = useActiveResume()
