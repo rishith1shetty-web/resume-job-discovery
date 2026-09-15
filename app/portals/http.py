@@ -189,6 +189,7 @@ class PortalHttpClient:
         send: Callable[[httpx.AsyncClient], Awaitable[httpx.Response]],
         *,
         headers: dict[str, str] | None = None,
+        absent_statuses: frozenset[int] = frozenset(),
     ) -> httpx.Response:
         """Run one request under this portal's timeout, retry and rate limit.
 
@@ -241,6 +242,17 @@ class PortalHttpClient:
                 )
             else:
                 status = response.status_code
+
+                if status in absent_statuses:
+                    # The caller declared this status a *fact about the
+                    # resource* rather than a failure, so it is handed back
+                    # instead of raised. Checked first, before the blanket
+                    # `status >= 400` rule that would otherwise swallow the
+                    # distinction: "this file does not exist" and "this file
+                    # exists and I could not read it" are different answers,
+                    # and a robots policy is the case where the difference
+                    # decides whether anything may be fetched at all.
+                    return response
 
                 if status in _BLOCKED_STATUSES:
                     # Terminal by choice: the portal has said no, so stop
@@ -314,6 +326,33 @@ class PortalHttpClient:
         genuinely empty result from a broken one.
         """
         response = await self._send(lambda client: client.get(url, params=params))
+        return response.text
+
+    async def get_optional_text(
+        self,
+        url: str,
+        *,
+        absent_statuses: frozenset[int] = frozenset({404, 410}),
+    ) -> str | None:
+        """GET a URL whose absence is a meaningful answer, not a failure.
+
+        Returns None when the server said the resource is not there, and the
+        body otherwise. Every other failure still raises, so "absent" never
+        gets confused with "unreachable".
+
+        This exists for ``robots.txt``. ``app.careers.fetching`` already draws
+        exactly this line - 404 and 410 mean the host publishes no restrictions
+        and anything else means it has an opinion we could not read, which is
+        declined - and a portal that must resolve robots per host at run time
+        needs the same distinction. ``get_text`` cannot express it: it raises
+        ``PortalError`` for 404 and for 500 alike, and recovering the status
+        from the message text would be guesswork.
+        """
+        response = await self._send(
+            lambda client: client.get(url), absent_statuses=absent_statuses
+        )
+        if response.status_code in absent_statuses:
+            return None
         return response.text
 
     async def get_json(self, url: str, *, params: dict | None = None) -> dict:

@@ -13,6 +13,7 @@ import pytest
 from httpx import AsyncClient
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
 import app.portals.adapters  # noqa: F401  - registers the adapters
 from app.models.portal import Portal
@@ -77,6 +78,121 @@ async def test_seeding_creates_the_operational_portals(db_session: AsyncSession)
         (await db_session.execute(select(Portal.slug))).scalars().all()
     )
     assert {"jobright", "greenhouse", "google_careers"} <= slugs
+
+
+async def test_workday_is_seeded_with_its_own_depth(
+    db_session: AsyncSession,
+) -> None:
+    """Workday needs more time per call than the shared default allows.
+
+    One ``search`` fans out across 29 employer hosts, so a cold pass overruns
+    the 90s per-call ceiling and starves the freshness ladder of the shared leg
+    budget. These are set for this portal alone, through the row the depth is
+    read from.
+    """
+    from app.models.portal import PortalConfig
+    from app.search.depth import SearchDepth
+    from app.services.search_orchestrator import adapter_options
+
+    await ensure_portals_seeded(db_session)
+
+    portal = await db_session.scalar(
+        select(Portal)
+        .where(Portal.slug == "workday")
+        .options(selectinload(Portal.config))
+    )
+    assert portal is not None
+    assert portal.config is not None
+
+    depth = SearchDepth.from_options(adapter_options(portal))
+
+    assert depth.query_timeout_seconds == 150.0
+    assert depth.max_runtime_seconds == 300.0
+
+
+async def test_no_other_portal_gets_workdays_depth(
+    db_session: AsyncSession,
+) -> None:
+    """The change must be invisible to every portal that did not ask for it."""
+    from app.search.depth import (
+        DEFAULT_MAX_RUNTIME_SECONDS,
+        DEFAULT_QUERY_TIMEOUT_SECONDS,
+        SearchDepth,
+    )
+    from app.services.search_orchestrator import adapter_options
+
+    await ensure_portals_seeded(db_session)
+
+    portals = (
+        (
+            await db_session.execute(
+                select(Portal).options(selectinload(Portal.config))
+            )
+        )
+        .scalars()
+        .all()
+    )
+
+    for portal in portals:
+        if portal.slug == "workday":
+            continue
+        depth = SearchDepth.from_options(adapter_options(portal))
+        assert depth.query_timeout_seconds == DEFAULT_QUERY_TIMEOUT_SECONDS, portal.slug
+        assert depth.max_runtime_seconds == DEFAULT_MAX_RUNTIME_SECONDS, portal.slug
+
+
+async def test_seeding_never_overwrites_an_operators_own_tuning(
+    db_session: AsyncSession,
+) -> None:
+    """A redeploy must not reset a value someone deliberately changed."""
+    from app.search.depth import SearchDepth
+    from app.services.search_orchestrator import adapter_options
+
+    await ensure_portals_seeded(db_session)
+
+    portal = await db_session.scalar(
+        select(Portal)
+        .where(Portal.slug == "workday")
+        .options(selectinload(Portal.config))
+    )
+    assert portal is not None and portal.config is not None
+    portal.config.options = {**portal.config.options, "query_timeout_seconds": 240.0}
+    await db_session.flush()
+
+    await ensure_portals_seeded(db_session)
+    await db_session.refresh(portal.config)
+
+    depth = SearchDepth.from_options(adapter_options(portal))
+
+    assert depth.query_timeout_seconds == 240.0
+    # The key the operator did not touch is still supplied.
+    assert depth.max_runtime_seconds == 300.0
+
+
+async def test_seeding_supplies_a_missing_option_without_touching_the_others(
+    db_session: AsyncSession,
+) -> None:
+    from app.services.search_orchestrator import adapter_options
+
+    await ensure_portals_seeded(db_session)
+
+    portal = await db_session.scalar(
+        select(Portal)
+        .where(Portal.slug == "workday")
+        .options(selectinload(Portal.config))
+    )
+    assert portal is not None and portal.config is not None
+    portal.config.options = {"tenants": [], "max_concurrent_tenants": 4}
+    await db_session.flush()
+
+    await ensure_portals_seeded(db_session)
+    await db_session.refresh(portal.config)
+
+    options = adapter_options(portal)
+
+    assert options["max_concurrent_tenants"] == 4
+    assert options["query_timeout_seconds"] == 150.0
+    assert options["max_runtime_seconds"] == 300.0
 
 
 async def test_seeding_is_idempotent(db_session: AsyncSession) -> None:
@@ -179,6 +295,7 @@ def test_only_approved_portals_are_seeded() -> None:
         "google_careers",
         "lever",
         "ashby",
+        "workday",
         "career_pages",
     }
 

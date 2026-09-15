@@ -13,7 +13,9 @@ Dropping a seed alone would leave the row behind on every existing install.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from collections.abc import Mapping
+from dataclasses import dataclass, field
+from typing import Any
 
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -37,6 +39,14 @@ class PortalSeed:
     #: Whether collection may run. False where access is not authorised.
     is_enabled: bool
     notes: str
+    #: Operational defaults for this portal's ``portal_configs.options``.
+    #:
+    #: Only for a portal whose shape makes the shared defaults wrong - not a
+    #: place to tune portals generally. Applied key by key and only where the
+    #: row does not already carry that key, so an operator's own tuning is
+    #: never undone by a redeploy. Empty for every portal that has no such
+    #: need, which is all of them but Workday.
+    config_options: Mapping[str, Any] = field(default_factory=dict)
 
 
 #: The portals with adapters (docs/DECISIONS.md D-001, plus Hiring Cafe in
@@ -237,6 +247,61 @@ PORTAL_SEEDS: tuple[PortalSeed, ...] = (
         ),
     ),
     PortalSeed(
+        slug="workday",
+        website_url="https://www.myworkdayjobs.com/",
+        display_order=26,
+        is_enabled=True,
+        # Workday's own depth, and the only portal that needs its own.
+        #
+        # One `search` call fans out across every configured tenant, and each
+        # tenant is a separate employer host answering in roughly two seconds.
+        # A cold pass over 29 tenants costs about 140 requests and measures
+        # 86-94s, which overruns the shared 90s per-call ceiling; worse, even a
+        # pass that fits consumes the shared 120s leg budget during the *first*
+        # freshness window, so the ladder never widens past 24 hours and almost
+        # everything collected is discarded unused.
+        #
+        # These are read by `SearchDepth.from_options` for this portal alone -
+        # `adapter_options` merges this row's options - so no global default
+        # and no other portal is affected. Nothing about pacing, matching or
+        # freshness changes: the portal is given time to finish the work, not
+        # permission to do less of it.
+        config_options={
+            "query_timeout_seconds": 150.0,
+            "max_runtime_seconds": 300.0,
+        },
+        notes=(
+            "Collects from each employer's own Workday tenant through the "
+            "public candidate endpoints their career site itself calls "
+            "(POST /wday/cxs/<tenant>/<site>/jobs and GET "
+            "/wday/cxs/<tenant>/<site><externalPath>). No account, no API "
+            "key, no cookie, no CSRF token and no session. Workday is an ATS, "
+            "not a job board: there is no cross-tenant search and no employer "
+            "directory, so coverage is exactly the tenants listed in this "
+            "portal's tenants option and no wider. Every tenant publishes its "
+            "own robots.txt, so the policy is read per tenant at run time and "
+            "both the career site path and the CXS path must be permitted "
+            "before anything is requested; tenants that close individual "
+            "sites are respected and skipped. Employer names come from the "
+            "tenant's configured display_name, NOT from the payload's "
+            "hiringOrganization.name, which is a Workday legal entity or cost "
+            "centre - 'CVS Health' is published there as '1120 Hook-SupeRx, "
+            "L.L.C.' and Capital One's is empty - and which would fragment "
+            "one employer across several canonical keys. Server-side "
+            "searchText does the breadth; titles are then filtered locally "
+            "against the same-role variations and only matching listings have "
+            "their detail opened. The list endpoint caps limit at 20, so "
+            "paging is bounded and stops on the reported total. posted_at "
+            "comes from the detail's startDate, the date Workday itself "
+            "renders as the public posted date - verified against its own "
+            "'Posted N Days Ago' label on 42 postings across six tenants - "
+            "and rows labelled 'Posted 30+ Days Ago' are dropped before "
+            "costing a request. Each posting carries the employer's full "
+            "text, a structured ISO country code and, on many tenants, an "
+            "explicit remote/hybrid/onsite value."
+        ),
+    ),
+    PortalSeed(
         slug="career_pages",
         website_url="https://www.rising-path.example/careers",
         display_order=25,
@@ -379,7 +444,9 @@ async def ensure_portals_seeded(
             )
             session.add(portal)
             await session.flush()
-            session.add(PortalConfig(portal_id=portal.id))
+            session.add(
+                PortalConfig(portal_id=portal.id, options=dict(seed.config_options))
+            )
             actions[seed.slug] = "created"
         else:
             # Refresh what the adapter owns; leave is_enabled alone so an
@@ -397,7 +464,24 @@ async def ensure_portals_seeded(
                 )
                 existing.requires_auth = capabilities.requires_auth
             if existing.config is None:
-                session.add(PortalConfig(portal_id=existing.id))
+                session.add(
+                    PortalConfig(
+                        portal_id=existing.id, options=dict(seed.config_options)
+                    )
+                )
+            elif seed.config_options:
+                # Fill in only what is absent. A key the operator has already
+                # set is theirs, and a redeploy must not quietly reset it.
+                missing = {
+                    key: value
+                    for key, value in seed.config_options.items()
+                    if key not in (existing.config.options or {})
+                }
+                if missing:
+                    existing.config.options = {
+                        **(existing.config.options or {}),
+                        **missing,
+                    }
             actions[seed.slug] = "updated"
 
     await session.flush()

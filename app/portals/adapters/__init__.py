@@ -8,8 +8,8 @@ out of the core (CLAUDE.md section 4).
 Phase 4 registered the first adapter, Jobright, in the rollout order recorded
 in docs/DECISIONS.md (D-001). Phase 9A added Hiring Cafe, Phase 9C SimplyHired,
 Phase 9D Greenhouse, Phase 9E Scale.jobs, Phase 9F Dayforce, Phase 9G Google
-Careers, Phase 9H Lever and Phase 9I Ashby. Every further portal is added one
-at a time, after the existing ones are stable and tested.
+Careers, Phase 9H Lever, Phase 9I Ashby and Phase 9J Workday. Every further
+portal is added one at a time, after the existing ones are stable and tested.
 
 LinkedIn and ZipRecruiter were removed in D-005: neither could supply what the
 matching engine requires through a surface this project is permitted to read.
@@ -18,7 +18,7 @@ See that decision for the evidence; nothing here is a placeholder for them.
 No adapter may be enabled until ``portals.is_implemented`` is true, and being
 implemented is not the same as being reachable — see the access notes at the
 top of ``hiringcafe.py``, ``simplyhired.py``, ``scalejobs.py``, ``dayforce.py``,
-``google_careers.py``, ``lever.py`` and ``ashby.py``.
+``google_careers.py``, ``lever.py``, ``ashby.py`` and ``workday.py``.
 """
 
 from app.portals.adapters.ashby import AshbyPortal
@@ -30,6 +30,7 @@ from app.portals.adapters.jobright import JobrightPortal
 from app.portals.adapters.lever import LeverPortal
 from app.portals.adapters.scalejobs import ScaleJobsPortal
 from app.portals.adapters.simplyhired import SimplyHiredPortal
+from app.portals.adapters.workday import WorkdayPortal
 from app.portals.registry import registry
 
 registry.register(JobrightPortal)
@@ -41,6 +42,7 @@ registry.register(DayforcePortal)
 registry.register(GoogleCareersPortal)
 registry.register(LeverPortal)
 registry.register(AshbyPortal)
+registry.register(WorkdayPortal)
 
 __all__ = [
     "AshbyPortal",
@@ -52,4 +54,5 @@ __all__ = [
     "LeverPortal",
     "ScaleJobsPortal",
     "SimplyHiredPortal",
+    "WorkdayPortal",
 ]

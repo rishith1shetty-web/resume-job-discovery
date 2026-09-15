@@ -43,6 +43,8 @@ from app.portals.adapters.lever import LeverPortal
 from app.portals.adapters.scalejobs import PAGE_SIZE as SCALEJOBS_PAGE_SIZE
 from app.portals.adapters.scalejobs import ScaleJobsPortal
 from app.portals.adapters.simplyhired import SimplyHiredPortal
+from app.portals.adapters.workday import PAGE_SIZE as WORKDAY_PAGE_SIZE
+from app.portals.adapters.workday import WorkdayPortal
 from app.portals.exceptions import (
     PortalBlockedError,
     PortalError,
@@ -207,6 +209,19 @@ class OfflineLever(LeverPortal):
     failure: Exception | None = None
 
 
+#: What every shipped Workday tenant publishes, near enough: the CXS path is
+#: permitted and only the facet-refresh path is closed. A tenant whose policy
+#: declines is exercised directly in tests/test_workday_adapter.py.
+WORKDAY_ROBOTS = chr(10).join(["User-agent: *", "Disallow: /refreshFacet/", ""])
+
+
+class OfflineWorkday(WorkdayPortal):
+    """The real adapter, served from canned CXS list and detail payloads."""
+
+    records: list[dict] = []
+    failure: Exception | None = None
+
+
 class OfflineScaleJobs(ScaleJobsPortal):
     """The real adapter, served from a canned search response."""
 
@@ -258,11 +273,38 @@ def offline_http(monkeypatch: pytest.MonkeyPatch) -> None:
         return build_page(adapter_class.records)
 
     async def fake_post_json(self, url, *, payload, headers=None):  # noqa: ANN001
-        # No portal exercised in this file POSTs. The stub stays so that one
-        # starting to would fail loudly here rather than reach the network.
+        if self.portal == "workday":
+            if OfflineWorkday.failure is not None:
+                raise OfflineWorkday.failure
+            rows = [record["row"] for record in OfflineWorkday.records]
+            offset = int(payload.get("offset", 0))
+            limit = int(payload.get("limit", WORKDAY_PAGE_SIZE))
+            return {
+                "total": len(rows),
+                "jobPostings": rows[offset : offset + limit],
+                "userAuthenticated": False,
+            }
+
+        # No other portal exercised in this file POSTs. The stub stays so that
+        # one starting to would fail loudly rather than reach the network.
+        raise AssertionError(f"unexpected request from {self.portal}: {url}")
+
+    async def fake_get_optional_text(self, url, **kwargs):  # noqa: ANN001
+        if self.portal == "workday":
+            # Permissive, and never a real request. A tenant whose policy
+            # declines is exercised directly in tests/test_workday_adapter.py.
+            return WORKDAY_ROBOTS
         raise AssertionError(f"unexpected request from {self.portal}: {url}")
 
     async def fake_get_json(self, url, *, params=None):  # noqa: ANN001
+        if self.portal == "workday":
+            if OfflineWorkday.failure is not None:
+                raise OfflineWorkday.failure
+            for record in OfflineWorkday.records:
+                if url.endswith(record["row"]["externalPath"]):
+                    return record["detail"]
+            raise PortalError("no such posting", portal="workday")
+
         adapter_class = _OFFLINE_JSON.get(self.portal)
         if adapter_class is None:
             raise AssertionError(f"unexpected request from {self.portal}: {url}")
@@ -295,6 +337,9 @@ def offline_http(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr("app.portals.http.PortalHttpClient.get_text", fake_get_text)
     monkeypatch.setattr("app.portals.http.PortalHttpClient.post_json", fake_post_json)
     monkeypatch.setattr("app.portals.http.PortalHttpClient.get_json", fake_get_json)
+    monkeypatch.setattr(
+        "app.portals.http.PortalHttpClient.get_optional_text", fake_get_optional_text
+    )
 
     yield
 
@@ -308,6 +353,8 @@ def offline_http(monkeypatch: pytest.MonkeyPatch) -> None:
     for adapter_class in _OFFLINE_PAGES.values():
         adapter_class.records = []
         adapter_class.failure = None
+    OfflineWorkday.records = []
+    OfflineWorkday.failure = None
 
 
 def hiringcafe_records() -> list[dict]:
@@ -476,6 +523,95 @@ def build_ashby(
         options={"rate_limit_per_minute": 0, "boards": ["fixtureco"]}
     )
     type(adapter).records = records if records is not None else ashby_records()
+    type(adapter).failure = failure
+    return adapter
+
+
+#: Workday postings in the shape the CXS endpoints publish: a list row and the
+#: detail payload its externalPath resolves to. Dates and countries are set
+#: relative to the run's frozen clock so the freshness and United States gates
+#: are genuinely exercised.
+def workday_records(
+    count: int = 3,
+    *,
+    country: str = "US",
+    country_name: str = "United States of America",
+    place: str = "Illinois - Chicago",
+    now: datetime = NOW,
+    entity: str = "1114 Fixture Enterprise Inc",
+) -> list[dict]:
+    records = []
+    for index in range(count):
+        req = f"R{index}00{index}"
+        path = f"/job/Illinois---Chicago/Financial-Analyst_{req}"
+        posted = (now - timedelta(days=index + 1)).date().isoformat()
+        records.append(
+            {
+                "row": {
+                    "title": "Financial Analyst",
+                    "externalPath": path,
+                    "locationsText": place,
+                    "postedOn": f"Posted {index + 1} Days Ago",
+                    "bulletFields": [req],
+                },
+                "detail": {
+                    # The legal entity the adapter must ignore in favour of the
+                    # configured display name.
+                    "hiringOrganization": {"name": entity, "url": ""},
+                    "jobPostingInfo": {
+                        "id": f"id{index}",
+                        "title": "Financial Analyst",
+                        "jobReqId": req,
+                        "startDate": posted,
+                        "postedOn": f"Posted {index + 1} Days Ago",
+                        "timeType": "Full time",
+                        "remoteType": "Hybrid",
+                        "location": place,
+                        "additionalLocations": [],
+                        "country": {"descriptor": country_name},
+                        "jobRequisitionLocation": {
+                            "descriptor": place,
+                            "country": {
+                                "descriptor": country_name,
+                                "alpha2Code": country,
+                            },
+                        },
+                        "externalUrl": (
+                            "https://fixtureco.wd5.myworkdayjobs.com"
+                            f"/Fixture_Careers{path}"
+                        ),
+                        "jobDescription": (
+                            "<h2>About the role</h2><p>"
+                            + _as_paragraphs(FINANCE_DESCRIPTION)
+                            + "</p><h2>Minimum Qualifications</h2>"
+                            "<ul><li>Excel and SQL</li>"
+                            "<li>Forecasting and budgeting</li></ul>"
+                        ),
+                    },
+                },
+            }
+        )
+    return records
+
+
+def build_workday(
+    records: list[dict] | None = None, *, failure: Exception | None = None
+) -> OfflineWorkday:
+    # One tenant keeps the fixture honest about request counts.
+    adapter = OfflineWorkday(
+        options={
+            "rate_limit_per_minute": 0,
+            "tenants": [
+                {
+                    "tenant": "fixtureco",
+                    "wd": "5",
+                    "site": "Fixture_Careers",
+                    "display_name": "Fixture Co",
+                }
+            ],
+        }
+    )
+    type(adapter).records = records if records is not None else workday_records()
     type(adapter).failure = failure
     return adapter
 
@@ -4143,3 +4279,223 @@ async def test_the_policy_is_stated_even_when_nothing_was_excluded(
 
     notes = " ".join(outcome.warnings)
     assert "Only United States jobs were considered." in notes
+
+
+# --- Workday ---------------------------------------------------------------
+
+
+async def test_a_workday_only_search_returns_its_jobs(
+    db_session: AsyncSession,
+) -> None:
+    """The real adapter, through the real pipeline, end to end."""
+    _, resume = await analysed_resume(db_session)
+
+    prepared, outcome = await run_search(
+        db_session, resume=resume, specs=[("workday", build_workday())]
+    )
+
+    assert outcome.status is SearchRunStatus.COMPLETED
+    assert prepared.legs[0].raw_count == 3
+    assert prepared.legs[0].status is PortalRunStatus.COMPLETED
+    assert outcome.returned_count > 0
+    assert all(item.final_score >= 70.0 for item in outcome.results)
+    assert all(carried_by(item, "workday") for item in outcome.results)
+    assert_ranked_newest_first(outcome.results)
+
+
+async def test_workday_results_carry_the_configured_employer_not_the_entity(
+    db_session: AsyncSession,
+) -> None:
+    """The defect this portal is configured around, proved through the pipeline.
+
+    Every fixture posting publishes "1114 Fixture Enterprise Inc" as its
+    Workday organisation. None of that may reach the dashboard.
+    """
+    _, resume = await analysed_resume(db_session)
+
+    _, outcome = await run_search(
+        db_session, resume=resume, specs=[("workday", build_workday())]
+    )
+
+    assert outcome.results
+    assert {item.company for item in outcome.results} == {"Fixture Co"}
+
+
+async def test_workday_postings_from_two_legal_entities_do_not_fragment(
+    db_session: AsyncSession,
+) -> None:
+    """One employer, two Workday entities, one canonical company."""
+    records = workday_records(1, entity="300 Fixture National Association")
+    records += workday_records(1, entity="417 Fixture Trust")
+    records[1]["row"]["externalPath"] = "/job/Illinois---Chicago/Financial-Analyst_R999"
+    records[1]["row"]["bulletFields"] = ["R999"]
+    records[1]["detail"]["jobPostingInfo"]["jobReqId"] = "R999"
+    records[1]["detail"]["jobPostingInfo"]["externalUrl"] = (
+        "https://fixtureco.wd5.myworkdayjobs.com/Fixture_Careers"
+        "/job/Illinois---Chicago/Financial-Analyst_R999"
+    )
+
+    _, resume = await analysed_resume(db_session)
+    _, outcome = await run_search(
+        db_session, resume=resume, specs=[("workday", build_workday(records))]
+    )
+
+    assert outcome.results
+    assert {item.company for item in outcome.results} == {"Fixture Co"}
+
+
+async def test_workday_results_link_to_the_employers_own_ats(
+    db_session: AsyncSession,
+) -> None:
+    _, resume = await analysed_resume(db_session)
+
+    _, outcome = await run_search(
+        db_session, resume=resume, specs=[("workday", build_workday())]
+    )
+
+    assert outcome.results
+    for item in outcome.results:
+        assert item.preferred_application_url.startswith(
+            "https://fixtureco.wd5.myworkdayjobs.com/Fixture_Careers/"
+        )
+        assert item.preferred_url_kind == JobUrlKind.ATS.value
+
+
+async def test_a_workday_posting_outside_the_window_is_excluded(
+    db_session: AsyncSession,
+) -> None:
+    stale = workday_records(1, now=NOW - timedelta(days=40))
+    stale[0]["row"]["postedOn"] = "Posted 30+ Days Ago"
+
+    _, resume = await analysed_resume(db_session)
+    prepared, outcome = await run_search(
+        db_session, resume=resume, specs=[("workday", build_workday(stale))]
+    )
+
+    # Dropped on the relative label, before its detail was ever requested.
+    assert prepared.legs[0].raw_count == 0
+    assert outcome.returned_count == 0
+
+
+async def test_a_workday_posting_with_no_start_date_is_excluded(
+    db_session: AsyncSession,
+) -> None:
+    undated = workday_records(1)
+    undated[0]["detail"]["jobPostingInfo"]["startDate"] = ""
+
+    _, resume = await analysed_resume(db_session)
+    _, outcome = await run_search(
+        db_session, resume=resume, specs=[("workday", build_workday(undated))]
+    )
+
+    assert outcome.returned_count == 0
+
+
+async def test_a_workday_posting_outside_the_united_states_is_excluded(
+    db_session: AsyncSession,
+) -> None:
+    abroad = workday_records(
+        2, country="CA", country_name="Canada", place="Ontario - Toronto"
+    )
+
+    _, resume = await analysed_resume(db_session)
+    _, outcome = await run_search(
+        db_session, resume=resume, specs=[("workday", build_workday(abroad))]
+    )
+
+    assert outcome.returned_count == 0
+
+
+async def test_a_failing_workday_leg_does_not_fail_the_whole_run(
+    db_session: AsyncSession,
+) -> None:
+    _, resume = await analysed_resume(db_session)
+
+    prepared, outcome = await run_search(
+        db_session,
+        resume=resume,
+        specs=[
+            ("greenhouse", build_greenhouse()),
+            (
+                "workday",
+                build_workday(failure=PortalBlockedError("blocked", portal="workday")),
+            ),
+        ],
+    )
+
+    slug_of = {portal.id: portal.slug for portal in prepared.portals}
+    workday_leg = next(
+        leg for leg in prepared.legs if slug_of[leg.portal_id].endswith("workday")
+    )
+
+    assert outcome.status is SearchRunStatus.COMPLETED_WITH_ERRORS
+    assert workday_leg.status is PortalRunStatus.FAILED
+    assert not any(carried_by(item, "workday") for item in outcome.results)
+    assert all(carried_by(item, "greenhouse") for item in outcome.results)
+
+
+async def test_a_workday_only_run_that_fails_is_reported_as_failed(
+    db_session: AsyncSession,
+) -> None:
+    _, resume = await analysed_resume(db_session)
+
+    _, outcome = await run_search(
+        db_session,
+        resume=resume,
+        specs=[
+            (
+                "workday",
+                build_workday(failure=PortalBlockedError("blocked", portal="workday")),
+            )
+        ],
+    )
+
+    assert outcome.status is SearchRunStatus.FAILED
+    assert outcome.returned_count == 0
+
+
+async def test_selecting_greenhouse_alone_makes_no_workday_request(
+    db_session: AsyncSession,
+) -> None:
+    """Adding a portal must change nothing for a search that does not select it.
+
+    Workday is registered process-wide by importing ``app.portals.adapters``,
+    so this runs with it registered. ``offline_http`` raises on a request from
+    any portal it was not given, so a Workday request would fail the run
+    outright - which is the part a result assertion alone would miss.
+    """
+    import app.portals.adapters  # noqa: F401
+    from app.portals.registry import registry
+
+    assert "workday" in registry.slugs, "guard is vacuous unless Workday is registered"
+
+    untouched = OfflineWorkday.records
+    _, resume = await analysed_resume(db_session)
+
+    prepared, outcome = await run_search(
+        db_session, resume=resume, specs=[("greenhouse", build_greenhouse())]
+    )
+
+    assert outcome.status is SearchRunStatus.COMPLETED
+    assert len(prepared.legs) == 1
+    assert not any(carried_by(item, "workday") for item in outcome.results)
+    assert all(carried_by(item, "greenhouse") for item in outcome.results)
+    assert OfflineWorkday.records == untouched, "Workday state must be untouched"
+
+
+async def test_workday_and_an_existing_portal_merge_without_duplicates(
+    db_session: AsyncSession,
+) -> None:
+    _, resume = await analysed_resume(db_session)
+
+    prepared, outcome = await run_search(
+        db_session,
+        resume=resume,
+        specs=[("greenhouse", build_greenhouse()), ("workday", build_workday())],
+    )
+
+    assert outcome.status is SearchRunStatus.COMPLETED
+    assert len(prepared.legs) == 2
+    urls = [item.preferred_application_url for item in outcome.results]
+    assert len(urls) == len(set(urls))
+    assert_ranked_newest_first(outcome.results)

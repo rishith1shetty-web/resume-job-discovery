@@ -50,6 +50,7 @@ def test_only_approved_adapters_are_registered() -> None:
         "google_careers",
         "lever",
         "ashby",
+        "workday",
     }
 
 
@@ -127,6 +128,12 @@ def _cut_the_network(adapter) -> None:  # noqa: ANN001
     and a stub that misses the verb in use lets a contract test issue a real
     request to a live portal. Adding a verb to ``PortalHttpClient`` means
     adding it here too.
+
+    Nor do they all hold *one* client. Workday addresses each employer on that
+    employer's own host and keeps a client per host, so the rate limit paces
+    each server rather than being shared across thirty of them. Such an adapter
+    is stubbed through its factory, which is the only place that can cover a
+    client it has not created yet.
     """
 
     async def _no_head(_url: str) -> bool:
@@ -138,10 +145,29 @@ def _cut_the_network(adapter) -> None:  # noqa: ANN001
     async def _no_post(*_args, **_kwargs) -> dict:
         raise ConnectionResetError("socket died")
 
-    adapter._http.head_ok = _no_head  # type: ignore[attr-defined]
-    adapter._http.get_text = _no_get  # type: ignore[attr-defined]
-    adapter._http.get_json = _no_post  # type: ignore[attr-defined]
-    adapter._http.post_json = _no_post  # type: ignore[attr-defined]
+    async def _no_optional(*_args, **_kwargs) -> str | None:
+        raise ConnectionResetError("socket died")
+
+    def _cut(client) -> None:  # noqa: ANN001
+        client.head_ok = _no_head
+        client.get_text = _no_get
+        client.get_json = _no_post
+        client.post_json = _no_post
+        client.get_optional_text = _no_optional
+
+    single = getattr(adapter, "_http", None)
+    if single is not None:
+        _cut(single)
+
+    if hasattr(adapter, "_client_for"):
+        original = adapter._client_for
+
+        def client_for(target):  # noqa: ANN001, ANN202
+            client = original(target)
+            _cut(client)
+            return client
+
+        adapter._client_for = client_for  # type: ignore[method-assign]
 
 
 @pytest.mark.parametrize("slug", REGISTERED_SLUGS)
