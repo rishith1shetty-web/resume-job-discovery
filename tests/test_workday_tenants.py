@@ -262,14 +262,35 @@ def test_workdays_seed_carries_its_own_depth() -> None:
     }
 
 
+#: The only portals whose shape needs depth of their own. Named here so that a
+#: third one has to be added deliberately: the escape hatch stays an exception,
+#: not a way to tune portals generally.
+SEEDS_WITH_OWN_DEPTH = {"workday", "smartrecruiters"}
+
+
 def test_no_other_portal_seed_carries_depth_options() -> None:
     """A per-portal escape hatch, not a way to tune portals generally."""
     from app.services.portal_seed import PORTAL_SEEDS
 
-    for seed in PORTAL_SEEDS:
-        if seed.slug == "workday":
-            continue
-        assert not seed.config_options, seed.slug
+    carrying = {seed.slug for seed in PORTAL_SEEDS if seed.config_options}
+
+    assert carrying == SEEDS_WITH_OWN_DEPTH
+
+
+def test_workdays_depth_is_not_shared_with_the_other_exception() -> None:
+    """SmartRecruiters needed a longer leg, not a longer call.
+
+    Different bottlenecks: Workday fans one call across 29 employer hosts,
+    while every SmartRecruiters board shares a hostname and is paced end to
+    end. Asserting they differ keeps the two from being "fixed" by copying.
+    """
+    from app.services.portal_seed import PORTAL_SEEDS
+
+    options = {seed.slug: dict(seed.config_options) for seed in PORTAL_SEEDS}
+
+    assert options["workday"]["query_timeout_seconds"] == 150.0
+    assert "query_timeout_seconds" not in options["smartrecruiters"]
+    assert options["smartrecruiters"]["max_runtime_seconds"] == 300.0
 
 
 def test_the_shared_depth_defaults_are_untouched() -> None:

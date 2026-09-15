@@ -110,7 +110,19 @@ async def test_workday_is_seeded_with_its_own_depth(
     assert depth.max_runtime_seconds == 300.0
 
 
-async def test_no_other_portal_gets_workdays_depth(
+#: Portals whose shape needs depth of their own, and exactly what they get.
+#: Everything absent from this table must resolve to the shared defaults, which
+#: is what stops a per-portal escape hatch turning into a global one.
+EXPECTED_DEPTH_OVERRIDES = {
+    # One call fans out across 29 employer hosts.
+    "workday": {"query_timeout_seconds": 150.0, "max_runtime_seconds": 300.0},
+    # Each call fits the shared ceiling; the whole leg does not, because every
+    # board shares one hostname and is therefore paced end to end.
+    "smartrecruiters": {"max_runtime_seconds": 300.0},
+}
+
+
+async def test_only_the_portals_that_need_their_own_depth_have_it(
     db_session: AsyncSession,
 ) -> None:
     """The change must be invisible to every portal that did not ask for it."""
@@ -134,11 +146,36 @@ async def test_no_other_portal_gets_workdays_depth(
     )
 
     for portal in portals:
-        if portal.slug == "workday":
-            continue
+        expected = EXPECTED_DEPTH_OVERRIDES.get(portal.slug, {})
         depth = SearchDepth.from_options(adapter_options(portal))
-        assert depth.query_timeout_seconds == DEFAULT_QUERY_TIMEOUT_SECONDS, portal.slug
-        assert depth.max_runtime_seconds == DEFAULT_MAX_RUNTIME_SECONDS, portal.slug
+
+        assert depth.query_timeout_seconds == expected.get(
+            "query_timeout_seconds", DEFAULT_QUERY_TIMEOUT_SECONDS
+        ), portal.slug
+        assert depth.max_runtime_seconds == expected.get(
+            "max_runtime_seconds", DEFAULT_MAX_RUNTIME_SECONDS
+        ), portal.slug
+
+
+async def test_smartrecruiters_keeps_the_shared_query_ceiling(
+    db_session: AsyncSession,
+) -> None:
+    """Its calls already fit 90s; only the leg needed more room."""
+    from app.search.depth import DEFAULT_QUERY_TIMEOUT_SECONDS, SearchDepth
+    from app.services.search_orchestrator import adapter_options
+
+    await ensure_portals_seeded(db_session)
+
+    portal = await db_session.scalar(
+        select(Portal)
+        .where(Portal.slug == "smartrecruiters")
+        .options(selectinload(Portal.config))
+    )
+    assert portal is not None
+    depth = SearchDepth.from_options(adapter_options(portal))
+
+    assert depth.query_timeout_seconds == DEFAULT_QUERY_TIMEOUT_SECONDS == 90.0
+    assert depth.max_runtime_seconds == 300.0
 
 
 async def test_seeding_never_overwrites_an_operators_own_tuning(
@@ -296,6 +333,7 @@ def test_only_approved_portals_are_seeded() -> None:
         "lever",
         "ashby",
         "workday",
+        "smartrecruiters",
         "career_pages",
     }
 

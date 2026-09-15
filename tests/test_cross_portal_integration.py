@@ -44,6 +44,7 @@ from app.portals.adapters.scalejobs import PAGE_SIZE as SCALEJOBS_PAGE_SIZE
 from app.portals.adapters.scalejobs import ScaleJobsPortal
 from app.portals.adapters.simplyhired import SimplyHiredPortal
 from app.portals.adapters.workday import PAGE_SIZE as WORKDAY_PAGE_SIZE
+from app.portals.adapters.smartrecruiters import SmartRecruitersPortal
 from app.portals.adapters.workday import WorkdayPortal
 from app.portals.exceptions import (
     PortalBlockedError,
@@ -101,6 +102,80 @@ def _simplyhired_html(records: list[dict]) -> str:
 def _greenhouse_body(records: list[dict]) -> str:
     # The board API answers with JSON, not a page.
     return json.dumps({"jobs": records, "meta": {"total": len(records)}})
+
+
+def _smartrecruiters_page(records: list[dict], url: str) -> str:
+    """The board search page, or one job page, depending on what was requested.
+
+    SmartRecruiters serves both as rendered HTML: the board carries its own
+    ``companyIdentifier`` and a card per posting, and the job page carries
+    schema.org microdata. Built here rather than replayed so the pipeline tests
+    can control dates and countries; the parsing of the real markup is pinned in
+    ``tests/test_smartrecruiters_adapter.py`` against a live capture.
+    """
+    if "/external-referrals/" in url:
+        raise AssertionError(f"apply links are never fetched: {url}")
+
+    if url.startswith("https://jobs.smartrecruiters.com/"):
+        job_id = url.rstrip("/").rsplit("/", 1)[-1].split("-", 1)[0]
+        record = next(
+            (item for item in records if item["id"] == job_id),
+            None,
+        )
+        if record is None:
+            raise PortalError(f"no such posting: {url}", portal="smartrecruiters")
+        details = (
+            '<li class="job-detail">Work Environment: Hybrid</li>'
+            if record.get("hybrid")
+            else ""
+        )
+        posted = (
+            f'<meta itemprop="datePosted" content="{record["datePosted"]}">'
+            if record.get("datePosted")
+            else ""
+        )
+        locality = record.get("locality", "New York")
+        region = record.get("region", "New York")
+        return (
+            "<html><body>"
+            f'<h1>{record["title"]}</h1>'
+            f'<ul><li class="job-detail" itemprop="employmentType">Full-time</li>'
+            f"{details}</ul>"
+            '<div itemprop="jobLocation" itemscope>'
+            '<div itemprop="address" itemscope>'
+            f'<meta itemprop="addressCountry" content="{record["country"]}">'
+            f'<meta itemprop="addressLocality" content="{locality}">'
+            f'<meta itemprop="addressRegion" content="{region}">'
+            "</div></div>"
+            '<div itemprop="hiringOrganization" itemscope>'
+            f'<meta itemprop="name" content="{record["company"]}">'
+            "</div>"
+            f"{posted}"
+            '<article><div class="job-sections">'
+            '<section class="job-section"><h3>Job Description</h3><div>'
+            + _as_paragraphs(FINANCE_DESCRIPTION)
+            + "</div></section>"
+            '<section class="job-section"><h3>Qualifications</h3>'
+            "<ul><li>Excel and SQL</li><li>Forecasting and budgeting</li></ul>"
+            "</section>"
+            "</div></article>"
+            f'<a href="https://jobs.smartrecruiters.com/external-referrals/company/'
+            f'fixtureco/publication/{record["id"]}">Apply</a>'
+            "</body></html>"
+        )
+
+    slug = url.split("careers.smartrecruiters.com/", 1)[-1].split("?", 1)[0]
+    cards = "".join(
+        '<li><a href="https://jobs.smartrecruiters.com/'
+        f'{slug}/{record["id"]}-{record["id"]}" class="link--block details '
+        f'js-job-ad-link"><h4>{record["title"]}</h4></a></li>'
+        for record in records
+    )
+    return (
+        f"<html><body><ul>{cards}</ul>"
+        f'<script>var CAREERPAGE = {{ "companyIdentifier": "{slug}" }};</script>'
+        "</body></html>"
+    )
 
 
 def _ashby_page(records: list[dict], url: str) -> str:
@@ -222,6 +297,13 @@ class OfflineWorkday(WorkdayPortal):
     failure: Exception | None = None
 
 
+class OfflineSmartRecruiters(SmartRecruitersPortal):
+    """The real adapter, served from canned board-search and job pages."""
+
+    records: list[dict] = []
+    failure: Exception | None = None
+
+
 class OfflineScaleJobs(ScaleJobsPortal):
     """The real adapter, served from a canned search response."""
 
@@ -257,6 +339,11 @@ def offline_http(monkeypatch: pytest.MonkeyPatch) -> None:
     """
 
     async def fake_get_text(self, url, **kwargs):  # noqa: ANN001
+        if self.portal == "smartrecruiters":
+            if OfflineSmartRecruiters.failure is not None:
+                raise OfflineSmartRecruiters.failure
+            return _smartrecruiters_page(OfflineSmartRecruiters.records, url)
+
         paged = _OFFLINE_PAGES.get(self.portal)
         if paged is not None:
             if paged.failure is not None:
@@ -355,6 +442,8 @@ def offline_http(monkeypatch: pytest.MonkeyPatch) -> None:
         adapter_class.failure = None
     OfflineWorkday.records = []
     OfflineWorkday.failure = None
+    OfflineSmartRecruiters.records = []
+    OfflineSmartRecruiters.failure = None
 
 
 def hiringcafe_records() -> list[dict]:
@@ -592,6 +681,52 @@ def workday_records(
             }
         )
     return records
+
+
+#: SmartRecruiters postings in the shape the board and job pages publish. Dates
+#: and countries are set relative to the run's frozen clock so the freshness and
+#: United States gates are genuinely exercised.
+def smartrecruiters_records(
+    count: int = 3,
+    *,
+    country: str = "United States",
+    company: str = "Fixture Co",
+    now: datetime = NOW,
+    dated: bool = True,
+) -> list[dict]:
+    records = []
+    for index in range(count):
+        posted = (now - timedelta(days=index + 1)).isoformat().replace("+00:00", "Z")
+        records.append(
+            {
+                "id": f"74400000000{index}",
+                "title": "Financial Analyst",
+                "company": company,
+                "country": country,
+                "datePosted": posted if dated else "",
+                "hybrid": True,
+                # Kept consistent with the country: a fixture claiming an
+                # Australian posting in New York would be testing the
+                # classifier's tolerance for nonsense, not the adapter.
+                "locality": "New York" if country == "United States" else "Sydney",
+                "region": "New York" if country == "United States" else "New South Wales",
+            }
+        )
+    return records
+
+
+def build_smartrecruiters(
+    records: list[dict] | None = None, *, failure: Exception | None = None
+) -> OfflineSmartRecruiters:
+    # One board keeps the fixture honest about request counts.
+    adapter = OfflineSmartRecruiters(
+        options={"rate_limit_per_minute": 0, "boards": ["fixtureco"]}
+    )
+    type(adapter).records = (
+        records if records is not None else smartrecruiters_records()
+    )
+    type(adapter).failure = failure
+    return adapter
 
 
 def build_workday(
@@ -4492,6 +4627,211 @@ async def test_workday_and_an_existing_portal_merge_without_duplicates(
         db_session,
         resume=resume,
         specs=[("greenhouse", build_greenhouse()), ("workday", build_workday())],
+    )
+
+    assert outcome.status is SearchRunStatus.COMPLETED
+    assert len(prepared.legs) == 2
+    urls = [item.preferred_application_url for item in outcome.results]
+    assert len(urls) == len(set(urls))
+    assert_ranked_newest_first(outcome.results)
+
+
+# --- SmartRecruiters -------------------------------------------------------
+
+
+async def test_a_smartrecruiters_only_search_returns_its_jobs(
+    db_session: AsyncSession,
+) -> None:
+    """The real adapter, through the real pipeline, end to end."""
+    _, resume = await analysed_resume(db_session)
+
+    prepared, outcome = await run_search(
+        db_session, resume=resume, specs=[("smartrecruiters", build_smartrecruiters())]
+    )
+
+    assert outcome.status is SearchRunStatus.COMPLETED
+    assert prepared.legs[0].raw_count == 3
+    assert prepared.legs[0].status is PortalRunStatus.COMPLETED
+    assert outcome.returned_count > 0
+    assert all(item.final_score >= 70.0 for item in outcome.results)
+    assert all(carried_by(item, "smartrecruiters") for item in outcome.results)
+    assert_ranked_newest_first(outcome.results)
+
+
+async def test_smartrecruiters_results_carry_the_employer_from_the_page(
+    db_session: AsyncSession,
+) -> None:
+    """The job page publishes the organisation; nothing is configured."""
+    _, resume = await analysed_resume(db_session)
+
+    _, outcome = await run_search(
+        db_session, resume=resume, specs=[("smartrecruiters", build_smartrecruiters())]
+    )
+
+    assert outcome.results
+    assert {item.company for item in outcome.results} == {"Fixture Co"}
+
+
+async def test_smartrecruiters_results_link_to_the_published_apply_url(
+    db_session: AsyncSession,
+) -> None:
+    _, resume = await analysed_resume(db_session)
+
+    _, outcome = await run_search(
+        db_session, resume=resume, specs=[("smartrecruiters", build_smartrecruiters())]
+    )
+
+    assert outcome.results
+    for item in outcome.results:
+        assert item.preferred_application_url.startswith(
+            "https://jobs.smartrecruiters.com/"
+        )
+        assert item.preferred_url_kind == JobUrlKind.ATS.value
+
+
+async def test_a_smartrecruiters_posting_outside_the_window_is_excluded(
+    db_session: AsyncSession,
+) -> None:
+    stale = smartrecruiters_records(1, now=NOW - timedelta(days=45))
+
+    _, resume = await analysed_resume(db_session)
+    _, outcome = await run_search(
+        db_session,
+        resume=resume,
+        specs=[("smartrecruiters", build_smartrecruiters(stale))],
+    )
+
+    assert outcome.returned_count == 0
+
+
+async def test_a_smartrecruiters_posting_with_no_date_is_excluded(
+    db_session: AsyncSession,
+) -> None:
+    undated = smartrecruiters_records(1, dated=False)
+
+    _, resume = await analysed_resume(db_session)
+    prepared, outcome = await run_search(
+        db_session,
+        resume=resume,
+        specs=[("smartrecruiters", build_smartrecruiters(undated))],
+    )
+
+    # Dropped at the adapter: a dateless listing never enters the pipeline.
+    assert prepared.legs[0].raw_count == 0
+    assert outcome.returned_count == 0
+
+
+async def test_a_smartrecruiters_posting_outside_the_united_states_is_excluded(
+    db_session: AsyncSession,
+) -> None:
+    abroad = smartrecruiters_records(2, country="Australia")
+
+    _, resume = await analysed_resume(db_session)
+    _, outcome = await run_search(
+        db_session,
+        resume=resume,
+        specs=[("smartrecruiters", build_smartrecruiters(abroad))],
+    )
+
+    assert outcome.returned_count == 0
+
+
+async def test_a_smartrecruiters_failure_is_isolated_to_its_own_leg(
+    db_session: AsyncSession,
+) -> None:
+    """Greenhouse still returns its jobs while SmartRecruiters is refused."""
+    _, resume = await analysed_resume(db_session)
+
+    prepared, outcome = await run_search(
+        db_session,
+        resume=resume,
+        specs=[
+            ("greenhouse", build_greenhouse()),
+            (
+                "smartrecruiters",
+                build_smartrecruiters(
+                    failure=PortalBlockedError("blocked", portal="smartrecruiters")
+                ),
+            ),
+        ],
+    )
+
+    slug_of = {portal.id: portal.slug for portal in prepared.portals}
+    leg = next(
+        leg
+        for leg in prepared.legs
+        if slug_of[leg.portal_id].endswith("smartrecruiters")
+    )
+
+    assert outcome.status is SearchRunStatus.COMPLETED_WITH_ERRORS
+    assert leg.status is PortalRunStatus.FAILED
+    assert not any(carried_by(item, "smartrecruiters") for item in outcome.results)
+    assert all(carried_by(item, "greenhouse") for item in outcome.results)
+
+
+async def test_a_smartrecruiters_only_run_that_fails_is_a_failed_run(
+    db_session: AsyncSession,
+) -> None:
+    _, resume = await analysed_resume(db_session)
+
+    _, outcome = await run_search(
+        db_session,
+        resume=resume,
+        specs=[
+            (
+                "smartrecruiters",
+                build_smartrecruiters(
+                    failure=PortalBlockedError("blocked", portal="smartrecruiters")
+                ),
+            )
+        ],
+    )
+
+    assert outcome.status is SearchRunStatus.FAILED
+    assert outcome.returned_count == 0
+
+
+async def test_selecting_greenhouse_alone_makes_no_smartrecruiters_request(
+    db_session: AsyncSession,
+) -> None:
+    """Adding a portal must change nothing for a search that does not select it.
+
+    SmartRecruiters is registered process-wide by importing
+    ``app.portals.adapters``, so this runs with it registered. ``offline_http``
+    raises on a request from any portal it was not given, so a SmartRecruiters
+    request would fail the run outright - which is the part a result assertion
+    alone would miss.
+    """
+    import app.portals.adapters  # noqa: F401
+    from app.portals.registry import registry
+
+    assert "smartrecruiters" in registry.slugs, "guard is vacuous unless registered"
+
+    untouched = OfflineSmartRecruiters.records
+    _, resume = await analysed_resume(db_session)
+
+    prepared, outcome = await run_search(
+        db_session, resume=resume, specs=[("greenhouse", build_greenhouse())]
+    )
+
+    assert outcome.status is SearchRunStatus.COMPLETED
+    assert len(prepared.legs) == 1
+    assert not any(carried_by(item, "smartrecruiters") for item in outcome.results)
+    assert OfflineSmartRecruiters.records == untouched
+
+
+async def test_smartrecruiters_and_an_existing_portal_merge_without_duplicates(
+    db_session: AsyncSession,
+) -> None:
+    _, resume = await analysed_resume(db_session)
+
+    prepared, outcome = await run_search(
+        db_session,
+        resume=resume,
+        specs=[
+            ("greenhouse", build_greenhouse()),
+            ("smartrecruiters", build_smartrecruiters()),
+        ],
     )
 
     assert outcome.status is SearchRunStatus.COMPLETED

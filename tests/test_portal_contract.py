@@ -51,6 +51,7 @@ def test_only_approved_adapters_are_registered() -> None:
         "lever",
         "ashby",
         "workday",
+        "smartrecruiters",
     }
 
 
@@ -155,9 +156,15 @@ def _cut_the_network(adapter) -> None:  # noqa: ANN001
         client.post_json = _no_post
         client.get_optional_text = _no_optional
 
-    single = getattr(adapter, "_http", None)
-    if single is not None:
-        _cut(single)
+    # Any client the adapter holds, whatever it called the attribute. Workday
+    # keeps one per tenant host and SmartRecruiters one per host role, so
+    # looking only for `_http` would leave a live adapter pointed at the real
+    # network inside a test that exists to prove it fails safely.
+    from app.portals.http import PortalHttpClient
+
+    for value in vars(adapter).values():
+        if isinstance(value, PortalHttpClient):
+            _cut(value)
 
     if hasattr(adapter, "_client_for"):
         original = adapter._client_for

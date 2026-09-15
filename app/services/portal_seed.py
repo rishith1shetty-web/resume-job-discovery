@@ -302,6 +302,62 @@ PORTAL_SEEDS: tuple[PortalSeed, ...] = (
         ),
     ),
     PortalSeed(
+        slug="smartrecruiters",
+        website_url="https://careers.smartrecruiters.com/",
+        display_order=27,
+        is_enabled=True,
+        # A longer leg, and only that.
+        #
+        # Unlike Workday, each `search` call here already fits the shared 90s
+        # ceiling comfortably - measured 24-46s across the shipped boards - so
+        # `query_timeout_seconds` stays at the shared default. What does not
+        # fit is the *leg*: every board lives on one hostname, so the board
+        # walk is paced end to end, and one pass costs boards x variations
+        # requests. Six same-role variations over seventeen boards is a hundred
+        # searches before a single job page, which overruns the shared 150s
+        # budget and leaves the freshness ladder stuck in its first window.
+        #
+        # Read by `SearchDepth.from_options` for this portal alone -
+        # `adapter_options` merges this row's options - so no global default
+        # and no other portal is affected. Nothing about pacing, matching or
+        # freshness changes: the portal is given time to finish the work, not
+        # permission to do less of it.
+        config_options={"max_runtime_seconds": 300.0},
+        notes=(
+            "Collects from SmartRecruiters' public, server-rendered employer "
+            "boards: careers.smartrecruiters.com/<Company>?search=<term> for "
+            "discovery and jobs.smartrecruiters.com/<Company>/<id>-<slug> for "
+            "each posting, whose schema.org MICRODATA carries the date, the "
+            "structured address and the employer. The documented Posting API "
+            "on api.smartrecruiters.com is deliberately NOT used and is never "
+            "contacted: that host's robots.txt publishes a global Disallow for "
+            "every agent and allows only LinkedInBot, so the slower permitted "
+            "HTML path is taken instead. SmartRecruiters also publishes, in "
+            "its own www robots.txt, a list of employers it closes to "
+            "crawlers; those 68 employers ship as a hard exclusion checked "
+            "before any request is built, together with any board proved to "
+            "belong to one of them under a slug the rule does not literally "
+            "match. "
+            "before any request is built, even though the rules are scoped to "
+            "a host this adapter never touches. SmartRecruiters is an ATS, not "
+            "a job board: it publishes NO cross-company search and no employer "
+            "directory, so coverage is exactly the employers listed in this "
+            "portal's boards option and no wider. Employer names are read from "
+            "the job page itself, so a board is configured by slug alone and "
+            "cannot carry a stale company name. Neither a missing employer nor "
+            "one that has moved off the platform can be told apart by status "
+            "code - both answer 200 - so a board counts as real only when its "
+            "page carries SmartRecruiters' own companyIdentifier for the slug "
+            "that was requested. Discovery is the server-side ?search=, which "
+            "reaches postings that walking ?page= does not; it is fuzzy and "
+            "over-returns, so titles are filtered locally against the "
+            "same-role variations and only matching listings have their job "
+            "page opened. posted_at comes from datePosted, the original "
+            "publication date - the page also emits og:updated_time with the "
+            "same value, and it is never read on its own."
+        ),
+    ),
+    PortalSeed(
         slug="career_pages",
         website_url="https://www.rising-path.example/careers",
         display_order=25,

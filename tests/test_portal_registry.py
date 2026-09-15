@@ -71,6 +71,7 @@ def test_the_global_registry_holds_only_the_approved_adapters() -> None:
         "lever",
         "ashby",
         "workday",
+        "smartrecruiters",
     }
 
 
