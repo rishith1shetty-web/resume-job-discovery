@@ -98,6 +98,10 @@ from app.portals.exceptions import (
     PortalRateLimitedError,
 )
 from app.portals.http import HttpPolicy, PortalHttpClient
+from app.processing.us_locations import (
+    LocationConfidence,
+    classify_us_location,
+)
 
 logger = get_logger(__name__)
 
@@ -155,6 +159,44 @@ DEFAULT_BOARDS: tuple[str, ...] = (
     "astronomer",
     "alchemy",
 )
+
+#: The only two verdicts that justify not opening a posting's page.
+#:
+#: Both are a *positive* identification of somewhere outside the United
+#: States - a named foreign country, or a city that is unambiguously in one.
+#: Every other verdict that is not US, including ``NO_LOCATION``,
+#: ``UNCLASSIFIED`` and ``UNSPECIFIED_REGION``, means the classifier could not
+#: tell, and "could not tell" must never be read as "no". Those postings are
+#: still fetched, exactly as before.
+#:
+#: This matters because ``UsLocationVerdict.is_us`` is False for all of them
+#: alike: testing that flag on its own would silently discard postings whose
+#: location was merely unreadable on the board, which is a different and much
+#: worse thing than skipping one that says "London, United Kingdom".
+_DEFINITELY_NOT_US = frozenset(
+    {LocationConfidence.NON_US_COUNTRY, LocationConfidence.NON_US_CITY}
+)
+
+
+def board_says_not_us(posting: dict[str, Any]) -> bool:
+    """Whether the board itself already places this posting outside the US.
+
+    Ashby publishes ``locationName`` on the board, so for some postings the
+    United States rule can be answered before spending a request on the page.
+    Measured across the shipped boards, a large share of title matches for
+    some roles are foreign postings whose pages were opened only to be
+    discarded.
+
+    Deliberately the *only* gate moved earlier. The posting's date and its
+    description exist nowhere but the page, so freshness, mandatory skill
+    coverage and the score still require the fetch and are untouched.
+    """
+    location = str(posting.get("locationName") or "").strip()
+    if not location:
+        return False
+    verdict = classify_us_location(location)
+    return not verdict.is_us and verdict.confidence in _DEFINITELY_NOT_US
+
 
 _TAG_RE = re.compile(r"<[^>]+>")
 _BLANK_RUN_RE = re.compile(r"\n{3,}")
@@ -654,6 +696,22 @@ class AshbyPortal(BasePortal):
                 if not job_id or job_id in seen:
                     continue
 
+                if board_says_not_us(posting):
+                    # The board already named a country that is not this
+                    # product's. Opening the page could only confirm it, and
+                    # the request is better spent on a board this leg has not
+                    # reached yet. A posting whose location is absent or
+                    # unreadable does not take this path.
+                    seen.add(job_id)
+                    logger.debug(
+                        "ashby_posting_not_us",
+                        portal=self.slug,
+                        board=slug,
+                        job=job_id,
+                        location=posting.get("locationName"),
+                    )
+                    continue
+
                 # Checked again here, not only per board: a board of matching
                 # titles is a page fetch each, so this inner loop is where a
                 # deadline is most likely to be crossed.
@@ -888,6 +946,7 @@ class AshbyPortal(BasePortal):
 
 
 __all__ = [
+    "board_says_not_us",
     "BOARD_BASE",
     "DEFAULT_BOARDS",
     "FORBIDDEN_API_HOST",

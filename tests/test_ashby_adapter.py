@@ -973,3 +973,161 @@ def test_the_adapter_exposes_no_apply_automation() -> None:
 
     for banned in ("easy_apply", "quick_apply", "submit_application", "auto_apply"):
         assert banned not in code.casefold()
+
+
+# --- Not opening a page the board has already answered ----------------------
+#
+# Ashby publishes `locationName` on the board itself, so for some postings the
+# United States rule can be settled before a request is spent. Measured across
+# the shipped boards, 74 of 187 title matches over four roles - 40%, and 42%
+# for Machine Learning Engineer - were foreign postings whose pages were opened
+# only to be discarded, while the same legs were running out of time with
+# boards still unread.
+#
+# The rule is deliberately narrow. Only a *positive* identification of
+# somewhere abroad skips the fetch; "no location" and "cannot tell" are not
+# the same claim and still cost a request, because the page may say something
+# the board did not. Nothing else moves: the date and the description exist
+# nowhere but the page, so freshness and scoring are untouched.
+
+
+def _synthetic_board(postings: list[dict[str, Any]], *, name: str = "Acme") -> str:
+    """A board page carrying exactly the postings a test wants."""
+    payload = {
+        "organization": {"name": name},
+        "jobBoard": {"jobPostings": postings},
+    }
+    return f"<html><script>window.__appData = {json.dumps(payload)};</script></html>"
+
+
+def _posting(job_id: str, location: str | None) -> dict[str, Any]:
+    posting = {"id": job_id, "title": "Data Analyst"}
+    if location is not None:
+        posting["locationName"] = location
+    return posting
+
+
+@pytest.fixture
+def board_of(monkeypatch: pytest.MonkeyPatch, pages):
+    """Serve one synthetic board; real job pages come from the fixture."""
+
+    def _apply(postings: list[dict[str, Any]], job_page_for: str):
+        calls: list[str] = []
+        page = job_page(pages, job_page_for)
+
+        async def _get_text(self, url, *, params=None):  # noqa: ANN001
+            calls.append(url)
+            tail = url[len(BOARD_BASE):].strip("/")
+            if len(tail.split("/")) == 1:
+                return _synthetic_board(postings)
+            # Any posting that does get opened is served a real page, so the
+            # test fails on a missing fetch rather than on a parse error.
+            return page
+
+        monkeypatch.setattr(
+            "app.portals.http.PortalHttpClient.get_text", _get_text, raising=True
+        )
+        return calls
+
+    return _apply
+
+
+def _detail_calls(calls: list[str]) -> list[str]:
+    return [url for url in calls if url.count("/") > 3]
+
+
+async def test_a_us_posting_still_has_its_page_opened(board_of, job_ids) -> None:
+    calls = board_of([_posting("job-1", "San Francisco, CA")], job_ids["data"])
+
+    await portal().search(a_request())
+
+    assert len(_detail_calls(calls)) == 1
+
+
+async def test_a_posting_the_board_places_abroad_is_not_opened(
+    board_of, job_ids
+) -> None:
+    calls = board_of([_posting("job-1", "Dublin, Ireland")], job_ids["data"])
+
+    result = await portal().search(a_request())
+
+    assert _detail_calls(calls) == []
+    assert result.jobs == []
+
+
+@pytest.mark.parametrize(
+    "location",
+    [
+        pytest.param("", id="empty string"),
+        pytest.param(None, id="field absent"),
+        pytest.param("Remote", id="no place named"),
+        pytest.param("Atlantis", id="unrecognisable"),
+        pytest.param("Anywhere", id="unspecified region"),
+    ],
+)
+async def test_a_posting_the_board_cannot_place_is_still_opened(
+    board_of, job_ids, location
+) -> None:
+    """"Cannot tell" is not "no". Each of these would be silently discarded by
+    a rule that tested ``is_us`` alone, because the verdict is False for all of
+    them just as it is for Dublin.
+    """
+    calls = board_of([_posting("job-1", location)], job_ids["data"])
+
+    await portal().search(a_request())
+
+    assert len(_detail_calls(calls)) == 1
+
+
+async def test_only_the_foreign_postings_are_skipped(board_of, job_ids) -> None:
+    """A mixed board: the US and the unknown are opened, the foreign are not."""
+    calls = board_of(
+        [
+            _posting("us-1", "New York, NY"),
+            _posting("gb-1", "London, United Kingdom"),
+            _posting("unknown-1", ""),
+            _posting("ie-1", "Dublin, Ireland"),
+            _posting("us-2", "Austin, TX"),
+        ],
+        job_ids["data"],
+    )
+
+    await portal().search(a_request())
+
+    opened = _detail_calls(calls)
+    assert len(opened) == 3
+    assert not any("gb-1" in url or "ie-1" in url for url in opened)
+
+
+async def test_a_us_only_board_behaves_exactly_as_before(
+    stub_pages, job_ids
+) -> None:
+    """The regression guard, on the real captured fixture.
+
+    Every posting on it that a Data Analyst query matches is a US posting, so
+    this change must make no difference at all to what is fetched or returned.
+    """
+    calls = stub_pages()
+    result = await portal().search(a_request())
+
+    assert len(result.jobs) > 0
+    assert all(job.source == "ashby" for job in result.jobs)
+    # One page per returned job, and the board itself.
+    assert len(_detail_calls(calls)) >= len(result.jobs)
+
+
+def test_the_rule_requires_a_positive_identification() -> None:
+    """The unit the loop depends on, stated directly.
+
+    ``UsLocationVerdict.is_us`` is False for Dublin and for a blank location
+    alike, so the loop cannot use it on its own - it has to ask *why* the
+    answer was no.
+    """
+    from app.portals.adapters.ashby import board_says_not_us
+
+    assert board_says_not_us({"locationName": "Dublin, Ireland"}) is True
+    assert board_says_not_us({"locationName": "Toronto, Canada"}) is True
+
+    for benign in ("San Francisco, CA", "Remote", "", "Atlantis"):
+        assert board_says_not_us({"locationName": benign}) is False
+    assert board_says_not_us({}) is False

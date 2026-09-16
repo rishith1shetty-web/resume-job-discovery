@@ -46,6 +46,32 @@ DEFAULT_USER_AGENT = (
     "JobFinderBot/0.1 (+resume-based job discovery; contact via repository owner)"
 )
 
+#: The TLS trust store, built once for the whole process.
+#:
+#: Every request used to build its own. ``_send`` opens an ``httpx.AsyncClient``
+#: per attempt, and constructing one parses the certifi CA bundle from disk -
+#: measured at 451ms each, against 21ms for the rest of the context. That is
+#: CPU rather than waiting, so it does not overlap while portals collect
+#: concurrently: across a four-role benchmark it came to 962 seconds, 60% of
+#: Workday's entire leg, and it was the single largest reason portals reached
+#: their deadline with boards still unread.
+#:
+#: ``httpx.create_ssl_context()`` is asked for it rather than certifi directly,
+#: for two reasons. It is the same bundle - the function's default path is
+#: ``ssl.create_default_context(cafile=certifi.where())`` - so the trust store
+#: is unchanged. And it keeps honouring ``SSL_CERT_FILE`` and ``SSL_CERT_DIR``,
+#: which an operator may have set and which naming certifi directly would
+#: silently ignore.
+#:
+#: Reusing one context is what ``ssl.SSLContext`` is designed for; a server
+#: uses a single context for every connection it accepts. Nothing mutates this
+#: one after construction, and it is never handed a client certificate.
+#:
+#: This does not share clients or connections. Each request still gets its own
+#: client and its own connection, exactly as before - only the trust store is
+#: no longer rebuilt.
+SSL_CONTEXT = httpx.create_ssl_context()
+
 #: Signals bot protection rather than a missing page. Never worked around.
 _BLOCKED_STATUSES = frozenset({401, 403, 407, 451})
 _RATE_LIMIT_STATUSES = frozenset({429})
@@ -327,6 +353,7 @@ class PortalHttpClient:
                     follow_redirects=True,
                     headers=request_headers,
                     cookies=self._cookies,
+                    verify=SSL_CONTEXT,
                 ) as client:
                     if left is None:
                         response = await send(client)
@@ -587,6 +614,7 @@ class PortalHttpClient:
                 timeout=self.policy.timeout_seconds,
                 follow_redirects=True,
                 headers=self._headers(),
+                verify=SSL_CONTEXT,
             ) as client:
                 response = await client.head(url)
             return response.status_code < 400
