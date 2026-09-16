@@ -91,6 +91,7 @@ from app.portals.base import (
     PortalSearchResult,
     RawJob,
     declare_application_type,
+    out_of_time,
 )
 from app.portals.exceptions import (
     PortalBlockedError,
@@ -442,9 +443,16 @@ class LeverPortal(BasePortal):
         seen: set[str] = set()
         jobs: list[RawJob] = []
         failures: list[str] = []
+        truncated = False
 
         for board in self._boards:
             if len(jobs) >= request.limit:
+                break
+
+            if out_of_time(request):
+                # The caller is out of time. Returning what is already here
+                # keeps it; being cancelled mid-loop would not.
+                truncated = True
                 break
 
             try:
@@ -497,6 +505,9 @@ class LeverPortal(BasePortal):
             next_cursor=None,
             # Collected unfiltered; the caller applies the freshness window.
             window_applied_by_portal=False,
+            # True only when a deadline stopped the sweep early. The jobs
+            # above are complete and valid; the sweep is not.
+            partial=truncated,
         )
 
     async def fetch_description(self, job: RawJob) -> str | None:

@@ -102,6 +102,7 @@ from app.portals.base import (
     PortalSearchResult,
     RawJob,
     declare_application_type,
+    out_of_time,
 )
 from app.portals.exceptions import PortalParseError
 from app.portals.http import HttpPolicy, PortalHttpClient
@@ -182,6 +183,7 @@ class ScaleJobsPortal(BasePortal):
         now = datetime.now(UTC)
         seen: set[str] = set()
         jobs: list[RawJob] = []
+        truncated = False
 
         for query in request.queries:
             if len(jobs) >= request.limit:
@@ -189,6 +191,12 @@ class ScaleJobsPortal(BasePortal):
 
             for page in range(self._max_pages):
                 if len(jobs) >= request.limit:
+                    break
+
+                if out_of_time(request):
+                    # The caller is out of time. Returning what is already here
+                    # keeps it; being cancelled mid-loop would not.
+                    truncated = True
                     break
 
                 payload = await self._search_once(
@@ -223,6 +231,9 @@ class ScaleJobsPortal(BasePortal):
             next_cursor=None,
             # The endpoint applied the window itself via `dateFrom`.
             window_applied_by_portal=True,
+            # True only when a deadline stopped the sweep early. The jobs
+            # above are complete and valid; the sweep is not.
+            partial=truncated,
         )
 
     async def fetch_description(self, job: RawJob) -> str | None:

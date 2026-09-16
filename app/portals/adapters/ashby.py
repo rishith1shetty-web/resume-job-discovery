@@ -89,6 +89,7 @@ from app.portals.base import (
     PortalSearchResult,
     RawJob,
     declare_application_type,
+    out_of_time,
 )
 from app.portals.exceptions import (
     PortalBlockedError,
@@ -609,9 +610,17 @@ class AshbyPortal(BasePortal):
         seen: set[str] = set()
         jobs: list[RawJob] = []
         failures: list[str] = []
+        truncated = False
 
         for slug in self._boards:
             if len(jobs) >= request.limit:
+                break
+
+            if out_of_time(request):
+                # The caller is out of time. Boards already read are cached for
+                # the life of this adapter, so the next query resumes here
+                # rather than starting over.
+                truncated = True
                 break
 
             try:
@@ -645,6 +654,13 @@ class AshbyPortal(BasePortal):
                 if not job_id or job_id in seen:
                     continue
 
+                # Checked again here, not only per board: a board of matching
+                # titles is a page fetch each, so this inner loop is where a
+                # deadline is most likely to be crossed.
+                if out_of_time(request):
+                    truncated = True
+                    break
+
                 raw = await self._read_job(
                     slug, organisation=organisation, posting=posting
                 )
@@ -653,6 +669,9 @@ class AshbyPortal(BasePortal):
 
                 seen.add(job_id)
                 jobs.append(raw)
+
+            if truncated:
+                break
 
         if failures and len(failures) == len(self._boards):
             # Every board failed: that is the portal being down, and the run
@@ -669,6 +688,9 @@ class AshbyPortal(BasePortal):
             next_cursor=None,
             # Collected unfiltered; the caller applies the freshness window.
             window_applied_by_portal=False,
+            # True only when a deadline stopped the sweep early. The jobs above
+            # are complete and valid; the sweep is not.
+            partial=truncated,
         )
 
     async def fetch_description(self, job: RawJob) -> str | None:

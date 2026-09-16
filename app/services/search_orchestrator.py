@@ -232,6 +232,14 @@ class PortalLegOutcome:
     #: Depth actually reached, for the run summary.
     requests: int = 0
     pages: int = 0
+    #: Queries the portal was asked but never answered, having timed out while
+    #: other queries succeeded. Attempted minus answered.
+    lost_queries: int = 0
+    #: True when this portal returned real jobs but was cut short before it had
+    #: finished. Not a failure - the jobs are collected, scored and returned
+    #: exactly as any other portal's - and not a clean sweep either, which is
+    #: why it is recorded rather than folded into ``status``.
+    partial: bool = False
     collection_seconds: float = 0.0
     error: str | None = None
     error_kind: PortalErrorKind | None = None
@@ -241,6 +249,20 @@ class PortalLegOutcome:
     @property
     def failed(self) -> bool:
         return self.status is PortalRunStatus.FAILED
+
+    @property
+    def completion(self) -> str:
+        """How this leg ended, in the three terms that actually differ.
+
+        ``failed`` means nothing usable was collected. ``partial_timeout``
+        means jobs were collected and returned but the portal had more to give.
+        ``complete`` means it was asked everything and answered.
+        """
+        if self.failed:
+            return "failed"
+        if self.partial:
+            return "partial_timeout"
+        return "complete"
 
 
 @dataclass(slots=True)
@@ -840,6 +862,8 @@ async def _process_leg(
         exhaustion=collected.reason,
         requests=collected.requests,
         pages=collected.pages,
+        lost_queries=collected.lost_queries,
+        partial=collected.is_partial,
         collection_seconds=collected.elapsed_seconds,
     )
 
@@ -930,6 +954,10 @@ async def _process_leg(
         result.candidates = []
         result.collected_count = 0
         result.normalized_count = 0
+        # Reset with them. A leg that collected part of a portal and then failed
+        # to process it has nothing partial to offer: "it had more to give" is
+        # only true of a leg whose results survived, and a failed leg's did not.
+        result.partial = False
         # Reset with the rest: a failed leg that reported "1 listing outside the
         # US" alongside "0 collected" is a contradiction the summary should not
         # print.
@@ -1138,13 +1166,19 @@ async def _finalise(
     )
 
     failed = [leg for leg in outcome.portals if leg.failed]
+    # Portals that returned real jobs but were cut short before they had
+    # finished. Their results are in the pool and were ranked like any other,
+    # so this is not a failure - but the run did not see everything it asked
+    # for, and reporting it as a clean sweep would overstate the coverage.
+    partial = [leg for leg in outcome.portals if leg.partial]
+
     if failed and len(failed) == len(outcome.portals):
         run.status = SearchRunStatus.FAILED
         run.error_message = (
             "Every selected portal failed: "
             + "; ".join(f"{leg.portal_slug}: {leg.error}" for leg in failed)
         )[:4000]
-    elif failed:
+    elif failed or partial:
         run.status = SearchRunStatus.COMPLETED_WITH_ERRORS
     else:
         run.status = SearchRunStatus.COMPLETED
@@ -1154,6 +1188,16 @@ async def _finalise(
     for leg in failed:
         outcome.warnings.append(
             f"{leg.portal_display_name} failed ({leg.error_kind.value if leg.error_kind else 'unknown'}): {leg.error}"
+        )
+
+    for leg in partial:
+        # Deliberately phrased as coverage rather than breakage: nothing was
+        # lost and nothing is wrong with what came back. What the user needs to
+        # know is that this portal probably has more.
+        outcome.warnings.append(
+            f"{leg.portal_display_name} ran out of time after "
+            f"{leg.collected_count} listing{'s' if leg.collected_count != 1 else ''}: "
+            "its results are included, but it had more to give."
         )
 
     # Say it on every run, not only when something was dropped: the user needs
@@ -1258,6 +1302,13 @@ def _summary(
             for leg in outcome.portals
             if leg.exhaustion is not None and leg.exhaustion.is_complete
         ),
+        # The three outcomes that actually differ, counted so a run can be read
+        # without reconstructing them from statuses and exhaustion reasons.
+        "portals_partial": sum(1 for leg in outcome.portals if leg.partial),
+        "portals_failed": sum(1 for leg in outcome.portals if leg.failed),
+        "queries_lost_to_timeout": sum(
+            leg.lost_queries for leg in outcome.portals
+        ),
         "portals_limited": sorted(
             {
                 leg.exhaustion.value
@@ -1280,6 +1331,8 @@ def _summary(
             {
                 "portal": leg.portal_slug,
                 "status": leg.status.value,
+                # complete | partial_timeout | failed.
+                "completion": leg.completion,
                 "collected": leg.collected_count,
                 "normalized": leg.normalized_count,
                 "qualified": leg.qualified_count,
@@ -1295,6 +1348,7 @@ def _summary(
                     leg.exhaustion.is_complete if leg.exhaustion else False
                 ),
                 "requests": leg.requests,
+                "queries_lost": leg.lost_queries,
                 "pages": leg.pages,
                 "collection_seconds": leg.collection_seconds,
                 "deepest_window": (

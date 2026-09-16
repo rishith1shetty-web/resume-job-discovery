@@ -53,6 +53,7 @@ from app.portals.exceptions import (
     PortalTimeoutError,
 )
 from app.processing.normalize import RejectionReason
+from app.search.depth import ExhaustionReason
 from app.services import search_run_service
 from app.services.search_orchestrator import execute_search_run
 from tests.factories import make_portal, make_profile, make_resume, make_user
@@ -4839,3 +4840,257 @@ async def test_smartrecruiters_and_an_existing_portal_merge_without_duplicates(
     urls = [item.preferred_application_url for item in outcome.results]
     assert len(urls) == len(set(urls))
     assert_ranked_newest_first(outcome.results)
+
+
+# --- Partial results, end to end -------------------------------------------
+#
+# The collector-level contract is proved in tests/test_search_deadlines.py.
+# These assert the part only the whole pipeline can show: that a portal cut
+# short still has its listings normalised, scored, ranked and *returned*, and
+# that the run says so rather than reporting a clean sweep.
+
+
+class _CutShortHiringCafe(OfflineHiringCafe):
+    """Hiring Cafe, answering one query and then running out of time.
+
+    Modelled on the real shape rather than invented. Every shipped adapter fans
+    out - Hiring Cafe over taxonomy pages, Greenhouse and Lever over employer
+    boards, Workday over tenants - and caches what it reads for the life of the
+    run, so the first call is the expensive one and the one a deadline lands
+    on. Later calls returning nothing is what a cut-short adapter looks like
+    once it has stopped issuing requests.
+    """
+
+    def __init__(self, options=None) -> None:  # noqa: ANN001
+        super().__init__(options)
+        self.calls = 0
+
+    async def search(self, request):  # noqa: ANN001, ANN201
+        self.calls += 1
+        result = await super().search(request)
+        if self.calls > 1:
+            result.jobs = []
+        # Pages read, more left unread: exactly what an adapter reports when it
+        # stops before its next request rather than being cancelled during one.
+        result.partial = True
+        return result
+
+
+def build_cut_short_hiringcafe() -> _CutShortHiringCafe:
+    adapter = _CutShortHiringCafe(options={"rate_limit_per_minute": 0})
+    # Set on OfflineHiringCafe, not on the subclass: `offline_http` looks the
+    # fixture up by portal slug, so that is the class it reads from.
+    OfflineHiringCafe.records = hiringcafe_records()
+    OfflineHiringCafe.failure = None
+    return adapter
+
+
+async def test_a_portal_cut_short_still_returns_the_jobs_it_found(
+    db_session: AsyncSession,
+) -> None:
+    """The acceptance condition, through the real pipeline.
+
+    A deadline reached after useful jobs were found must not become
+    "0 collected / 0 returned".
+    """
+    _, resume = await analysed_resume(db_session)
+
+    prepared, outcome = await run_search(
+        db_session,
+        resume=resume,
+        specs=[("hiringcafe", build_cut_short_hiringcafe())],
+    )
+
+    leg = outcome.portals[0]
+
+    assert leg.status is PortalRunStatus.COMPLETED, "cut short is not failure"
+    assert leg.completion == "partial_timeout"
+    assert leg.partial is True
+    assert leg.exhaustion is ExhaustionReason.TIMEOUT
+    assert leg.collected_count > 0
+    assert outcome.returned_count > 0
+    assert prepared.legs[0].status is PortalRunStatus.COMPLETED
+
+
+async def test_a_cut_short_portals_jobs_are_scored_and_ranked_normally(
+    db_session: AsyncSession,
+) -> None:
+    """Nothing about these results is second class. They passed the same gates:
+    the 70% threshold, the 30-day window, the role gate and the ranking."""
+    _, resume = await analysed_resume(db_session)
+
+    _, outcome = await run_search(
+        db_session,
+        resume=resume,
+        specs=[("hiringcafe", build_cut_short_hiringcafe())],
+    )
+
+    assert outcome.results
+    assert all(item.final_score >= 70.0 for item in outcome.results)
+    assert_ranked_newest_first(outcome.results)
+
+
+async def test_a_cut_short_run_is_reported_as_completed_with_errors(
+    db_session: AsyncSession,
+) -> None:
+    """A run that did not see everything it asked for must not read as clean.
+
+    The jobs are real and are returned; what the user needs to know is that
+    this portal probably has more.
+    """
+    _, resume = await analysed_resume(db_session)
+
+    _, outcome = await run_search(
+        db_session,
+        resume=resume,
+        specs=[("hiringcafe", build_cut_short_hiringcafe())],
+    )
+
+    assert outcome.status is SearchRunStatus.COMPLETED_WITH_ERRORS
+    assert any("more to give" in warning for warning in outcome.warnings)
+
+
+async def test_a_cut_short_portal_does_not_stop_the_others(
+    db_session: AsyncSession,
+) -> None:
+    _, resume = await analysed_resume(db_session)
+
+    prepared, outcome = await run_search(
+        db_session,
+        resume=resume,
+        specs=[
+            ("hiringcafe", build_cut_short_hiringcafe()),
+            ("smartrecruiters", build_smartrecruiters()),
+        ],
+    )
+
+    by_slug = {leg.portal_slug.rsplit("-", 1)[-1]: leg for leg in outcome.portals}
+
+    assert by_slug["hiringcafe"].completion == "partial_timeout"
+    assert by_slug["smartrecruiters"].completion == "complete"
+    assert len(prepared.legs) == 2
+    assert any(carried_by(item, "hiringcafe") for item in outcome.results)
+    assert any(carried_by(item, "smartrecruiters") for item in outcome.results)
+
+
+async def test_an_ordinary_run_is_still_reported_as_complete(
+    db_session: AsyncSession,
+) -> None:
+    """The regression guard. Portals that finish must be untouched by any of
+    this - same status, same completion, no warning."""
+    _, resume = await analysed_resume(db_session)
+
+    _, outcome = await run_search(
+        db_session,
+        resume=resume,
+        specs=[
+            ("hiringcafe", build_hiringcafe()),
+            ("smartrecruiters", build_smartrecruiters()),
+        ],
+    )
+
+    assert outcome.status is SearchRunStatus.COMPLETED
+    assert all(leg.completion == "complete" for leg in outcome.portals)
+    assert not any(leg.partial for leg in outcome.portals)
+    assert all("more to give" not in warning for warning in outcome.warnings)
+
+
+async def test_a_cut_short_portal_that_found_nothing_is_not_called_complete(
+    db_session: AsyncSession,
+) -> None:
+    """Zero jobs and out of time is not the same claim as zero jobs and
+    finished. The first says nothing about whether this portal has vacancies."""
+
+    class _NothingYet(_CutShortHiringCafe):
+        async def search(self, request):  # noqa: ANN001, ANN201
+            result = await super().search(request)
+            result.jobs = []
+            return result
+
+    adapter = _NothingYet(options={"rate_limit_per_minute": 0})
+    OfflineHiringCafe.records = hiringcafe_records()
+    OfflineHiringCafe.failure = None
+
+    _, resume = await analysed_resume(db_session)
+    _, outcome = await run_search(
+        db_session, resume=resume, specs=[("hiringcafe", adapter)]
+    )
+
+    leg = outcome.portals[0]
+
+    assert leg.collected_count == 0
+    assert leg.completion == "partial_timeout"
+    assert leg.exhaustion is ExhaustionReason.TIMEOUT
+    assert not leg.failed
+
+
+async def test_the_run_summary_distinguishes_the_three_outcomes(
+    db_session: AsyncSession,
+) -> None:
+    """complete / partial_timeout / failed, all three in one run."""
+    _, resume = await analysed_resume(db_session)
+
+    prepared, outcome = await run_search(
+        db_session,
+        resume=resume,
+        specs=[
+            ("hiringcafe", build_cut_short_hiringcafe()),
+            ("smartrecruiters", build_smartrecruiters()),
+            (
+                "simplyhired",
+                build_simplyhired(
+                    failure=PortalTimeoutError("down", portal="simplyhired")
+                ),
+            ),
+        ],
+    )
+
+    summary = prepared.run.summary or {}
+    by_portal = {
+        entry["portal"].rsplit("-", 1)[-1]: entry
+        for entry in summary.get("portals", [])
+    }
+
+    assert by_portal["hiringcafe"]["completion"] == "partial_timeout"
+    assert by_portal["smartrecruiters"]["completion"] == "complete"
+    assert by_portal["simplyhired"]["completion"] == "failed"
+
+    assert summary["portals_partial"] == 1
+    assert summary["portals_failed"] == 1
+    assert outcome.status is SearchRunStatus.COMPLETED_WITH_ERRORS
+
+
+async def test_a_failed_leg_is_never_also_reported_as_partial(
+    db_session: AsyncSession,
+) -> None:
+    """The two claims are mutually exclusive, and the leg carries both flags.
+
+    "It had more to give" is only true of a leg whose results survived. A leg
+    that collected part of a portal and then failed to process it had its work
+    rolled back with the savepoint, so it has nothing partial to offer and must
+    not appear in the coverage warnings.
+    """
+    _, resume = await analysed_resume(db_session)
+
+    _, outcome = await run_search(
+        db_session,
+        resume=resume,
+        specs=[
+            ("hiringcafe", build_cut_short_hiringcafe()),
+            (
+                "simplyhired",
+                build_simplyhired(
+                    failure=PortalTimeoutError("down", portal="simplyhired")
+                ),
+            ),
+        ],
+    )
+
+    by_slug = {leg.portal_slug.rsplit("-", 1)[-1]: leg for leg in outcome.portals}
+    failed = by_slug["simplyhired"]
+
+    assert failed.failed
+    assert failed.partial is False
+    assert failed.completion == "failed"
+    # One coverage warning, for the portal that actually has more to give.
+    assert sum("more to give" in warning for warning in outcome.warnings) == 1

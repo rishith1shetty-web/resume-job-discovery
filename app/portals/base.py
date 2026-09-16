@@ -13,6 +13,7 @@ normalisation, scoring and deduplication are entirely portal-agnostic.
 
 from __future__ import annotations
 
+import time
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -78,6 +79,54 @@ class RawJob:
 
 
 @dataclass(frozen=True, slots=True)
+class Deadline:
+    """How much wall clock one adapter call may still spend.
+
+    An adapter that fans out - over employer boards, tenants or pages - does
+    many requests inside a single ``search``. Without this it cannot know that
+    the caller is about to give up, so it keeps issuing requests until it is
+    cancelled, and cancellation destroys everything it had already collected.
+    Twenty boards read successfully are lost because the twenty-first was slow.
+
+    A deadline turns that into a decision the adapter can make: before starting
+    another expensive request, ask whether there is time for it, and if not
+    return what is already in hand and say the result is partial. The caller
+    keeps the jobs; only the unvisited boards are lost, which is the part that
+    was never going to arrive anyway.
+
+    ``reserve`` is the margin held back so the adapter can finish assembling
+    and return *before* the caller's hard timeout fires. It is not a guarantee:
+    a request already in flight can still overrun, and the hard timeout remains
+    as the backstop. It makes the cooperative path the normal one.
+    """
+
+    #: A ``time.monotonic`` reading, not a wall-clock time.
+    expires_at: float
+    reserve: float = 0.0
+
+    @classmethod
+    def in_seconds(cls, seconds: float, *, reserve: float = 0.0) -> Deadline:
+        return cls(expires_at=time.monotonic() + seconds, reserve=reserve)
+
+    @property
+    def remaining(self) -> float:
+        """Seconds left before the adapter should be returning, never below 0."""
+        return max(0.0, self.expires_at - self.reserve - time.monotonic())
+
+    @property
+    def expired(self) -> bool:
+        return self.remaining <= 0.0
+
+    def allows(self, cost_seconds: float) -> bool:
+        """Whether a request expected to take ``cost_seconds`` should start.
+
+        Adapters use this for work whose cost they can estimate. When they
+        cannot, ``expired`` is the honest check and this one is not used.
+        """
+        return self.remaining > max(0.0, cost_seconds)
+
+
+@dataclass(frozen=True, slots=True)
 class PortalCapabilities:
     """What a portal can actually do.
 
@@ -106,6 +155,11 @@ class PortalSearchRequest:
     location: str | None = None
     remote_only: bool = False
     cursor: str | None = None
+    #: How long this call may still run, when the caller imposes one. Optional
+    #: by design: an adapter that ignores it behaves exactly as before and is
+    #: still bounded by the caller's hard timeout. Adapters that fan out should
+    #: honour it - see ``Deadline``.
+    deadline: Deadline | None = None
 
 
 @dataclass(slots=True)
@@ -119,6 +173,26 @@ class PortalSearchResult:
     # True when the portal applied the date filter itself; when False the
     # caller must filter by posted_at locally.
     window_applied_by_portal: bool = False
+    #: True when the adapter stopped early against ``request.deadline`` and
+    #: there was more it could have read. The jobs are complete and valid; the
+    #: *sweep* is not, and the run says so rather than reporting this portal as
+    #: having nothing further to give.
+    partial: bool = False
+
+
+def out_of_time(request: PortalSearchRequest) -> bool:
+    """Whether an adapter should stop before its next expensive request.
+
+    The one line every fan-out loop shares. An adapter with no deadline - a
+    direct caller, a test, a health check - is never out of time, so adding
+    this guard cannot change how an adapter behaves for anyone who does not
+    impose one.
+
+    Placed *before* a request, never after: the point is to avoid starting work
+    that cannot finish, so that what has already been collected can be returned
+    rather than destroyed by cancellation.
+    """
+    return request.deadline is not None and request.deadline.expired
 
 
 @dataclass(frozen=True, slots=True)

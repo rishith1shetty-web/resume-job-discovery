@@ -136,6 +136,7 @@ from app.portals.base import (
     PortalSearchResult,
     RawJob,
     declare_application_type,
+    out_of_time,
 )
 from app.portals.exceptions import (
     PortalBlockedError,
@@ -774,9 +775,13 @@ class WorkdayPortal(BasePortal):
             raise PortalError("No Workday tenants are configured.", portal=self.slug)
 
         semaphore = asyncio.Semaphore(self._max_concurrent)
+        # Tenants run concurrently, so each reports truncation by adding itself
+        # here rather than by returning a flag the gather would flatten away.
+        cut_short: set[str] = set()
+
         gathered = await asyncio.gather(
             *(
-                self._collect_tenant(tenant, request, semaphore)
+                self._collect_tenant(tenant, request, semaphore, cut_short)
                 for tenant in self._tenants
             ),
             return_exceptions=True,
@@ -826,7 +831,11 @@ class WorkdayPortal(BasePortal):
                 portal=self.slug,
             )
 
-        jobs = await self._read_details(candidates[: max(request.limit, 0)])
+        # Trimming to the request's limit is the limit working, not the
+        # deadline biting, so it is not truncation.
+        jobs = await self._read_details(
+            candidates[: max(request.limit, 0)], request, cut_short
+        )
 
         return PortalSearchResult(
             jobs=jobs,
@@ -835,6 +844,10 @@ class WorkdayPortal(BasePortal):
             next_cursor=None,
             # Collected unfiltered; the caller applies the freshness window.
             window_applied_by_portal=False,
+            # Any tenant that stopped early, at either stage. Rows and details
+            # already read are cached for the life of this adapter, so the next
+            # query resumes instead of starting over.
+            partial=bool(cut_short),
         )
 
     async def _collect_tenant(
@@ -842,15 +855,29 @@ class WorkdayPortal(BasePortal):
         tenant: WorkdayTenant,
         request: PortalSearchRequest,
         semaphore: asyncio.Semaphore,
+        cut_short: set[str],
     ) -> list[_Candidate] | None:
-        """Candidate rows from one tenant, or None when robots declined it."""
+        """Candidate rows from one tenant, or None when robots declined it.
+
+        A tenant that is not reached before the deadline records itself in
+        ``cut_short`` and returns nothing. It is not a failure and not a
+        refusal: it is an employer this pass did not get to, and calling it
+        either of the other two would be wrong.
+        """
         async with semaphore:
+            # Checked inside the semaphore, not outside it: the queue is where
+            # the time goes, and a tenant admitted an instant before the
+            # deadline should not then start a page of requests.
+            if out_of_time(request):
+                cut_short.add(tenant.key)
+                return []
+
             if not await self._robots_allows(tenant):
                 return None
 
             found: dict[str, _Candidate] = {}
             for query in request.queries:
-                for row in await self._list_rows(tenant, query):
+                for row in await self._list_rows(tenant, query, request, cut_short):
                     title = str(row.get("title") or "").strip()
                     path = str(row.get("externalPath") or "").strip()
                     if not title or not path:
@@ -882,7 +909,11 @@ class WorkdayPortal(BasePortal):
             return list(found.values())
 
     async def _list_rows(
-        self, tenant: WorkdayTenant, query: str
+        self,
+        tenant: WorkdayTenant,
+        query: str,
+        request: PortalSearchRequest | None = None,
+        cut_short: set[str] | None = None,
     ) -> list[dict[str, Any]]:
         """Every row this tenant returns for one query, within the page bound.
 
@@ -896,6 +927,15 @@ class WorkdayPortal(BasePortal):
             offset = page * PAGE_SIZE
             cached = self._lists.get((tenant.key, query, offset))
             if cached is None:
+                # A cached page costs nothing and is always taken; only a real
+                # request is weighed against the clock. No request means no
+                # deadline - the health check reads one page and is not part of
+                # a run's budget.
+                if request is not None and out_of_time(request):
+                    if cut_short is not None:
+                        cut_short.add(tenant.key)
+                    break
+
                 payload = await self._client_for(tenant).post_json(
                     tenant.jobs_url,
                     payload={"limit": PAGE_SIZE, "offset": offset, "searchText": query},
@@ -921,7 +961,12 @@ class WorkdayPortal(BasePortal):
 
         return rows
 
-    async def _read_details(self, candidates: list[_Candidate]) -> list[RawJob]:
+    async def _read_details(
+        self,
+        candidates: list[_Candidate],
+        request: PortalSearchRequest,
+        cut_short: set[str],
+    ) -> list[RawJob]:
         """Open each candidate's detail page, once each, one host at a time.
 
         Grouped by host on purpose. ``_RateLimiter`` spaces *sequential* calls
@@ -943,7 +988,16 @@ class WorkdayPortal(BasePortal):
 
         async def read_host(group: list[_Candidate]) -> list[RawJob | None]:
             async with semaphore:
-                return [await self._read_detail(candidate) for candidate in group]
+                read: list[RawJob | None] = []
+                for candidate in group:
+                    # The expensive half of this adapter: one request per
+                    # posting, issued in order for this host. Stopping here
+                    # keeps every detail already read.
+                    if out_of_time(request) and candidate.url not in self._details:
+                        cut_short.add(candidate.tenant.key)
+                        break
+                    read.append(await self._read_detail(candidate))
+                return read
 
         gathered = await asyncio.gather(
             *(read_host(group) for group in by_host.values()),

@@ -79,6 +79,7 @@ from app.portals.base import (
     PortalSearchResult,
     RawJob,
     declare_application_type,
+    out_of_time,
 )
 from app.portals.exceptions import PortalError, PortalParseError
 from app.portals.http import HttpPolicy, PortalHttpClient
@@ -309,6 +310,14 @@ class DayforcePortal(BasePortal):
         seen: set[str] = set()
         jobs: list[RawJob] = []
         failures: list[str] = []
+        truncated = False
+
+        if out_of_time(request):
+            # Before the session request, not after it. Establishing a session
+            # we have no time to use would be a request spent on nothing.
+            return PortalSearchResult(
+                jobs=[], window=request.window, partial=True
+            )
 
         # Obtained once, before any board is queried. A session that cannot be
         # established is a failure of the portal, not of one employer's board:
@@ -322,6 +331,12 @@ class DayforcePortal(BasePortal):
 
             for query in request.queries:
                 if len(jobs) >= request.limit:
+                    break
+
+                if out_of_time(request):
+                    # The caller is out of time. Returning what is already here
+                    # keeps it; being cancelled mid-loop would not.
+                    truncated = True
                     break
 
                 try:
@@ -369,6 +384,9 @@ class DayforcePortal(BasePortal):
             next_cursor=None,
             # Collected unfiltered; the caller applies the freshness window.
             window_applied_by_portal=False,
+            # True only when a deadline stopped the sweep early. The jobs
+            # above are complete and valid; the sweep is not.
+            partial=truncated,
         )
 
     async def fetch_description(self, job: RawJob) -> str | None:

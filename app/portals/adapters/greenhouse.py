@@ -66,6 +66,7 @@ from app.portals.base import (
     PortalSearchResult,
     RawJob,
     declare_application_type,
+    out_of_time,
 )
 from app.portals.exceptions import (
     PortalBlockedError,
@@ -246,9 +247,16 @@ class GreenhousePortal(BasePortal):
         seen: set[str] = set()
         jobs: list[RawJob] = []
         failures: list[str] = []
+        truncated = False
 
         for token in self._boards:
             if len(jobs) >= request.limit:
+                break
+
+            if out_of_time(request):
+                # The caller is out of time. Returning what is already here
+                # keeps it; being cancelled mid-loop would not.
+                truncated = True
                 break
 
             try:
@@ -301,6 +309,9 @@ class GreenhousePortal(BasePortal):
             next_cursor=None,
             # Collected unfiltered; the caller applies the freshness window.
             window_applied_by_portal=False,
+            # Boards already read are cached for the life of this adapter, so
+            # the next query resumes rather than starting over.
+            partial=truncated,
         )
 
     async def fetch_description(self, job: RawJob) -> str | None:

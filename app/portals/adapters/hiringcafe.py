@@ -88,6 +88,7 @@ from app.portals.base import (
     PortalSearchResult,
     RawJob,
     declare_application_type,
+    out_of_time,
 )
 from app.portals.exceptions import PortalBlockedError, PortalError, PortalParseError
 from app.portals.http import HttpPolicy, PortalHttpClient
@@ -216,11 +217,20 @@ class HiringCafePortal(BasePortal):
         Each query is matched to a taxonomy slug and fetched independently, so
         one unmatched or broken slug cannot lose the whole pass.
         """
+        if out_of_time(request):
+            # The taxonomy is a request of its own, and it is the first thing
+            # this adapter does. Loading it with no time left to use it would
+            # spend the one request the deadline was meant to save.
+            return PortalSearchResult(
+                jobs=[], window=request.window, partial=True
+            )
+
         taxonomy = await self._load_taxonomy()
         seen: set[str] = set()
         jobs: list[RawJob] = []
         attempted = 0
         failure: PortalError | None = None
+        truncated = False
 
         for query in request.queries:
             if len(jobs) >= request.limit:
@@ -235,6 +245,12 @@ class HiringCafePortal(BasePortal):
 
             for slug in slugs:
                 if len(jobs) >= request.limit:
+                    break
+
+                if out_of_time(request):
+                    # The caller is out of time. Returning what is already here
+                    # keeps it; being cancelled mid-loop would not.
+                    truncated = True
                     break
 
                 attempted += 1
@@ -279,6 +295,9 @@ class HiringCafePortal(BasePortal):
             has_more=False,
             next_cursor=None,
             window_applied_by_portal=False,
+            # True only when a deadline stopped the sweep early. The jobs
+            # above are complete and valid; the sweep is not.
+            partial=truncated,
         )
 
     async def _records_for(self, slug: str) -> list[dict[str, Any]]:

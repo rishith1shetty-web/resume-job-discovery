@@ -132,6 +132,7 @@ from app.portals.base import (
     PortalSearchResult,
     RawJob,
     declare_application_type,
+    out_of_time,
 )
 from app.portals.exceptions import (
     PortalBlockedError,
@@ -793,6 +794,7 @@ class SmartRecruitersPortal(BasePortal):
 
         pending: dict[str, asyncio.Task[RawJob | None]] = {}
         failures: list[str] = []
+        truncated = False
         semaphore = asyncio.Semaphore(self._max_concurrent)
 
         try:
@@ -803,6 +805,13 @@ class SmartRecruitersPortal(BasePortal):
                     # reach a request for an employer that opted out.
                     continue
                 if len(pending) >= request.limit:
+                    break
+
+                if out_of_time(request):
+                    # Stop opening boards, but still await the job pages
+                    # already in flight below: those requests are paid for and
+                    # abandoning them would be the whole bug this guards.
+                    truncated = True
                     break
 
                 try:
@@ -832,7 +841,7 @@ class SmartRecruitersPortal(BasePortal):
                         self._read_job(url, semaphore=semaphore)
                     )
 
-            if failures and len(failures) == len(self._boards):
+            if failures and len(failures) == len(self._boards) and not truncated:
                 raise PortalError(
                     f"No SmartRecruiters board could be read "
                     f"({len(failures)} attempted).",
@@ -863,6 +872,9 @@ class SmartRecruitersPortal(BasePortal):
             next_cursor=None,
             # Collected unfiltered; the caller applies the freshness window.
             window_applied_by_portal=False,
+            # True only when a deadline stopped the sweep early. Boards and job
+            # pages already read are cached, so the next query resumes.
+            partial=truncated,
         )
 
     async def _read_board(
