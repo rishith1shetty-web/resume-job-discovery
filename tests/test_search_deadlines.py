@@ -32,6 +32,7 @@ import asyncio
 from datetime import UTC, datetime, timedelta
 from typing import Any, ClassVar
 
+import httpx
 import pytest
 
 from app.portals.base import (
@@ -50,6 +51,7 @@ from app.portals.exceptions import (
     PortalRateLimitedError,
     PortalTimeoutError,
 )
+from app.portals.http import HttpPolicy, PortalHttpClient
 from app.search.collection import (
     MAX_CONSECUTIVE_TIMEOUTS,
     PortalCollector,
@@ -192,6 +194,13 @@ SLOW_CEILING = 1.0
 #: Two calls' worth, so the leg ends on its budget rather than on six slow
 #: queries. Keeps the suite fast without weakening what is asserted.
 SLOW_BUDGET = 1.3
+
+#: Scale for the tests that keep the real ``PortalHttpClient`` in the path.
+#: Roomier than SLOW_CEILING because the adapter's margin for returning is the
+#: reserve, and the reserve is a tenth of the ceiling - at 1.0s that is 100ms,
+#: which is inside the noise of an event loop on Windows.
+HTTP_CEILING = 1.5
+HTTP_BUDGET = 2.0
 
 
 def collector(adapter: BasePortal, **kwargs: Any) -> PortalCollector:
@@ -773,43 +782,82 @@ async def test_a_lone_timeout_is_not_quietly_forgiven() -> None:
     assert isinstance(collected.error, PortalTimeoutError)
 
 
-async def test_an_empty_answer_does_not_forgive_an_unanswered_query() -> None:
-    """Several adapters legitimately return nothing for a query they cannot
-    express - Jobright and Hiring Cafe do it whenever a variation matches no
-    taxonomy slug. Treating that as proof the timed-out query would also have
-    been empty would let the leg report "no matching jobs" for a question the
-    portal never answered.
+class _TimesOutThenEmpty(BasePortal):
+    """Times out once, then answers every later query with nothing.
+
+    ``consulted`` is what the answer *means*: True says the portal was read and
+    holds no such jobs, False says the adapter had no way to ask. The two look
+    identical from the outside - both are an empty list - and they are the two
+    cases this pair of tests keeps apart.
     """
 
-    class TimesOutThenEmpty(BasePortal):
-        slug: ClassVar[str] = "empty"
-        display_name: ClassVar[str] = "Empty"
+    slug: ClassVar[str] = "empty"
+    display_name: ClassVar[str] = "Empty"
+    consulted: ClassVar[bool] = True
 
-        def __init__(self, options: dict[str, Any] | None = None) -> None:
-            super().__init__(options)
-            self.calls = 0
+    def __init__(self, options: dict[str, Any] | None = None) -> None:
+        super().__init__(options)
+        self.calls = 0
 
-        @property
-        def capabilities(self) -> PortalCapabilities:
-            return PortalCapabilities(supports_date_filter=False)
+    @property
+    def capabilities(self) -> PortalCapabilities:
+        return PortalCapabilities(supports_date_filter=False)
 
-        async def search(self, request: PortalSearchRequest):  # noqa: ANN201
-            self.calls += 1
-            if self.calls == 1:
-                raise PortalTimeoutError("no answer", portal=self.slug)
-            return PortalSearchResult(jobs=[], window=request.window)
+    async def search(self, request: PortalSearchRequest):  # noqa: ANN201
+        self.calls += 1
+        if self.calls == 1:
+            raise PortalTimeoutError("no answer", portal=self.slug)
+        return PortalSearchResult(
+            jobs=[], window=request.window, consulted=type(self).consulted
+        )
 
-        async def fetch_description(self, job: RawJob) -> str | None:
-            return None
+    async def fetch_description(self, job: RawJob) -> str | None:
+        return None
 
-        async def validate_url(self, url: str) -> bool:
-            return True
+    async def validate_url(self, url: str) -> bool:
+        return True
 
-    collected = await collect(TimesOutThenEmpty())
+
+async def test_a_definitive_zero_is_not_a_failure_even_after_a_lost_query() -> None:
+    """A portal that was read and holds nothing is not a portal that is down.
+
+    Measured live on Lever for Financial Analyst: six of seven queries answered
+    zero against 1,536 real postings and one timed out, and the leg was
+    reported as *failed* - which said the portal was unreachable when it had in
+    fact been read end to end. The answer is still incomplete, so the leg stays
+    partial and the lost query is still counted; what it is not is a failure.
+    """
+
+    class Reached(_TimesOutThenEmpty):
+        consulted: ClassVar[bool] = True
+
+    collected = await collect(Reached())
+
+    assert collected.jobs == []
+    assert collected.error is None
+    assert collected.reason is ExhaustionReason.TIMEOUT
+    # Incomplete, and saying so: the timed-out query was never covered.
+    assert collected.is_partial is True
+    assert collected.lost_queries == 1
+
+
+async def test_an_unasked_query_does_not_forgive_an_unanswered_one() -> None:
+    """Several adapters legitimately return nothing for a query they cannot
+    express - Jobright and Hiring Cafe do it whenever a variation matches no
+    taxonomy slug, without making a single request. Treating that as proof the
+    timed-out query would also have been empty would let the leg report "no
+    matching jobs" for a question the portal was never asked.
+    """
+
+    class NeverAsked(_TimesOutThenEmpty):
+        consulted: ClassVar[bool] = False
+
+    collected = await collect(NeverAsked())
 
     assert collected.jobs == []
     assert isinstance(collected.error, PortalTimeoutError)
     assert collected.reason is ExhaustionReason.TIMEOUT
+    assert collected.lost_queries == 1
 
 
 # --- A portal with its own timeout override -------------------------------
@@ -1050,3 +1098,181 @@ def test_no_adapter_was_left_without_the_guard() -> None:
 
     assert missing == [], f"adapters with no deadline guard: {missing}"
     assert len(registry.slugs) == 11
+
+
+# --- The HTTP layer stops it before wait_for has to -------------------------
+
+
+class HttpBoardPortal(BasePortal):
+    """A fan-out adapter that reaches the portal through the real HTTP stack.
+
+    The other fakes in this file short-circuit the transport, which is right
+    for testing the collector but leaves the actual failure mode uncovered: the
+    listings were lost inside ``PortalHttpClient``, on a request that started
+    just inside the deadline and then ran on for its own full timeout. So this
+    one keeps ``PortalHttpClient`` in the path and stubs only ``httpx``.
+    """
+
+    slug: ClassVar[str] = "httpboards"
+    display_name: ClassVar[str] = "Http Boards"
+
+    def __init__(self, options: dict[str, Any] | None = None) -> None:
+        super().__init__(options)
+        self._http = PortalHttpClient(
+            portal=self.slug,
+            policy=HttpPolicy(
+                # Far longer than the leg: the point is that the clamp, not the
+                # policy, is what ends the request.
+                timeout_seconds=30.0,
+                max_retries=0,
+                retry_backoff_seconds=0.0,
+                rate_limit_per_minute=0,
+            ),
+        )
+        self.boards_read = 0
+
+    @property
+    def capabilities(self) -> PortalCapabilities:
+        return PortalCapabilities(supports_date_filter=False)
+
+    async def search(self, request: PortalSearchRequest) -> PortalSearchResult:
+        jobs: list[RawJob] = []
+        truncated = False
+
+        for index in range(SLOW_BOARDS):
+            if out_of_time(request):
+                truncated = True
+                break
+            try:
+                await self._http.get_text(f"https://example.invalid/board/{index}")
+            except PortalError:
+                # One board failing costs that board, exactly as every shipped
+                # fan-out adapter treats it.
+                truncated = True
+                break
+            self.boards_read += 1
+            jobs.append(
+                make_raw_job(
+                    portal=self.slug,
+                    index=index,
+                    external_id=f"{self.slug}-{index}",
+                    age_days=0.1,
+                    now=NOW,
+                )
+            )
+
+        return PortalSearchResult(jobs=jobs, window=request.window, partial=truncated)
+
+    async def fetch_description(self, job: RawJob) -> str | None:
+        return None
+
+    async def validate_url(self, url: str) -> bool:
+        return True
+
+
+@pytest.fixture
+def stalling_transport(monkeypatch: pytest.MonkeyPatch):
+    """Stub httpx so that boards from ``stall_from`` onwards never answer.
+
+    The stub enforces the client's configured timeout itself, because that is
+    what the real transport does and it is the whole subject here: patching
+    ``AsyncClient.get`` alone removes the timeout machinery, and a test built
+    on that would pass whatever the production code did.
+    """
+
+    def _apply(stall_from: int):
+        timeouts: list[float] = []
+
+        def _init(self, *args, **kwargs):  # noqa: ANN001
+            timeout = kwargs.get("timeout")
+            seconds = timeout.read if isinstance(timeout, httpx.Timeout) else timeout
+            timeouts.append(seconds)
+            object.__setattr__(self, "_stub_timeout", seconds)
+
+        async def _aenter(self):  # noqa: ANN001
+            return self
+
+        async def _aexit(self, *exc):  # noqa: ANN001
+            return False
+
+        async def _get(self, url, params=None):  # noqa: ANN001
+            index = int(url.rsplit("/", 1)[-1])
+            if index >= stall_from:
+                try:
+                    await asyncio.wait_for(
+                        asyncio.sleep(30.0), timeout=self._stub_timeout
+                    )
+                except TimeoutError as exc:
+                    raise httpx.ReadTimeout(
+                        "stalled", request=httpx.Request("GET", url)
+                    ) from exc
+            return httpx.Response(
+                status_code=200, text="ok", request=httpx.Request("GET", url)
+            )
+
+        # The real constructor is replaced rather than wrapped. Building an
+        # httpx client costs 450-580ms here - every time, not just the first,
+        # because `_send` builds one per attempt - which would dwarf the
+        # sub-second deadlines these tests work in and make them measure SSL
+        # setup instead of the clamp. Nothing real was left in the path anyway
+        # once `get` is stubbed.
+        monkeypatch.setattr(httpx.AsyncClient, "__init__", _init)
+        monkeypatch.setattr(httpx.AsyncClient, "__aenter__", _aenter)
+        monkeypatch.setattr(httpx.AsyncClient, "__aexit__", _aexit)
+        monkeypatch.setattr(httpx.AsyncClient, "get", _get)
+        return timeouts
+
+    return _apply
+
+
+async def test_the_http_layer_stops_a_sweep_before_wait_for_has_to(
+    stalling_transport,
+) -> None:
+    """The regression this whole fix exists for.
+
+    The very first board never answers. Before the clamp it ran for its own
+    thirty seconds, blew through the one-second query ceiling and was cancelled
+    by ``asyncio.wait_for`` - which destroys the adapter's locals. Now the
+    request is cut to what is left of the deadline, the adapter gets a
+    ``PortalError`` it already knows how to handle, and it returns.
+    """
+    timeouts = stalling_transport(0)
+
+    adapter = HttpBoardPortal()
+    collected = await collect(
+        adapter,
+        queries=("one",),
+        query_timeout_seconds=HTTP_CEILING,
+        budget_seconds=HTTP_BUDGET,
+    )
+
+    # Clamped down from the policy's thirty seconds to what the leg had left.
+    assert timeouts and max(timeouts) < HTTP_CEILING
+    # Cooperative: a hard `wait_for` kill leaves the collector holding a
+    # PortalTimeoutError and no result at all.
+    assert collected.error is None
+    assert collected.reason is ExhaustionReason.TIMEOUT
+    assert collected.is_partial is True
+
+
+async def test_listings_read_before_the_deadline_survive_a_stalled_request(
+    stalling_transport,
+) -> None:
+    """The acceptance condition in one test: a portal that reaches its deadline
+    *after* finding useful jobs still returns them.
+    """
+    stalling_transport(3)
+
+    adapter = HttpBoardPortal()
+    collected = await collect(
+        adapter,
+        queries=("one",),
+        query_timeout_seconds=HTTP_CEILING,
+        budget_seconds=HTTP_BUDGET,
+    )
+
+    assert adapter.boards_read == 3
+    # The three boards that answered are returned, not discarded.
+    assert len(collected.jobs) == 3
+    assert collected.error is None
+    assert collected.is_partial is True

@@ -82,6 +82,7 @@ from app.portals.exceptions import (
     PortalRateLimitedError,
     PortalTimeoutError,
 )
+from app.portals.http import use_deadline
 from app.search.depth import ExhaustionReason, SearchDepth
 from app.search.freshness import within_window
 
@@ -146,6 +147,11 @@ class WindowBatch:
     #: Without this a portal whose only query timed out would return an empty
     #: window and read as "no matching jobs".
     tolerated_error: PortalError | None = None
+    #: Queries that completed and gave this window a definitive answer,
+    #: including the ones whose answer was "nothing". This is what separates a
+    #: portal that could not be reached from a portal that was reached and has
+    #: no such jobs - without it, the second is reported as the first.
+    answered: int = 0
     #: Queries abandoned to a tolerated timeout. Telemetry only - the gap
     #: between requests attempted and requests that answered.
     lost_queries: int = 0
@@ -256,6 +262,11 @@ class PortalCollector:
         #: Adapter calls made. The closest proxy this layer has to load placed
         #: on the portal, and one of the limits that bounds a deep search.
         self._requests = 0
+        #: Queries lost to a timeout across the whole leg. Counted here rather
+        #: than only on the window, because a window that fails before it is
+        #: yielded never reaches the caller to be counted - which is how a lost
+        #: query used to be reported as zero lost queries.
+        self._lost_queries = 0
 
     @property
     def requests(self) -> int:
@@ -375,7 +386,6 @@ class PortalCollector:
                 collected.deepest_window = batch.window
                 collected.executed.extend(batch.executed)
                 collected.requests = self._requests
-                collected.lost_queries += batch.lost_queries
 
                 if batch.fetched:
                     collected.pages += 1
@@ -442,6 +452,10 @@ class PortalCollector:
 
         collected.elapsed_seconds = round(time.monotonic() - started, 3)
         collected.requests = self._requests
+        # Read from the collector rather than summed over the batches: a window
+        # that raised instead of being yielded still lost its queries, and they
+        # are exactly the ones worth reporting.
+        collected.lost_queries = self._lost_queries
 
         logger.info(
             "portal_collection_finished",
@@ -477,7 +491,7 @@ class PortalCollector:
                 break
 
             try:
-                collected, executed, partial = await self._search(query, window)
+                collected, executed, partial, consulted = await self._search(query, window)
             except PortalError as exc:
                 timeouts = self._absorb(batch, exc, timeouts=timeouts)
                 if batch.error is not None:
@@ -485,6 +499,15 @@ class PortalCollector:
                 continue
 
             timeouts = 0
+            # `answered` records that the portal was reached and gave this
+            # window a real answer, including an answer of "nothing". An
+            # adapter that could not express the query never asked, so its
+            # empty result is not an answer and does not count. Kept separate
+            # from clearing the tolerated error below, which only a non-empty
+            # result may do: being reachable is not the same as having covered
+            # the query that was lost.
+            if consulted:
+                batch.answered += 1
             # Cleared only by an answer that carried something. An empty
             # result is not evidence that the timed-out query would have been
             # empty too - several adapters return nothing for a query they
@@ -526,7 +549,7 @@ class PortalCollector:
                 if self.budget_exhausted:
                     break
                 try:
-                    collected, executed, partial = await self._search(query, window)
+                    collected, executed, partial, consulted = await self._search(query, window)
                 except PortalError as exc:
                     timeouts = self._absorb(batch, exc, timeouts=timeouts)
                     if batch.error is not None:
@@ -534,6 +557,15 @@ class PortalCollector:
                     continue
 
                 timeouts = 0
+                # `answered` records that the portal was reached and gave
+                # this window a real answer, including an answer of "nothing".
+                # An adapter that could not express the query never asked, so
+                # its empty result is not an answer and does not count. Kept
+                # separate from clearing the tolerated error below, which only
+                # a non-empty result may do: being reachable is not the same
+                # as having covered the query that was lost.
+                if consulted:
+                    batch.answered += 1
                 # Cleared only by an answer that carried something. An empty
                 # result is not evidence that the timed-out query would have been
                 # empty too - several adapters return nothing for a query they
@@ -587,6 +619,7 @@ class PortalCollector:
 
         timeouts += 1
         batch.lost_queries += 1
+        self._lost_queries += 1
         if timeouts >= MAX_CONSECUTIVE_TIMEOUTS or self.budget_exhausted:
             batch.error = exc
             return timeouts
@@ -605,14 +638,26 @@ class PortalCollector:
     def _settle(batch: WindowBatch) -> None:
         """Resolve a timeout that was tolerated but never recovered from.
 
-        Called once the window's queries are done and its jobs are known. A
-        tolerated timeout is only forgivable if something came back afterwards;
-        if nothing did, the window really did fail and must say so rather than
-        reporting an empty result.
+        Called once the window's queries are done and its jobs are known.
+
+        A tolerated timeout stops being a *failure* once some other query
+        reached the portal and answered. That answer may well be "no such
+        jobs": a portal that was read and holds nothing is not a portal that is
+        down, and calling it failed is both untrue and expensive, because it
+        discards the queries that did succeed. Measured on Lever for Financial
+        Analyst, six of seven queries answered zero against 1,536 live
+        postings and the leg was still reported as failed.
+
+        What the timeout always costs is completeness, so the window is marked
+        ``partial`` either way and the run still says the portal had more to
+        give. The unanswered query is never counted as covered.
+
+        With nothing answered there is no evidence at all, and the window
+        really did fail - so it says so rather than reporting an empty result.
         """
         if batch.error is not None or batch.tolerated_error is None:
             return
-        if batch.jobs:
+        if batch.jobs or batch.answered:
             batch.partial = True
         else:
             batch.error = batch.tolerated_error
@@ -642,7 +687,7 @@ class PortalCollector:
 
     async def _search(
         self, query: str, window: FreshnessWindow
-    ) -> tuple[list[RawJob], ExecutedQuery, bool]:
+    ) -> tuple[list[RawJob], ExecutedQuery, bool, bool]:
         """One adapter call, timed and bounded.
 
         A timeout is reported as a portal failure rather than an empty result:
@@ -652,22 +697,31 @@ class PortalCollector:
         already been collected.
 
         The third element of the return is the adapter's own report that it
-        stopped early - a clean partial, not a failure.
+        stopped early - a clean partial, not a failure. The fourth is whether
+        the adapter actually put the query to the portal at all, which is what
+        separates "the portal holds none of these" from "I had no way to ask".
         """
+        deadline = self._deadline()
         request = PortalSearchRequest(
             queries=(query,),
             window=window,
             limit=self._per_window_limit,
-            deadline=self._deadline(),
+            deadline=deadline,
         )
 
         self._requests += 1
         started = time.monotonic()
 
         try:
-            result = await asyncio.wait_for(
-                self._adapter.search(request), timeout=self._query_timeout
-            )
+            # The same deadline the adapter is handed, made visible to the
+            # shared HTTP layer as well. An adapter checks between requests;
+            # only the HTTP layer can stop one from being *started* that will
+            # outlive the ceiling below, and being cancelled there is what
+            # destroys an adapter's collected-but-unreturned listings.
+            with use_deadline(deadline):
+                result = await asyncio.wait_for(
+                    self._adapter.search(request), timeout=self._query_timeout
+                )
         except TimeoutError as exc:
             raise PortalTimeoutError(
                 f"{self._adapter.slug} did not respond within "
@@ -705,7 +759,7 @@ class PortalCollector:
             executed_at=datetime.now(UTC),
             duration_ms=duration_ms,
         )
-        return jobs, executed, bool(result.partial)
+        return jobs, executed, bool(result.partial), bool(result.consulted)
 
     def _admit(self, job: RawJob) -> bool:
         """True the first time this listing is seen in this run."""

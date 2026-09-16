@@ -222,7 +222,10 @@ class HiringCafePortal(BasePortal):
             # this adapter does. Loading it with no time left to use it would
             # spend the one request the deadline was meant to save.
             return PortalSearchResult(
-                jobs=[], window=request.window, partial=True
+                jobs=[], window=request.window, partial=True,
+                # Nothing was asked of the portal, so this empty result is not
+                # an answer from it.
+                consulted=False,
             )
 
         taxonomy = await self._load_taxonomy()
@@ -298,6 +301,11 @@ class HiringCafePortal(BasePortal):
             # True only when a deadline stopped the sweep early. The jobs
             # above are complete and valid; the sweep is not.
             partial=truncated,
+            # Whether any slug was actually fetched. Zero means every title
+            # variation in this call matched no taxonomy slug, so the portal
+            # was never asked and this empty result says nothing about what it
+            # holds - see PortalSearchResult.consulted.
+            consulted=attempted > 0,
         )
 
     async def _records_for(self, slug: str) -> list[dict[str, Any]]:

@@ -178,6 +178,19 @@ class PortalSearchResult:
     #: *sweep* is not, and the run says so rather than reporting this portal as
     #: having nothing further to give.
     partial: bool = False
+    #: Whether this call actually put the query to the portal.
+    #:
+    #: False when the adapter could not ask it at all - Jobright and Hiring
+    #: Cafe both return nothing for a title variation that matches no taxonomy
+    #: slug, without making a single request. That empty result is the adapter
+    #: declining to ask, not the portal answering "none", and the difference
+    #: decides whether a leg whose other query timed out is reported as a
+    #: portal that is down or a portal that was read and holds nothing.
+    #:
+    #: Defaults to True because for almost every adapter a returned result is
+    #: an answer; only an adapter with a genuine "I cannot express this" path
+    #: needs to say otherwise.
+    consulted: bool = True
 
 
 def out_of_time(request: PortalSearchRequest) -> bool:

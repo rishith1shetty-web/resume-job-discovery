@@ -19,7 +19,9 @@ from __future__ import annotations
 import asyncio
 import json
 import time
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Iterator
+from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from email.utils import parsedate_to_datetime
@@ -27,6 +29,7 @@ from email.utils import parsedate_to_datetime
 import httpx
 
 from app.core.logging import get_logger
+from app.portals.base import Deadline
 from app.portals.exceptions import (
     PortalBlockedError,
     PortalError,
@@ -54,6 +57,49 @@ _RETRYABLE_STATUSES = frozenset({500, 502, 503, 504, 522, 524})
 #: past this the wait is declined and the portal is reported as rate-limited -
 #: which is the truth, and leaves the other portals to finish.
 MAX_RETRY_AFTER_SECONDS = 30.0
+
+#: Shortest attempt worth starting. Below this there is not enough of the
+#: deadline left for a connection to be established, let alone answered, so
+#: starting one would only burn the margin the adapter needs to return under
+#: its own power.
+MIN_ATTEMPT_SECONDS = 0.5
+
+#: The deadline governing whatever this task is currently doing, or ``None``
+#: when nothing has set one.
+#:
+#: A context variable rather than a constructor argument or a parameter on
+#: every call: the deadline belongs to *one search*, while a
+#: ``PortalHttpClient`` belongs to an adapter and outlives any single query.
+#: Threading it through by hand would mean changing the signature of every
+#: fetch helper in every adapter to pass a value none of them make a decision
+#: about - so it is carried the way other ambient, per-operation facts are.
+#:
+#: ``asyncio`` copies the current context into each new task, so a deadline set
+#: here before ``asyncio.wait_for`` is visible inside the coroutine it wraps,
+#: and inside anything that coroutine fans out with ``gather`` - which is what
+#: makes this reach Workday's tenant fan-out without Workday knowing about it.
+_ACTIVE_DEADLINE: ContextVar[Deadline | None] = ContextVar(
+    "portal_active_deadline", default=None
+)
+
+
+def active_deadline() -> Deadline | None:
+    """The deadline governing the current task, if one was set."""
+    return _ACTIVE_DEADLINE.get()
+
+
+@contextmanager
+def use_deadline(deadline: Deadline | None) -> Iterator[None]:
+    """Run a block with ``deadline`` governing every request it makes.
+
+    Restores the previous value on exit, including when the body raises or is
+    cancelled, so one portal's deadline can never leak into another's.
+    """
+    token = _ACTIVE_DEADLINE.set(deadline)
+    try:
+        yield
+    finally:
+        _ACTIVE_DEADLINE.reset(token)
 
 
 def _retry_after_seconds(response: httpx.Response) -> float | None:
@@ -140,14 +186,26 @@ class _RateLimiter:
     min_interval: float
     _last_request_at: float = field(default=0.0)
 
-    async def acquire(self) -> None:
+    async def acquire(self, budget: float | None = None) -> bool:
+        """Wait for this portal's next slot. False when it is out of reach.
+
+        ``budget`` is how much of the caller's deadline is left. The spacing is
+        never shortened to fit inside it: waiting less than ``min_interval``
+        would be sending faster than the portal's configured rate limit allows,
+        which is the one thing a deadline must not be allowed to buy. So when
+        the slot falls beyond the budget this returns False and the caller
+        stops, having sent nothing.
+        """
         if self.min_interval <= 0:
-            return
+            return True
         elapsed = time.monotonic() - self._last_request_at
         wait = self.min_interval - elapsed
         if wait > 0:
+            if budget is not None and wait > budget:
+                return False
             await asyncio.sleep(wait)
         self._last_request_at = time.monotonic()
+        return True
 
 
 class PortalHttpClient:
@@ -199,28 +257,118 @@ class PortalHttpClient:
         serves HTML.
 
         Raises a ``PortalError`` subclass on failure.
+
+        When a deadline is active, no attempt is started that cannot finish
+        inside it and no wait is served that would run past it. That is what
+        lets an adapter come back with what it has: the alternative is the
+        caller's ``asyncio.wait_for`` cancelling the coroutine mid-request,
+        which destroys every listing collected so far because they exist only
+        in that coroutine's local variables. The configured timeout is a
+        ceiling here and stays one - the clamp can only ever shorten an
+        attempt, never extend it past what the portal's policy allows.
         """
         attempts = max(1, self.policy.max_retries + 1)
         last_error: PortalError | None = None
         request_headers = {**self._headers(), **(headers or {})}
+        deadline = active_deadline()
+
+        def remaining() -> float | None:
+            return None if deadline is None else deadline.remaining
+
+        def out_of_time(need: float) -> bool:
+            """True when ``need`` seconds are not there to be spent."""
+            left = remaining()
+            return left is not None and left < need
 
         for attempt in range(1, attempts + 1):
-            await self._limiter.acquire()
+            # Checked before the slot as well as after it: a retry that cannot
+            # finish is not worth the portal's rate-limit budget either.
+            if out_of_time(MIN_ATTEMPT_SECONDS):
+                last_error = last_error or PortalTimeoutError(
+                    f"Request to {self.portal} abandoned: the search deadline "
+                    "was reached before this attempt could be made.",
+                    portal=self.portal,
+                )
+                logger.info(
+                    "portal_request_deadline_reached",
+                    portal=self.portal,
+                    attempt=attempt,
+                    stage="before_attempt",
+                )
+                break
+
+            if not await self._limiter.acquire(budget=remaining()):
+                last_error = last_error or PortalTimeoutError(
+                    f"Request to {self.portal} abandoned: the next rate-limit "
+                    "slot falls beyond the search deadline.",
+                    portal=self.portal,
+                )
+                logger.info(
+                    "portal_request_deadline_reached",
+                    portal=self.portal,
+                    attempt=attempt,
+                    stage="rate_limit_slot",
+                )
+                break
+
+            # The tighter of the portal's own timeout and what is left. Waiting
+            # the full policy timeout on an attempt that outlives the deadline
+            # is what produced the hard cancellation this guards against.
+            left = remaining()
+            attempt_timeout = self.policy.timeout_seconds
+            if left is not None:
+                attempt_timeout = min(attempt_timeout, left)
+                if attempt_timeout < MIN_ATTEMPT_SECONDS:
+                    break
+
             try:
                 async with httpx.AsyncClient(
-                    timeout=self.policy.timeout_seconds,
+                    timeout=attempt_timeout,
                     follow_redirects=True,
                     headers=request_headers,
                     cookies=self._cookies,
                 ) as client:
-                    response = await send(client)
+                    if left is None:
+                        response = await send(client)
+                    else:
+                        # httpx timeouts are per *operation*, not per request:
+                        # a body that keeps arriving never trips the read
+                        # timeout, so a multi-megabyte download can outlive any
+                        # value passed above. Measured on Lever, whose board
+                        # feeds run to 8MB, the clamp alone still let a request
+                        # reach the query ceiling and be cancelled from
+                        # outside. So the whole attempt is bounded by what is
+                        # left - and only by that, never by the policy timeout,
+                        # which stays the per-operation limit it has always
+                        # been. A timeout here cancels the request; the adapter
+                        # lives on and keeps what it collected.
+                        response = await asyncio.wait_for(
+                            send(client), timeout=left
+                        )
                     if self._cookies is not None:
                         # Carry anything the portal set into the next request.
                         self._cookies.update(response.cookies)
+            except TimeoutError:
+                # `left` is None only on the unbounded path, where this can
+                # only have come from the send callable itself rather than
+                # from the bound above.
+                bound = "the deadline" if left is None else f"{left:g}s"
+                last_error = PortalTimeoutError(
+                    f"Request to {self.portal} was stopped after {bound}: "
+                    "the search deadline was reached.",
+                    portal=self.portal,
+                )
+                logger.info(
+                    "portal_request_deadline_reached",
+                    portal=self.portal,
+                    attempt=attempt,
+                    stage="in_flight",
+                )
+                break
             except httpx.TimeoutException as exc:
                 last_error = PortalTimeoutError(
                     f"Request to {self.portal} timed out after "
-                    f"{self.policy.timeout_seconds}s.",
+                    f"{attempt_timeout:g}s.",
                     portal=self.portal,
                 )
                 logger.warning(
@@ -277,6 +425,10 @@ class PortalHttpClient:
                         delay is not None
                         and delay <= MAX_RETRY_AFTER_SECONDS
                         and attempt < attempts
+                        # Sleeping past the deadline would mean waking to be
+                        # cancelled. The portal asked us to wait, and we stop
+                        # instead of waiting - we never wait less than it asked.
+                        and not out_of_time(delay + MIN_ATTEMPT_SECONDS)
                     ):
                         logger.info(
                             "portal_request_retry_after",
@@ -312,7 +464,20 @@ class PortalHttpClient:
 
             if attempt < attempts:
                 # Exponential backoff, so a struggling portal is not hammered.
-                await asyncio.sleep(self.policy.retry_backoff_seconds * attempt)
+                backoff = self.policy.retry_backoff_seconds * attempt
+                if out_of_time(backoff + MIN_ATTEMPT_SECONDS):
+                    # The backoff plus the attempt it protects will not fit.
+                    # Stop now rather than sleeping into a cancellation - and
+                    # do not shorten the backoff, which exists to spare a
+                    # struggling portal, not to be traded for our own deadline.
+                    logger.info(
+                        "portal_request_deadline_reached",
+                        portal=self.portal,
+                        attempt=attempt,
+                        stage="retry_backoff",
+                    )
+                    break
+                await asyncio.sleep(backoff)
 
         raise last_error or PortalError(
             f"Request to {self.portal} failed.", portal=self.portal

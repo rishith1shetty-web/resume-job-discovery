@@ -46,6 +46,7 @@ from app.portals.adapters.simplyhired import SimplyHiredPortal
 from app.portals.adapters.workday import PAGE_SIZE as WORKDAY_PAGE_SIZE
 from app.portals.adapters.smartrecruiters import SmartRecruitersPortal
 from app.portals.adapters.workday import WorkdayPortal
+from app.portals.base import PortalSearchResult
 from app.portals.exceptions import (
     PortalBlockedError,
     PortalError,
@@ -5094,3 +5095,108 @@ async def test_a_failed_leg_is_never_also_reported_as_partial(
     assert failed.completion == "failed"
     # One coverage warning, for the portal that actually has more to give.
     assert sum("more to give" in warning for warning in outcome.warnings) == 1
+
+
+# --- A definitive zero is not a failure -------------------------------------
+
+
+class _TimesOutThenReadsNothing(OfflineHiringCafe):
+    """Loses its first query to a timeout, then reads the portal and finds none.
+
+    This is the Lever shape, measured live for Financial Analyst: one query
+    lost, six answered, 1,536 real postings read and not one of them a match.
+    ``consulted=True`` is the whole point - the portal *was* read.
+    """
+
+    def __init__(self, options: dict | None = None) -> None:
+        super().__init__(options)
+        self.calls = 0
+
+    async def search(self, request):  # noqa: ANN001, ANN201
+        self.calls += 1
+        if self.calls == 1:
+            raise PortalTimeoutError("first query lost", portal=self.slug)
+        return PortalSearchResult(
+            jobs=[], window=request.window, consulted=True
+        )
+
+
+class _TimesOutAndNeverReadsAnything(_TimesOutThenReadsNothing):
+    """The same shape, except the later queries were never put to the portal.
+
+    Jobright and Hiring Cafe both do this for a title variation that matches no
+    taxonomy slug: they return nothing without making a request. Nothing here
+    was learned about the portal, so the lost query is still a failure.
+    """
+
+    async def search(self, request):  # noqa: ANN001, ANN201
+        self.calls += 1
+        if self.calls == 1:
+            raise PortalTimeoutError("first query lost", portal=self.slug)
+        return PortalSearchResult(
+            jobs=[], window=request.window, consulted=False
+        )
+
+
+def _build_zero_result(cls) -> OfflineHiringCafe:  # noqa: ANN001
+    adapter = cls(options={"rate_limit_per_minute": 0})
+    OfflineHiringCafe.records = hiringcafe_records()
+    OfflineHiringCafe.failure = None
+    return adapter
+
+
+async def test_a_portal_that_was_read_and_holds_nothing_is_not_a_failure(
+    db_session: AsyncSession,
+) -> None:
+    """Zero results plus one lost query is partial coverage, not an outage.
+
+    Reporting it as failed said the portal was unreachable when it had in fact
+    answered - and it threw away the queries that did answer. The leg still
+    says its sweep was incomplete, because the lost query really was never
+    covered.
+    """
+    _, resume = await analysed_resume(db_session)
+
+    prepared, outcome = await run_search(
+        db_session,
+        resume=resume,
+        specs=[("hiringcafe", _build_zero_result(_TimesOutThenReadsNothing))],
+    )
+
+    leg = outcome.portals[0]
+
+    assert leg.failed is False
+    assert leg.status is PortalRunStatus.COMPLETED
+    assert leg.completion == "partial_timeout"
+    assert leg.exhaustion is ExhaustionReason.TIMEOUT
+    assert leg.collected_count == 0
+    # The unanswered query is still counted as unanswered - it is not quietly
+    # treated as coverage just because the leg is no longer a failure.
+    assert leg.lost_queries == 1
+    assert prepared.legs[0].status is PortalRunStatus.COMPLETED
+    assert outcome.status is SearchRunStatus.COMPLETED_WITH_ERRORS
+
+
+async def test_a_portal_that_was_never_read_still_fails(
+    db_session: AsyncSession,
+) -> None:
+    """The other half: with nothing answered there is no evidence at all, so
+    the old behaviour stands and the leg fails.
+    """
+    _, resume = await analysed_resume(db_session)
+
+    prepared, outcome = await run_search(
+        db_session,
+        resume=resume,
+        specs=[
+            ("hiringcafe", _build_zero_result(_TimesOutAndNeverReadsAnything))
+        ],
+    )
+
+    leg = outcome.portals[0]
+
+    assert leg.failed is True
+    assert leg.status is PortalRunStatus.FAILED
+    assert leg.completion == "failed"
+    assert leg.lost_queries == 1
+    assert prepared.legs[0].status is PortalRunStatus.FAILED
