@@ -415,3 +415,217 @@ def test_a_title_without_a_comma_cannot_reach_the_rescue() -> None:
 
     assert _comma_inverted_title("Financial Analyst") is None
     assert _comma_inverted_title("Senior Data Analyst") is None
+
+
+# --- Slash-joined titles ----------------------------------------------------
+#
+# "AI/ML Engineer" names one job two ways and shares the head noun between
+# them. Every title here was captured from a live posting during the recall
+# audit, except the deliberately hostile ones marked as such.
+
+
+@pytest.mark.parametrize(
+    ("title", "expected"),
+    [
+        ("AI/ML Engineer", RoleVerdict.EXACT),
+        ("ML/AI Engineer", RoleVerdict.EXACT),
+        ("AI/Machine Learning Engineer", RoleVerdict.EXACT),
+        ("Senior AI/ML Engineer", RoleVerdict.EXACT),
+        ("ML/AI Engineer II", RoleVerdict.EXACT),
+        ("Azure AI/ML Engineer", RoleVerdict.STRONG_VARIANT),
+        ("ML/AI Engineer - Consultant", RoleVerdict.STRONG_VARIANT),
+    ],
+)
+def test_a_slash_joined_title_is_read_as_each_role_it_names(
+    title: str, expected: RoleVerdict
+) -> None:
+    assessment = assess(
+        "machine_learning_engineer", title, seniority=Seniority.SENIOR
+    )
+
+    assert assessment.verdict is expected
+    assert assessment.rejection is None
+    assert "side of the slash" in assessment.reason
+
+
+def test_a_slash_title_keeps_its_numeric_level_handling() -> None:
+    # "II" is stripped by normalisation exactly as it is without a slash, so
+    # the level marker changes nothing about the verdict.
+    with_level = assess(
+        "machine_learning_engineer", "ML/AI Engineer II", seniority=Seniority.SENIOR
+    )
+    without = assess(
+        "machine_learning_engineer", "ML/AI Engineer", seniority=Seniority.SENIOR
+    )
+
+    assert with_level.verdict is without.verdict is RoleVerdict.EXACT
+
+
+def test_a_slash_title_does_not_escape_the_leadership_rule() -> None:
+    assessment = assess(
+        "data_analyst", "Principal Data Analyst/Lead", seniority=Seniority.MID
+    )
+
+    assert assessment.verdict is RoleVerdict.INCOMPATIBLE
+    assert assessment.rejection is RoleRejection.LEADERSHIP_MISMATCH
+
+
+def test_a_slash_title_naming_another_profession_is_refused_outright() -> None:
+    # The hostile case. One reading is the target role EXACTLY, the other is a
+    # different career. Taking the flattering half is what must not happen.
+    assessment = assess("financial_analyst", "Financial Analyst/Accountant")
+
+    assert assessment.verdict is RoleVerdict.INCOMPATIBLE
+    assert "Accountant" not in assessment.reason or assessment.rejection is not None
+
+
+@pytest.mark.parametrize(
+    ("role_key", "title"),
+    [
+        # Both sides land outside the target role.
+        ("financial_analyst", "Analyst/Consultant"),
+        ("machine_learning_engineer", "Research/Applied Scientist"),
+        # More than one slash: not this convention, left alone.
+        ("machine_learning_engineer", "Data/ML/AI Engineer"),
+        # Non-alphabetic sides.
+        ("machine_learning_engineer", "24/7 Support Engineer"),
+    ],
+)
+def test_a_slash_title_the_gate_does_not_support_stays_rejected(
+    role_key: str, title: str
+) -> None:
+    assessment = assess(role_key, title, seniority=Seniority.SENIOR)
+
+    assert assessment.verdict is RoleVerdict.INCOMPATIBLE
+
+
+def test_the_slash_rescue_never_returns_a_weak_variant() -> None:
+    titles = [
+        "AI/ML Engineer",
+        "Financial/Revenue Analyst",
+        "Data/Reporting Analyst",
+        "Network/Wireless Engineer",
+    ]
+    for role_key, title in (
+        ("machine_learning_engineer", titles[0]),
+        ("financial_analyst", titles[1]),
+        ("data_analyst", titles[2]),
+        ("network_engineer", titles[3]),
+    ):
+        assessment = assess(role_key, title, seniority=Seniority.SENIOR)
+
+        assert assessment.verdict is not RoleVerdict.WEAK_VARIANT
+
+
+@pytest.mark.parametrize(
+    ("title", "expected"),
+    [
+        ("AI/ML Engineer", ("AI Engineer", "ML Engineer")),
+        ("ML/AI Engineer II", ("ML Engineer II", "AI Engineer II")),
+        ("Senior AI/ML Engineer", ("Senior AI Engineer", "Senior ML Engineer")),
+        # Only the slashed word is split; the shared head stays put.
+        (
+            "AI/Machine Learning Engineer",
+            ("AI Learning Engineer", "Machine Learning Engineer"),
+        ),
+        # Spaced separator is the same convention.
+        ("Network Engineer / Architect", ("Network Engineer", "Network Architect")),
+        # Refused: several slashes, no shared head, or non-alphabetic sides.
+        ("Data/ML/AI Engineer", ()),
+        ("Analyst/Consultant", ()),
+        ("24/7 Support Engineer", ()),
+        ("Engineer (1/2 time)", ()),
+        ("Financial Analyst", ()),
+    ],
+)
+def test_slash_candidates_are_generated_conservatively(
+    title: str, expected: tuple[str, ...]
+) -> None:
+    from app.matching.roles import _slash_title_candidates
+
+    assert _slash_title_candidates(title) == expected
+
+
+def test_a_title_with_both_punctuation_marks_has_one_predictable_answer() -> None:
+    # Comma is tried first, then slash. Running it twice must give the same
+    # answer, and nothing may recurse.
+    first = assess("data_analyst", "Analyst, Risk/EMEA", seniority=Seniority.SENIOR)
+    second = assess("data_analyst", "Analyst, Risk/EMEA", seniority=Seniority.SENIOR)
+
+    assert first.verdict is second.verdict
+    assert first.reason == second.reason
+
+
+@pytest.mark.parametrize(
+    ("role_key", "title", "expected"),
+    [
+        # F4 must be untouched by F3.
+        ("financial_analyst", "Analyst, FP&A", RoleVerdict.EXACT),
+        ("machine_learning_engineer", "Engineer, Machine Learning", RoleVerdict.EXACT),
+        ("financial_analyst", "Lead Analyst, Financial Crimes", RoleVerdict.INCOMPATIBLE),
+        # And the ordinary paths too.
+        ("financial_analyst", "Financial Analyst", RoleVerdict.EXACT),
+        ("financial_analyst", "Financial Revenue Analyst", RoleVerdict.WEAK_VARIANT),
+        ("financial_analyst", "Accountant", RoleVerdict.INCOMPATIBLE),
+    ],
+)
+def test_titles_without_a_slash_are_unaffected(
+    role_key: str, title: str, expected: RoleVerdict
+) -> None:
+    assessment = assess(role_key, title, seniority=Seniority.SENIOR)
+
+    assert assessment.verdict is expected
+    assert "side of the slash" not in assessment.reason
+
+
+def test_slash_bearing_skills_are_still_single_skills() -> None:
+    # The whole reason the rescue is title-only: `normalize_token` keeps "/"
+    # so these stay one skill each, and nothing here may change that.
+    from app.matching.requirements import extract_requirements as extract
+
+    job = extract(
+        title="Network Engineer",
+        description=(
+            "Requirements:\n- Must have TCP/IP and CI/CD experience\n"
+            "- LAN/WAN design\n" + DESCRIPTION
+        ),
+    )
+
+    keys = {skill.skill_key for skill in job.skills}
+    assert "tcp/ip" in keys
+    assert "ci/cd" in keys
+    # Split halves must never appear as skills of their own.
+    assert not {"tcp", "ip", "ci", "cd", "lan", "wan"} & keys
+
+
+def test_no_rewrite_is_ever_applied_to_another_rewrite() -> None:
+    # The rescues call `_assess` directly, never `evaluate_role`, so a rewritten
+    # title cannot itself be rewritten. Counted rather than argued: one base
+    # assessment, at most one comma candidate and at most two slash candidates.
+    import app.matching.roles as roles_module
+
+    calls: list[str] = []
+    original = roles_module._assess
+
+    def counting(profile, job):
+        calls.append(job.title)
+        return original(profile, job)
+
+    monkeypatched = pytest.MonkeyPatch()
+    monkeypatched.setattr(roles_module, "_assess", counting)
+    try:
+        for title in (
+            "Analyst, Risk/EMEA",
+            "AI/ML Engineer",
+            "Analyst, FP&A",
+            "Financial Analyst",
+        ):
+            calls.clear()
+            assess("machine_learning_engineer", title, seniority=Seniority.SENIOR)
+
+            assert len(calls) <= 4, (title, calls)
+            assert calls[0] == title
+            # No candidate may reappear as the input to a later rewrite.
+            assert len(calls) == len(set(calls)), calls
+    finally:
+        monkeypatched.undo()

@@ -47,10 +47,32 @@ becoming a loophole:
 Measured over the recall audit's captured postings: 19 listings reached the
 rescue, all of them already fetched, and the tier restriction admitted the ones
 that were genuinely the same job while leaving the weak tier refused.
+
+# Slash-joined titles
+
+The same thing happens for a different reason with "AI/ML Engineer". Here the
+title is not reordered, it is *abbreviated*: the employer has named two
+interchangeable ways of saying the job and shared one head noun between them.
+``normalize_token`` keeps "/" on purpose - it is what makes CI/CD, TCP/IP and
+LAN/WAN single skills rather than pairs - so "ai/ml" stays one token and can
+never match "ml engineer".
+
+So a slashed title refused at step 7 is read once as each side, splitting only
+the slashed word and leaving the shared head in place. The tier restriction
+above applies unchanged, and one further rule applies only here: if *any*
+reading names a different profession, the whole rescue is abandoned. Two
+readings are two claims about what the job is, and "Financial
+Analyst/Accountant" advertises two careers at once - taking the half that
+flatters the resume is precisely the collapse this gate exists to prevent.
+
+The rewrites are tried comma first, then slash, so a title carrying both has
+one predictable answer. Neither ever calls ``evaluate_role`` again, so no
+rewrite can be applied to the output of another.
 """
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, replace
 from enum import StrEnum
 
@@ -129,6 +151,11 @@ _RESCUABLE_VERDICTS: frozenset[RoleVerdict] = frozenset(
     {RoleVerdict.EXACT, RoleVerdict.STRONG_VARIANT}
 )
 
+#: Employers write the separator both ways: "AI/ML Engineer" and
+#: "Network Engineer / Architect". Collapsing the spaces first means one rule
+#: handles both.
+_SLASH_SPACING_RE = re.compile(r"\s*/\s*")
+
 
 def evaluate_role(
     profile: ResumeMatchProfile, job: JobRequirements
@@ -146,27 +173,118 @@ def evaluate_role(
         # leadership, a named foreign profession, or a missing target role.
         return assessment
 
+    # The two rewrites are tried in a fixed order - comma, then slash - so a
+    # title carrying both punctuation marks has one predictable answer. Each is
+    # re-run through the same checks. `title_seniority` is deliberately carried
+    # over untouched, so the leadership rule still judges the seniority the
+    # employer actually wrote.
     candidate = _comma_inverted_title(job.title)
-    if candidate is None:
-        return assessment
+    if candidate is not None:
+        rescued = _assess(
+            profile,
+            replace(job, title=candidate, role_phrase=strip_seniority(candidate)),
+        )
+        if rescued.verdict in _RESCUABLE_VERDICTS:
+            return replace(
+                rescued,
+                reason=(
+                    f"Title {job.title!r} is {profile.target_role_display} "
+                    f"written head-noun first; read as {candidate!r}, "
+                    f"{rescued.reason[0].lower()}{rescued.reason[1:]}"
+                ),
+            )
 
-    # Re-run the same checks on the rewritten title. `title_seniority` is
-    # deliberately carried over untouched, so the leadership rule still judges
-    # the seniority the employer actually wrote.
-    rescued = _assess(
-        profile,
-        replace(job, title=candidate, role_phrase=strip_seniority(candidate)),
-    )
-    if rescued.verdict not in _RESCUABLE_VERDICTS:
-        return assessment
+    return _slash_rescue(profile, job) or assessment
+
+
+def _slash_rescue(
+    profile: ResumeMatchProfile, job: JobRequirements
+) -> RoleAssessment | None:
+    """Read a slash-joined title as each of the roles it names, or give up.
+
+    Unlike the comma rewrite, which re-reads one title one way, this proposes
+    *competing* readings: "AI/ML Engineer" is both an AI Engineer and an ML
+    Engineer, and the posting means one job that answers to either. That
+    difference is why this path carries a veto the comma path does not need.
+
+    Every candidate is put through the whole gate, and if **any** of them names
+    a different profession the rescue is abandoned outright - even when another
+    candidate would have passed. "Financial Analyst/Accountant" is a posting
+    advertising two careers at once, and picking the flattering half of it is
+    exactly the collapse of role families the gate exists to prevent.
+    """
+    candidates = _slash_title_candidates(job.title)
+    if not candidates:
+        return None
+
+    best: RoleAssessment | None = None
+    best_title = ""
+
+    for candidate in candidates:
+        assessed = _assess(
+            profile,
+            replace(job, title=candidate, role_phrase=strip_seniority(candidate)),
+        )
+        if assessed.rejection is RoleRejection.ROLE_FAMILY_MISMATCH:
+            # One reading of this title is a different career. Refuse all of it.
+            return None
+        if assessed.verdict not in _RESCUABLE_VERDICTS:
+            continue
+        if best is None or assessed.factor > best.factor:
+            best, best_title = assessed, candidate
+
+    if best is None:
+        return None
 
     return replace(
-        rescued,
+        best,
         reason=(
-            f"Title {job.title!r} is {profile.target_role_display} written "
-            f"head-noun first; read as {candidate!r}, {rescued.reason[0].lower()}"
-            f"{rescued.reason[1:]}"
+            f"Title {job.title!r} names {profile.target_role_display} on one "
+            f"side of the slash; read as {best_title!r}, "
+            f"{best.reason[0].lower()}{best.reason[1:]}"
         ),
+    )
+
+
+def _slash_title_candidates(title: str) -> tuple[str, ...]:
+    """Split "AI/ML Engineer" into "AI Engineer" and "ML Engineer".
+
+    Only the slashed word is split, and the rest of the title - crucially the
+    shared head noun - is left in place. Replacing every "/" with a space would
+    turn "AI/ML Engineer" into the three-word "AI ML Engineer", which is not a
+    title anyone wrote and which the gate would have to guess at.
+
+    Deliberately narrow, for the same reason the comma rewrite is:
+
+    * exactly one slash in the whole title, and in exactly one word, so
+      "Data/ML/AI Engineer" and "Analyst - Risk/EMEA, Global" are left alone;
+    * both sides non-empty and alphabetic, so "24/7 Support Engineer" and
+      "Engineer (1/2 time)" produce nothing;
+    * at least one other word, so a bare "Analyst/Consultant" with no shared
+      head is not rewritten into two unrelated one-word titles.
+
+    This operates on the job title only. ``normalize_token`` still keeps "/"
+    for everything else, so CI/CD, TCP/IP and LAN/WAN remain single skills.
+    """
+    spaced = _SLASH_SPACING_RE.sub("/", title.strip())
+    if spaced.count("/") != 1:
+        return ()
+
+    words = spaced.split()
+    positions = [index for index, word in enumerate(words) if "/" in word]
+    if len(positions) != 1 or len(words) < 2:
+        return ()
+
+    index = positions[0]
+    left, _, right = words[index].partition("/")
+    if not left or not right:
+        return ()
+    if not left.isalpha() or not right.isalpha():
+        return ()
+
+    return tuple(
+        " ".join(words[:index] + [side] + words[index + 1 :])
+        for side in (left, right)
     )
 
 
