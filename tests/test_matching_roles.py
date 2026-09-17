@@ -258,3 +258,160 @@ def test_every_refusal_explains_itself() -> None:
 )
 def test_seniority_stripping_leaves_the_role_itself(raw: str, expected: str) -> None:
     assert strip_seniority(raw) == expected
+
+
+# --- Comma-inverted titles --------------------------------------------------
+#
+# Some employers write the head noun first and qualify it after a comma. Every
+# title in this section was captured from a live posting during the recall
+# audit; the ones that must stay refused are the audit's own noise cases.
+
+
+@pytest.mark.parametrize(
+    ("role_key", "title", "expected"),
+    [
+        ("financial_analyst", "Analyst, FP&A", RoleVerdict.EXACT),
+        (
+            "machine_learning_engineer",
+            "Engineer, Machine Learning",
+            RoleVerdict.EXACT,
+        ),
+        ("financial_analyst", "Senior Analyst, Finance", RoleVerdict.EXACT),
+        (
+            "data_analyst",
+            "Analyst II, Customer Insights & Analytics",
+            RoleVerdict.STRONG_VARIANT,
+        ),
+        (
+            "data_analyst",
+            "Analyst, Customer Experience & Insights",
+            RoleVerdict.STRONG_VARIANT,
+        ),
+        ("data_analyst", "Analyst, VBC Analytics", RoleVerdict.STRONG_VARIANT),
+    ],
+)
+def test_a_comma_inverted_title_is_read_the_right_way_round(
+    role_key: str, title: str, expected: RoleVerdict
+) -> None:
+    assessment = assess(role_key, title, seniority=Seniority.SENIOR)
+
+    assert assessment.verdict is expected
+    assert assessment.rejection is None
+    # The explanation has to say what was done, or a reader cannot tell why a
+    # title that plainly is not the role was accepted.
+    assert "head-noun first" in assessment.reason
+
+
+@pytest.mark.parametrize(
+    "title",
+    [
+        # De-inverts to "Financial Crimes Lead Analyst" - a weak variant. An
+        # anti-money-laundering job is not an FP&A job.
+        "Lead Analyst, Financial Crimes",
+        # De-inverts to "... Compliance Senior Analyst" - also weak.
+        "Senior Analyst, National Medicaid Business Compliance",
+    ],
+)
+def test_a_weak_variant_is_never_rescued(title: str) -> None:
+    for role_key in ("financial_analyst", "business_analyst"):
+        assessment = assess(role_key, title, seniority=Seniority.SENIOR)
+
+        assert assessment.verdict is RoleVerdict.INCOMPATIBLE
+        assert assessment.rejection is RoleRejection.ROLE_INCOMPATIBLE
+
+
+def test_the_rescue_only_ever_returns_exact_or_strong() -> None:
+    # Pinned as a property rather than a list of cases: whatever the rewrite
+    # produces, the weak tier must never be how a title gets in.
+    titles = [
+        "Analyst, FP&A",
+        "Lead Analyst, Financial Crimes",
+        "Analyst, Revenue",
+        "Analyst, Financial Systems",
+        "Engineer, Financial Reporting",
+    ]
+    for title in titles:
+        assessment = assess("financial_analyst", title, seniority=Seniority.SENIOR)
+
+        assert assessment.verdict is not RoleVerdict.WEAK_VARIANT
+
+
+@pytest.mark.parametrize(
+    "title",
+    [
+        "Accountant, Corporate Finance",
+        "Auditor, Internal",
+        "Data Scientist, Risk",
+        "Recruiter, Technical",
+    ],
+)
+def test_a_comma_title_naming_another_profession_still_fails_the_foreign_check(
+    title: str,
+) -> None:
+    # The foreign check decides at step 2 or 4, so the rescue is never reached
+    # and a different profession cannot be de-inverted into this one.
+    assessment = assess("financial_analyst", title)
+
+    assert assessment.verdict is RoleVerdict.INCOMPATIBLE
+    assert assessment.rejection is RoleRejection.ROLE_FAMILY_MISMATCH
+
+
+def test_a_comma_title_does_not_escape_the_leadership_rule() -> None:
+    # The rescue is reached only from the last check; a leadership refusal has
+    # returned long before, and carries its own reason.
+    assessment = assess(
+        "data_analyst", "Principal Data Analyst, Card", seniority=Seniority.MID
+    )
+
+    assert assessment.verdict is RoleVerdict.INCOMPATIBLE
+    assert assessment.rejection is RoleRejection.LEADERSHIP_MISMATCH
+
+
+@pytest.mark.parametrize(
+    "title",
+    [
+        # A list, not an inversion.
+        "Analyst, Risk, EMEA",
+        # Nothing on one side of the comma.
+        "Analyst,",
+        ", FP&A",
+        # Too long to be this convention: swinging that clause in front of the
+        # head noun could carry almost anything with it.
+        "Analyst, Global Commercial Insights and Reporting Division",
+        "Head of Data Science and Analytics, FP&A",
+    ],
+)
+def test_arbitrary_comma_prose_is_not_treated_as_an_inversion(title: str) -> None:
+    assessment = assess("financial_analyst", title, seniority=Seniority.SENIOR)
+
+    assert assessment.verdict is RoleVerdict.INCOMPATIBLE
+
+
+@pytest.mark.parametrize(
+    ("role_key", "title", "expected"),
+    [
+        # Unchanged: these never reach the rescue.
+        ("financial_analyst", "Financial Analyst", RoleVerdict.EXACT),
+        ("financial_analyst", "Senior Financial Analyst", RoleVerdict.EXACT),
+        (
+            "financial_analyst",
+            "Financial Analyst, Service Lines",
+            RoleVerdict.STRONG_VARIANT,
+        ),
+        ("financial_analyst", "Financial Revenue Analyst", RoleVerdict.WEAK_VARIANT),
+    ],
+)
+def test_titles_that_already_decided_are_untouched(
+    role_key: str, title: str, expected: RoleVerdict
+) -> None:
+    assessment = assess(role_key, title, seniority=Seniority.SENIOR)
+
+    assert assessment.verdict is expected
+    assert "head-noun first" not in assessment.reason
+
+
+def test_a_title_without_a_comma_cannot_reach_the_rescue() -> None:
+    from app.matching.roles import _comma_inverted_title
+
+    assert _comma_inverted_title("Financial Analyst") is None
+    assert _comma_inverted_title("Senior Data Analyst") is None

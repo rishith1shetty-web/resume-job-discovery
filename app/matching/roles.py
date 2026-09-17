@@ -22,11 +22,36 @@ The checks run in this order, and the first one to decide wins:
 6. **Weak variant** - every word of the role title appears, and the head noun
    matches, e.g. "Financial Revenue Analyst".
 7. Anything else is rejected.
+
+# Comma-inverted titles
+
+One family of titles fails all seven checks for a reason that has nothing to do
+with the job: some employers write the head noun first and qualify it after a
+comma. "Analyst, FP&A" is "FP&A Analyst"; "Engineer, Machine Learning" is a
+Machine Learning Engineer. The checks above compare token *sequences*, so an
+inverted title can never match a phrase, and the posting is refused as the
+wrong role.
+
+So a title that reaches step 7 and carries a single comma is tried once more in
+its de-inverted form, through these very same checks. Two things keep that from
+becoming a loophole:
+
+* the rescue is only reached from step 7. A title already judged a different
+  profession (step 2 or 4) or too senior (step 1) has returned long before, so
+  no foreign-role or leadership rejection can be undone by it;
+* only EXACT and STRONG_VARIANT are accepted back. The weak tier is where the
+  noise lives - "Lead Analyst, Financial Crimes" de-inverts to a weak variant of
+  Financial Analyst, and an AML job is not an FP&A job - so a weak answer leaves
+  the original rejection standing.
+
+Measured over the recall audit's captured postings: 19 listings reached the
+rescue, all of them already fetched, and the tier restriction admitted the ones
+that were genuinely the same job while leaving the weak tier refused.
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from enum import StrEnum
 
 from app.analysis import taxonomy
@@ -96,10 +121,85 @@ class RoleAssessment:
         return self.verdict is not RoleVerdict.INCOMPATIBLE
 
 
+#: Verdicts the comma rescue may return. STRONG_VARIANT is the loosest tier
+#: that still requires the role's own title to appear as a whole phrase; the
+#: weak tier only requires the same words in any arrangement, which is how an
+#: unrelated speciality gets in.
+_RESCUABLE_VERDICTS: frozenset[RoleVerdict] = frozenset(
+    {RoleVerdict.EXACT, RoleVerdict.STRONG_VARIANT}
+)
+
+
 def evaluate_role(
     profile: ResumeMatchProfile, job: JobRequirements
 ) -> RoleAssessment:
-    """Decide whether this posting is the candidate's role at all."""
+    """Decide whether this posting is the candidate's role at all.
+
+    Runs the checks once as written, then - only for a title refused at the
+    last step for not being the target role - once more on its de-inverted
+    form. See "Comma-inverted titles" above.
+    """
+    assessment = _assess(profile, job)
+
+    if assessment.rejection is not RoleRejection.ROLE_INCOMPATIBLE:
+        # Passed, or refused by a rule the rescue is not allowed to revisit:
+        # leadership, a named foreign profession, or a missing target role.
+        return assessment
+
+    candidate = _comma_inverted_title(job.title)
+    if candidate is None:
+        return assessment
+
+    # Re-run the same checks on the rewritten title. `title_seniority` is
+    # deliberately carried over untouched, so the leadership rule still judges
+    # the seniority the employer actually wrote.
+    rescued = _assess(
+        profile,
+        replace(job, title=candidate, role_phrase=strip_seniority(candidate)),
+    )
+    if rescued.verdict not in _RESCUABLE_VERDICTS:
+        return assessment
+
+    return replace(
+        rescued,
+        reason=(
+            f"Title {job.title!r} is {profile.target_role_display} written "
+            f"head-noun first; read as {candidate!r}, {rescued.reason[0].lower()}"
+            f"{rescued.reason[1:]}"
+        ),
+    )
+
+
+def _comma_inverted_title(title: str) -> str | None:
+    """Rewrite "Analyst, FP&A" as "FP&A Analyst", or return None.
+
+    Deliberately narrow. Arbitrary comma-separated prose is not a title, so a
+    rewrite is only offered when the punctuation looks like this convention and
+    nothing else:
+
+    * exactly one comma - "Analyst, Risk, EMEA" is a list, not an inversion;
+    * both sides non-empty, so a trailing comma produces nothing;
+    * a short head (<=3 words, e.g. "Senior Analyst II") and a short tail
+      (<=4 words, e.g. "Customer Insights & Analytics").
+
+    The bounds matter: without them a long clause after the comma would be
+    swung in front of the head noun and could contain almost anything.
+    """
+    if title.count(",") != 1:
+        return None
+
+    head, _, tail = title.partition(",")
+    head, tail = head.strip(), tail.strip()
+    if not head or not tail:
+        return None
+    if len(head.split()) > 3 or len(tail.split()) > 4:
+        return None
+
+    return f"{tail} {head}"
+
+
+def _assess(profile: ResumeMatchProfile, job: JobRequirements) -> RoleAssessment:
+    """The seven checks, in order. Called twice at most, never recursively."""
     if not profile.is_scoreable:
         return RoleAssessment(
             verdict=RoleVerdict.INCOMPATIBLE,
