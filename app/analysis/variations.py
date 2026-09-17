@@ -39,7 +39,10 @@ _SENIORITY_PREFIXES: dict[Seniority, tuple[str, ...]] = {
     Seniority.EXECUTIVE: (),
 }
 
-DEFAULT_MAX_VARIATIONS = 10
+#: How many titles are stored on the profile. Deliberately above the
+#: per-portal query cap in ``app.search.queries``, which is the bound that
+#: actually limits request volume; this one only limits what is recorded.
+DEFAULT_MAX_VARIATIONS = 12
 
 
 def generate_role_variations(
@@ -50,8 +53,9 @@ def generate_role_variations(
 ) -> list[str]:
     """Build the search titles for one detected role.
 
-    The canonical title always comes first; prefixed forms follow the base
-    titles so an unprefixed search is never crowded out.
+    The canonical title always comes first, then its seniority-prefixed
+    forms, then the role's other phrasings. Callers cap this list, so the
+    order decides what survives.
     """
     role = taxonomy.get_role(role_key)
     if role is None:
@@ -66,15 +70,28 @@ def generate_role_variations(
             seen.add(key)
             ordered.append(title)
 
-    # 1. Canonical title first, then the role's own same-role phrasings.
+    # 1. The canonical title, always first, so a portal that can serve only
+    #    one query still searches the right thing.
     add(role.canonical_title)
-    for variation in role.variations:
-        add(variation)
 
-    # 2. Seniority-prefixed forms of the canonical title only. Prefixing every
-    #    variation would produce noise like "Senior Finance Reporting Analyst".
+    # 2. Seniority-prefixed forms of the canonical title, immediately after
+    #    it. Only the canonical title is prefixed - prefixing every variation
+    #    would produce noise like "Senior Finance Reporting Analyst".
+    #
+    #    Position matters. These used to be appended last, which meant the
+    #    caller's cap truncated them first: across the taxonomy 21 roles lost
+    #    their seniority query at some level, and for a senior Financial
+    #    Analyst the dropped "Senior Financial Analyst" was measured, live, to
+    #    be worth more qualifying jobs than the tail variations that displaced
+    #    it. A seniority form is a re-phrasing of the canonical title itself,
+    #    so it belongs beside it rather than behind the long tail.
     for prefix in _SENIORITY_PREFIXES.get(seniority, ()) if seniority else ():
         add(f"{prefix} {role.canonical_title}")
+
+    # 3. The role's own same-role phrasings, in the order the taxonomy lists
+    #    them - which is authored most-productive first for the same reason.
+    for variation in role.variations:
+        add(variation)
 
     return ordered[:max_variations]
 

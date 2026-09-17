@@ -147,6 +147,20 @@ class Detection:
     evidence: list[Evidence] = field(default_factory=list)
     alternatives: list[tuple[str, float]] = field(default_factory=list)
 
+    #: Other candidates that scored EXACTLY the same as the winner. Non-empty
+    #: means the evidence did not separate them and something other than the
+    #: evidence chose - which the user is entitled to be told.
+    tied_with: list[str] = field(default_factory=list)
+    #: How such a tie was resolved: ``"domain_agreement"`` when the winner was
+    #: the tied role belonging to the resume's own domain, ``"alphabetical"``
+    #: when nothing separated them at all, ``None`` when there was no tie.
+    tie_break: str | None = None
+
+    @property
+    def is_tied(self) -> bool:
+        """Whether the evidence alone failed to pick a single winner."""
+        return bool(self.tied_with)
+
     def as_dict(self) -> dict[str, Any]:
         return {
             "key": self.key,
@@ -157,6 +171,8 @@ class Detection:
                 {"key": key, "score": round(score, 4)}
                 for key, score in self.alternatives
             ],
+            "tied_with": list(self.tied_with),
+            "tie_break": self.tie_break,
         }
 
 

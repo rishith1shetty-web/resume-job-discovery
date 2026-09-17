@@ -224,9 +224,16 @@ ROLE_ENTRIES: tuple[
       "corporate financial analyst", "finance reporting analyst",
       "financial reporting analyst", "finance analyst",
       "financial planning and analysis analyst", "budget analyst"),
-     ("Financial Analyst", "FP&A Analyst", "Financial Planning Analyst",
-      "Corporate Financial Analyst", "Finance Reporting Analyst",
-      "Financial Reporting Analyst", "Financial Planning and Analysis Analyst"),
+     # Ordered by measured yield, because the per-portal cap truncates the
+     # tail: "Finance Analyst" and "Budget Analyst" were already accepted by
+     # the role gate as EXACT (they are aliases below) but no query reached
+     # them, so live runs found 8 and 6 qualifying jobs respectively that the
+     # product could not see. "Finance Reporting Analyst" returned 40 postings
+     # and nothing qualifying, so it sits last rather than being removed.
+     ("Financial Analyst", "Finance Analyst", "Budget Analyst", "FP&A Analyst",
+      "Financial Planning Analyst", "Corporate Financial Analyst",
+      "Financial Reporting Analyst", "Finance Reporting Analyst",
+      "Financial Planning and Analysis Analyst"),
      ("financial modeling", "financial analysis", "forecasting", "budgeting",
       "variance analysis", "excel", "fp&a")),
 
@@ -334,9 +341,46 @@ ROLE_ENTRIES: tuple[
     ("hr_generalist", "HR Generalist", "human_resources",
      ("human resources generalist", "hr associate", "hr coordinator",
       "human resources associate"),
-     ("HR Generalist", "Human Resources Generalist", "HR Associate",
-      "Human Resources Coordinator"),
+     # "HR Coordinator" is the form employers actually post; the spelled-out
+     # "Human Resources Coordinator" does not retrieve it, because the title
+     # filter needs every query word present. The gate already accepted it.
+     ("HR Generalist", "Human Resources Generalist", "HR Coordinator",
+      "HR Associate", "Human Resources Coordinator"),
      ("employee relations", "onboarding", "hris", "hr policy")),
+
+    # People analytics and HR reporting. A distinct career from HR Generalist
+    # (which is HR operations and employee relations) and, more importantly,
+    # from Data Analyst - the tooling is shared, the profession is not.
+    #
+    # Its absence was a defect with a measured cost. Titles are only extracted
+    # from a resume when they match a known role, so a resume reading
+    # "HR Analyst" and "People Analytics" had *no* title extracted at all. The
+    # decision then fell to core-skill coverage alone, which produced a
+    # four-way exact tie between business_operations_analyst, data_analyst,
+    # hr_generalist and recruiter, broken alphabetically - and so an HR
+    # candidate was given Business Operations Analyst at 0.2 confidence and
+    # searched BizOps titles. With this row the same resume classifies as
+    # HR Analyst at 0.91.
+    #
+    # The aliases below also repair three career boundaries. Because
+    # ``_foreign_role_phrase`` scans every role, naming these titles here is
+    # what makes "People Analytics Analyst" and "HR Data Analyst" stop being
+    # accepted as Data Analyst, and "HR Operations Analyst" stop being
+    # accepted as Business Operations Analyst.
+    #
+    # Variations are ordered by measured live yield: HRIS Analyst returned 23
+    # qualifying jobs and HR Analyst 9, while People Analytics Analyst
+    # returned 2 against an 86% gate-rejection rate, so it sits last.
+    ("hr_analyst", "HR Analyst", "human_resources",
+     ("human resources analyst", "hris analyst", "hr data analyst",
+      "people analytics analyst", "people analytics", "hr operations analyst",
+      "workforce analytics analyst", "hr reporting analyst",
+      "human resources data analyst"),
+     ("HR Analyst", "HRIS Analyst", "Human Resources Analyst",
+      "HR Data Analyst", "Workforce Analytics Analyst",
+      "HR Reporting Analyst", "HR Operations Analyst",
+      "People Analytics Analyst"),
+     ("hris", "onboarding", "excel", "sql", "power bi")),
 
     ("recruiter", "Recruiter", "human_resources",
      ("talent acquisition specialist", "technical recruiter",

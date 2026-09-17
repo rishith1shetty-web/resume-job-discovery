@@ -42,7 +42,17 @@ logger = get_logger(__name__)
 #: Queries issued to one portal in one run. Small on purpose: each one is a
 #: separate request, and beyond a handful the variations stop describing the
 #: same job and start describing an adjacent one.
-DEFAULT_MAX_QUERIES_PER_PORTAL = 6
+#:
+#: This is the single bound on request volume - ``DEFAULT_MAX_VARIATIONS`` sits
+#: above it and limits only what is stored on the profile. It was 6, which cut
+#: the generated list for 21 roles; measured live on a senior Financial Analyst
+#: resume across three portals, restoring the truncated queries found 13
+#: qualifying jobs the capped run never saw (5 of its own went missing to live
+#: churn, so net +8) for 6 extra requests and 7 extra seconds. Eight keeps the
+#: per-portal cost bounded and covers every role's generated set except
+#: financial_analyst and hr_analyst, whose tails are the lowest-yielding
+#: variations measured and so are the right things to lose.
+DEFAULT_MAX_QUERIES_PER_PORTAL = 8
 
 
 @dataclass(frozen=True, slots=True)

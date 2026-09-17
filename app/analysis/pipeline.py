@@ -18,7 +18,7 @@ from app.analysis.education import (
     extract_responsibilities,
 )
 from app.analysis.experience import compute_years_experience
-from app.analysis.results import ResumeProfileData
+from app.analysis.results import Detection, ExtractedTitle, ResumeProfileData
 from app.analysis.sections import split_sections
 from app.analysis.seniority import detect_seniority
 from app.analysis.skills import extract_skills
@@ -29,6 +29,21 @@ from app.core.constants import ResumeSection
 
 # Below this, extraction is unreliable and the caller should be warned.
 MIN_USEFUL_CHARS = 200
+
+#: Role confidence below which the detection should be reviewed before it is
+#: searched on. Confidence blends evidence strength with the margin over the
+#: runner-up, so a value this low means either almost nothing supported the
+#: winner or nothing separated it from the next role. Measured over the stored
+#: resumes, a detection backed by an actual job title scores 0.88-0.94, while
+#: one resting on skill overlap alone scores 0.2 - the gap is wide enough that
+#: a single threshold separates them cleanly.
+LOW_ROLE_CONFIDENCE = 0.4
+
+#: Domain detection with no role supplied. The role is normally the dominant
+#: input to the domain, so a domain read back from the role cannot corroborate
+#: it; this one is built from the resume's keywords and skills alone and is
+#: used only to break an exact tie between roles.
+_NO_ROLE = Detection(key=None, display=None, confidence=0.0)
 
 
 def analyze_resume_text(
@@ -63,7 +78,8 @@ def analyze_resume_text(
         titles, sections, years
     )
 
-    role = detect_target_role(titles, skills)
+    evidence_domain = detect_domain(_NO_ROLE, skills, sections, text)
+    role = detect_target_role(titles, skills, domain_hint=evidence_domain.key)
     domain = detect_domain(role, skills, sections, text)
 
     if role.key is None:
@@ -71,6 +87,8 @@ def analyze_resume_text(
             "No target role could be determined from the resume. Set it "
             "manually before searching."
         )
+    else:
+        warnings.extend(_role_review_warnings(role, titles))
 
     variations = (
         generate_role_variations(role.key, seniority) if role.key else []
@@ -95,3 +113,44 @@ def analyze_resume_text(
         sections_found=sorted(set(section_kinds), key=lambda kind: kind.value),
         warnings=warnings,
     )
+
+
+def _role_review_warnings(
+    role: Detection, titles: list[ExtractedTitle]
+) -> list[str]:
+    """Warn when the detected role deserves a look before it is searched on.
+
+    The user may always continue - CLAUDE.md section 3 gives them the
+    correction, not a gate. What this prevents is a coin-flip being presented
+    with the same quiet certainty as a detection backed by four job titles.
+    """
+    warnings: list[str] = []
+
+    if role.is_tied:
+        others = ", ".join(role.tied_with)
+        resolved = (
+            "resolved in favour of the resume's own domain"
+            if role.tie_break == "domain_agreement"
+            else "resolved only by deterministic ordering"
+        )
+        warnings.append(
+            f"Target role {role.display!r} scored exactly the same as "
+            f"{others} and was {resolved}. Review the target role before "
+            "searching."
+        )
+
+    if role.confidence < LOW_ROLE_CONFIDENCE and not role.is_tied:
+        warnings.append(
+            f"Target role {role.display!r} was detected with low confidence "
+            f"({role.confidence:.2f}). Review the target role before "
+            "searching."
+        )
+
+    if not any(title.role_key is not None for title in titles):
+        warnings.append(
+            "No recognised job title was found in the resume, so the target "
+            "role rests on skill overlap alone. Review the target role before "
+            "searching."
+        )
+
+    return warnings

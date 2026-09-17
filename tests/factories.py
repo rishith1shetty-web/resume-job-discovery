@@ -115,6 +115,40 @@ TCP/IP, Cisco, Routing, Switching, VLAN, OSPF, VPN, DNS, DHCP, NAT,
 Wireshark, SolarWinds, Firewall, Python
 """
 
+# People analytics: the case that used to have NO title extracted at all,
+# because neither "People Analytics" nor "HR Analyst" was a known role. The
+# decision then fell to core-skill coverage, which tied four ways and was
+# broken alphabetically into Business Operations Analyst. Modelled on a real
+# resume that failed this way; the content here is synthetic.
+HR_ANALYST_RESUME = f"""Priya {TEST_RECORD_MARKER} Rao
+priya.rao@test.invalid | Newark, NJ
+
+PROFESSIONAL SUMMARY
+HR professional experienced in employee onboarding, recruitment operations,
+HR reporting and workforce analytics. Hands-on with Workday, HRIS, HRMS,
+Power BI and advanced Excel.
+
+EXPERIENCE
+People Analytics | Northwind Cloud | September 2025 - Present
+- Maintain dashboards tracking headcount, hiring activity and retention
+- Support onboarding by coordinating new hire documentation and records
+- Prepare monthly workforce reports covering hiring and attendance trends
+- Extract and validate data using SQL and Excel for reporting accuracy
+
+HR Analyst | Meridian Industries | July 2019 - February 2023
+- Supported recruitment by coordinating interviews and offer documentation
+- Maintained employee records in Workday, HRIS and HRMS
+- Prepared workforce reports on headcount, hiring, attrition and attendance
+- Built dashboards in Power BI and Excel to show workforce trends
+
+EDUCATION
+Master of Human Resource Management, Rutgers University, 2025
+
+SKILLS
+Workday, HRIS, Power BI, SQL, Excel, Tableau, Onboarding, Employee Relations,
+Recruiting, HR Policy, Process Improvement
+"""
+
 # No recognisable role, section or skill - used for the low-signal path.
 UNPARSEABLE_RESUME = """Hello there
 

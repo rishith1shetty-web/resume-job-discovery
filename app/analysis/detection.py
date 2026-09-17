@@ -10,6 +10,15 @@ Signals, strongest first:
   2. other job titles in the experience section
   3. a title stated in the summary
   4. overlap with the role's core skills
+
+When two roles score EXACTLY the same, the evidence has not chosen and
+something else must. Preferring the tied role that belongs to the resume's own
+domain is the only additional evidence available, and it is used for that case
+alone: it never overrides a higher-scoring role, because a role beaten on
+evidence has been beaten. Where even that does not separate them the order
+stays alphabetical so the result is reproducible, and the tie is recorded on
+the ``Detection`` either way so the caller can say so rather than present a
+coin-flip as a finding.
 """
 
 from __future__ import annotations
@@ -35,6 +44,10 @@ W_DOMAIN_SKILL = 0.25
 _FULL_STRENGTH = 6.0
 _MAX_KEYWORD_HITS = 6
 
+#: Scores closer than this count as exactly equal. Contributions are sums of
+#: floats, so two genuinely identical scores can differ in the last bit.
+_TIE_EPSILON = 1e-9
+
 
 def _confidence(winner: float, runner_up: float) -> float:
     """Blend absolute evidence strength with separation from the runner-up.
@@ -52,8 +65,19 @@ def _confidence(winner: float, runner_up: float) -> float:
 def detect_target_role(
     titles: list[ExtractedTitle],
     skills: list[ExtractedSkill],
+    *,
+    domain_hint: str | None = None,
 ) -> Detection:
-    """Pick the single target role."""
+    """Pick the single target role.
+
+    ``domain_hint`` is the domain the resume's own keywords and skills point
+    to, computed without reference to any role (see ``detect_domain`` called
+    with an empty role). It breaks exact ties and nothing else. It is a hint
+    rather than a signal on purpose: measured across the stored resumes, a
+    correctly detected role legitimately disagrees with the keyword domain
+    about a third of the time - a Business Analyst resume reads as "data" -
+    so letting it do more than break ties would reject correct answers.
+    """
     scores: dict[str, float] = defaultdict(float)
     evidence_by_role: dict[str, list[Evidence]] = defaultdict(list)
 
@@ -110,8 +134,27 @@ def detect_target_role(
         return Detection(key=None, display=None, confidence=0.0)
 
     ranked = sorted(scores.items(), key=lambda item: (-item[1], item[0]))
-    winner_key, winner_score = ranked[0]
-    runner_up_score = ranked[1][1] if len(ranked) > 1 else 0.0
+    top_score = ranked[0][1]
+    # Already alphabetical within a score, so every list built from this stays
+    # deterministic whichever branch below is taken.
+    tied = [key for key, score in ranked if abs(score - top_score) <= _TIE_EPSILON]
+
+    winner_key = tied[0]
+    tie_break: str | None = None
+    if len(tied) > 1:
+        tie_break = "alphabetical"
+        if domain_hint is not None:
+            agreeing = [
+                key for key in tied if taxonomy.ROLES[key].domain_key == domain_hint
+            ]
+            if agreeing:
+                winner_key = agreeing[0]
+                tie_break = "domain_agreement"
+
+    winner_score = scores[winner_key]
+    runner_up_score = next(
+        (score for key, score in ranked if key != winner_key), 0.0
+    )
 
     role = taxonomy.ROLES[winner_key]
     return Detection(
@@ -121,7 +164,11 @@ def detect_target_role(
         evidence=sorted(
             evidence_by_role[winner_key], key=lambda e: -e.weight
         )[:6],
-        alternatives=[(key, round(score, 4)) for key, score in ranked[1:4]],
+        alternatives=[
+            (key, round(score, 4)) for key, score in ranked if key != winner_key
+        ][:3],
+        tied_with=[key for key in tied if key != winner_key],
+        tie_break=tie_break,
     )
 
 

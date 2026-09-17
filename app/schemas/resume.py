@@ -78,6 +78,13 @@ class DetectionOut(BaseModel):
     display: str | None
     confidence: float = Field(ge=0.0, le=1.0)
     evidence: list[EvidenceItem] = Field(default_factory=list)
+    #: Roles that scored exactly the same as the winner. Non-empty means the
+    #: evidence did not choose, and the dashboard should say so rather than
+    #: render the result like a confident one. The matching human-readable
+    #: warning is already in ``warnings``; these fields let the UI point at
+    #: the field itself.
+    tied_with: list[str] = Field(default_factory=list)
+    tie_break: str | None = None
 
 
 class SkillOut(BaseModel):
@@ -209,8 +216,21 @@ def detection_from_json(
 ) -> DetectionOut:
     """Rebuild a detection from its stored JSONB payload."""
     evidence: list[EvidenceItem] = []
+    tied_with: list[str] = []
+    tie_break: str | None = None
     if isinstance(raw, dict):
         evidence = evidence_from_json(raw.get("evidence"))
+        stored_tied = raw.get("tied_with")
+        if isinstance(stored_tied, list):
+            tied_with = [item for item in stored_tied if isinstance(item, str)]
+        stored_break = raw.get("tie_break")
+        if isinstance(stored_break, str):
+            tie_break = stored_break
     return DetectionOut(
-        key=key, display=display, confidence=confidence, evidence=evidence
+        key=key,
+        display=display,
+        confidence=confidence,
+        evidence=evidence,
+        tied_with=tied_with,
+        tie_break=tie_break,
     )
