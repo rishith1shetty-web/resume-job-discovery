@@ -372,10 +372,17 @@ def _assess(profile: ResumeMatchProfile, job: JobRequirements) -> RoleAssessment
         )
 
     # 4. Another profession named inside a longer title.
+    #
+    # Held rather than returned when the foreign name turns out to be part of
+    # the target role's own, longer approved phrase. See
+    # `_dominating_target_phrase`. The rejection still stands unless the title
+    # goes on to be read as a strong form of the target role, so nothing below
+    # the strong tier can escape through here.
+    foreign_rejection: RoleAssessment | None = None
     foreign = _foreign_role_phrase(role_phrase, profile.target_role_key)
     if foreign is not None:
         other = taxonomy.get_role(foreign)
-        return RoleAssessment(
+        foreign_rejection = RoleAssessment(
             verdict=RoleVerdict.INCOMPATIBLE,
             factor=0.0,
             reason=(
@@ -385,6 +392,8 @@ def _assess(profile: ResumeMatchProfile, job: JobRequirements) -> RoleAssessment
             detected_role_key=foreign,
             rejection=RoleRejection.ROLE_FAMILY_MISMATCH,
         )
+        if _dominating_target_phrase(role_phrase, foreign, role_spec, profile) is None:
+            return foreign_rejection
 
     if role_spec is None:  # pragma: no cover - is_scoreable implies a spec
         return RoleAssessment(
@@ -413,6 +422,11 @@ def _assess(profile: ResumeMatchProfile, job: JobRequirements) -> RoleAssessment
     head_matches = bool(job_tokens) and job_tokens[-1] == _head_noun(role_spec)
 
     if head_matches and canonical_tokens <= set(job_tokens):
+        # A held foreign rejection outranks the weak tier. The weak tier only
+        # asks for the same words in any arrangement, which is not enough to
+        # overturn a title that names another profession outright.
+        if foreign_rejection is not None:
+            return foreign_rejection
         return RoleAssessment(
             verdict=RoleVerdict.WEAK_VARIANT,
             factor=ROLE_VERDICT_FACTOR[RoleVerdict.WEAK_VARIANT],
@@ -423,6 +437,9 @@ def _assess(profile: ResumeMatchProfile, job: JobRequirements) -> RoleAssessment
             detected_role_key=profile.target_role_key,
         )
 
+    if foreign_rejection is not None:
+        return foreign_rejection
+
     return RoleAssessment(
         verdict=RoleVerdict.INCOMPATIBLE,
         factor=0.0,
@@ -432,6 +449,63 @@ def _assess(profile: ResumeMatchProfile, job: JobRequirements) -> RoleAssessment
         ),
         rejection=RoleRejection.ROLE_INCOMPATIBLE,
     )
+
+
+def _dominating_target_phrase(
+    role_phrase: str,
+    foreign_key: str,
+    role_spec: taxonomy.RoleSpec | None,
+    profile: ResumeMatchProfile,
+) -> str | None:
+    """The target's own approved phrase that the foreign name is merely part of.
+
+    Some roles are named by qualifying another role: ``hr_analyst`` lists
+    "HR Data Analyst" and "HR Reporting Analyst" among its own approved
+    phrases, and both contain a ``data_analyst`` title. A bare "HR Data
+    Analyst" resolves exactly and passes at step 2, but any qualified form of
+    it - "AOC HR Data Analyst", "HR Data Analyst - HRMS" - falls through to the
+    foreign check, which finds "Data Analyst" and refuses the posting as a
+    different profession. It is not: it is this profession, spelled out.
+
+    So the foreign name is set aside only when all four hold:
+
+    * the phrase is one of **this** target role's approved phrases;
+    * the title actually contains that phrase, not merely its words;
+    * the foreign name sits **inside** that phrase; and
+    * the phrase is strictly longer than the foreign name, so it is the more
+      specific reading of the two.
+
+    "Financial Data Analyst" and "Business Data Analyst" satisfy none of them
+    for an HR Analyst - no approved HR phrase appears in either - so their
+    rejection is untouched. Neither is this a way in for the weak tier: the
+    caller keeps the rejection unless the title reaches EXACT or
+    STRONG_VARIANT.
+    """
+    if role_spec is None:
+        return None
+
+    other = taxonomy.get_role(foreign_key)
+    if other is None:
+        return None
+
+    foreign_terms = {
+        term
+        for term in (normalize_title(other.canonical_title), *other.aliases)
+        if term
+    }
+
+    # Longest first, so the most specific approved phrase is the one reported.
+    for phrase in _target_phrases(role_spec, profile):
+        if not _contains_phrase(role_phrase, phrase):
+            continue
+        phrase_length = len(phrase.split())
+        for term in foreign_terms:
+            if phrase_length <= len(term.split()):
+                continue
+            if _contains_phrase(phrase, term):
+                return phrase
+
+    return None
 
 
 def _leadership_rejection(

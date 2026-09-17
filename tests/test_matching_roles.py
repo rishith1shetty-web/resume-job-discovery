@@ -629,3 +629,154 @@ def test_no_rewrite_is_ever_applied_to_another_rewrite() -> None:
             assert len(calls) == len(set(calls)), calls
     finally:
         monkeypatched.undo()
+
+
+# --- A target role named by qualifying another role -------------------------
+#
+# hr_analyst lists "HR Data Analyst" and "HR Reporting Analyst" among its own
+# approved phrases, and both contain a data_analyst title. The foreign check
+# must not read the part and miss the whole.
+
+
+@pytest.mark.parametrize(
+    ("title", "expected"),
+    [
+        # Resolve exactly through the taxonomy - the path was always open.
+        ("HR Data Analyst", RoleVerdict.EXACT),
+        ("Senior HR Data Analyst", RoleVerdict.EXACT),
+        ("HR Data Analyst I", RoleVerdict.EXACT),
+        ("Human Resources Data Analyst", RoleVerdict.EXACT),
+        # Qualified forms, which used to be refused as Data Analyst.
+        ("AOC HR Data Analyst", RoleVerdict.STRONG_VARIANT),
+        ("HR Data Analyst - HRMS", RoleVerdict.STRONG_VARIANT),
+        ("HR Reporting Analyst - Global Payroll", RoleVerdict.STRONG_VARIANT),
+    ],
+)
+def test_the_target_roles_own_longer_phrase_wins(
+    title: str, expected: RoleVerdict
+) -> None:
+    assessment = assess("hr_analyst", title)
+
+    assert assessment.verdict is expected
+    assert assessment.rejection is None
+
+
+@pytest.mark.parametrize(
+    "title",
+    [
+        # No approved HR phrase appears in any of these, so the foreign name
+        # is the only role either of them states.
+        "Data Analyst",
+        "Senior Data Analyst",
+        "Financial Data Analyst",
+        "Business Data Analyst",
+        "Marketing Data Analyst",
+        "Data Analyst - Workforce Reporting",
+        # A different HR role, not a qualified HR Analyst.
+        "HR Business Partner",
+        # "HR Data Engineer" is not in the taxonomy as an HR Analyst phrase.
+        "HR Data Engineer",
+    ],
+)
+def test_a_foreign_role_not_inside_an_approved_phrase_is_still_refused(
+    title: str,
+) -> None:
+    assessment = assess("hr_analyst", title)
+
+    assert assessment.verdict is RoleVerdict.INCOMPATIBLE
+    assert assessment.rejection is RoleRejection.ROLE_FAMILY_MISMATCH
+
+
+def test_the_precedence_does_not_run_in_the_other_direction() -> None:
+    # "HR Data Analyst" contains "Data Analyst", but a Data Analyst resume has
+    # no approved phrase containing "HR Analyst", so nothing dominates and the
+    # posting stays refused.
+    assessment = assess("data_analyst", "HR Data Analyst")
+
+    assert assessment.verdict is RoleVerdict.INCOMPATIBLE
+    assert assessment.rejection is RoleRejection.ROLE_FAMILY_MISMATCH
+
+
+def test_a_held_foreign_rejection_outranks_the_weak_tier() -> None:
+    # The containment rule opens the door only as far as the strong tier. A
+    # title that would merely be a weak variant keeps its foreign rejection.
+    from app.matching.roles import _assess
+
+    job = extract_requirements(
+        title="HR Analytics Data Analyst", description=DESCRIPTION
+    )
+    profile = profile_for("hr_analyst")
+    assessment = _assess(profile, job)
+
+    assert assessment.verdict is not RoleVerdict.WEAK_VARIANT
+    if assessment.verdict is RoleVerdict.INCOMPATIBLE:
+        assert assessment.rejection is RoleRejection.ROLE_FAMILY_MISMATCH
+
+
+def test_the_dominating_phrase_must_be_longer_and_actually_present() -> None:
+    from app.matching.roles import _dominating_target_phrase
+
+    profile = profile_for("hr_analyst")
+    spec = taxonomy.get_role("hr_analyst")
+
+    # Present and longer than "data analyst" - dominates.
+    assert (
+        _dominating_target_phrase(
+            "aoc hr data analyst", "data_analyst", spec, profile
+        )
+        == "hr data analyst"
+    )
+    # The approved phrase is not in this title at all.
+    assert (
+        _dominating_target_phrase(
+            "financial data analyst", "data_analyst", spec, profile
+        )
+        is None
+    )
+    # Nothing dominates a foreign role the target never qualifies.
+    assert (
+        _dominating_target_phrase(
+            "hr business partner", "hr_business_partner", spec, profile
+        )
+        is None
+    )
+
+
+def test_leadership_still_decides_before_any_of_this() -> None:
+    assessment = assess(
+        "hr_analyst", "Director, HR Data Analyst", seniority=Seniority.MID
+    )
+
+    assert assessment.verdict is RoleVerdict.INCOMPATIBLE
+    assert assessment.rejection is RoleRejection.LEADERSHIP_MISMATCH
+
+
+@pytest.mark.parametrize(
+    ("role_key", "title", "expected"),
+    [
+        # F4 comma inversion.
+        ("financial_analyst", "Analyst, FP&A", RoleVerdict.EXACT),
+        ("machine_learning_engineer", "Engineer, Machine Learning", RoleVerdict.EXACT),
+        (
+            "financial_analyst",
+            "Lead Analyst, Financial Crimes",
+            RoleVerdict.INCOMPATIBLE,
+        ),
+        # F3 slash rescue.
+        ("machine_learning_engineer", "AI/ML Engineer", RoleVerdict.EXACT),
+        ("machine_learning_engineer", "Azure AI/ML Engineer", RoleVerdict.STRONG_VARIANT),
+        ("financial_analyst", "Financial Analyst/Accountant", RoleVerdict.INCOMPATIBLE),
+        # Ordinary paths.
+        ("financial_analyst", "Financial Analyst", RoleVerdict.EXACT),
+        ("financial_analyst", "Financial Analyst, Service Lines", RoleVerdict.STRONG_VARIANT),
+        ("financial_analyst", "Financial Revenue Analyst", RoleVerdict.WEAK_VARIANT),
+        ("financial_analyst", "Accountant", RoleVerdict.INCOMPATIBLE),
+        ("financial_analyst", "Staff Accountant", RoleVerdict.INCOMPATIBLE),
+    ],
+)
+def test_the_other_rescues_and_the_ordinary_paths_are_unchanged(
+    role_key: str, title: str, expected: RoleVerdict
+) -> None:
+    assessment = assess(role_key, title, seniority=Seniority.SENIOR)
+
+    assert assessment.verdict is expected
