@@ -29,7 +29,7 @@ from app.matching.scoring import (
     round_score,
     score_match,
 )
-from app.matching.skills import evaluate_skills
+from app.matching.skills import GENERIC_SKILL_KEYS, evaluate_skills
 from app.matching.version import SCORING_VERSION
 
 PADDING = "Additional context about the team and the work. " * 8
@@ -303,6 +303,178 @@ def test_missing_skills_are_reported_as_penalties_not_as_evidence() -> None:
 
     assert any("Missing required" in note for note in assessment.penalties)
     assert not any("Missing" in note for note in assessment.evidence)
+
+
+# --- The generic-shortfall floor --------------------------------------------
+#
+# Coverage is a plain fraction, so "Communication" used to weigh as much as
+# "Kubernetes". A posting naming NO skill scored the neutral 0.7 while one
+# naming a single generic skill the resume did not list scored 0.0 - a
+# 21-point gap decided by whether the employer wrote one recognisable word.
+# The floor closes that gap and does nothing else: it needs EVERY missing
+# requirement to be generic, it never reaches past neutral, and it never
+# lowers anything.
+
+
+def test_the_generic_set_is_derived_from_the_taxonomy_not_hand_listed() -> None:
+    # The point of deriving it is that a skill added to skills_data.py is
+    # classified by the domains it declares, with nothing to keep in step.
+    assert GENERIC_SKILL_KEYS == {
+        key for key, spec in taxonomy.SKILLS.items() if not spec.domains
+    }
+    assert "communication" in GENERIC_SKILL_KEYS
+    # Every real skill must stay out of it, or the floor would hide a real gap.
+    for key in ("sql", "python", "gaap", "cisco", "aws", "power bi", "excel", "hris"):
+        assert key not in GENERIC_SKILL_KEYS, key
+
+
+def test_a_shortfall_of_one_generic_skill_is_floored_to_neutral() -> None:
+    profile = make_profile(skills={"excel", "forecasting"})
+    job = extract_requirements(
+        title="Financial Analyst",
+        description=describe("Requirements:\n- Strong communication skills"),
+    )
+
+    assessment = evaluate_skills(profile, job)
+
+    assert assessment.missing_required == ("Communication",)
+    assert assessment.required_coverage == pytest.approx(0.7)
+
+
+def test_a_shortfall_of_several_generic_skills_is_floored_to_neutral() -> None:
+    profile = make_profile(skills={"excel", "forecasting"})
+    job = extract_requirements(
+        title="Financial Analyst",
+        description=describe(
+            "Requirements:\n- Communication\n- Teamwork\n- Time management"
+        ),
+    )
+
+    assessment = evaluate_skills(profile, job)
+
+    assert set(assessment.missing_required) == {
+        "Communication",
+        "Teamwork",
+        "Time Management",
+    }
+    assert assessment.required_coverage == pytest.approx(0.7)
+
+
+def test_a_mixed_shortfall_is_not_floored() -> None:
+    # The case that rules out the looser candidate rule: crediting the matched
+    # Communication here would make the missing Excel cost nothing at all.
+    profile = make_profile(skills={"communication", "forecasting"})
+    job = extract_requirements(
+        title="Financial Analyst",
+        description=describe(
+            "Requirements:\n- Advanced Excel\n- Strong communication skills"
+        ),
+    )
+
+    assessment = evaluate_skills(profile, job)
+
+    assert assessment.missing_required == ("Microsoft Excel",)
+    assert assessment.required_coverage == pytest.approx(0.5)
+
+
+def test_a_real_skill_shortfall_is_unchanged() -> None:
+    profile = make_profile(skills={"excel", "forecasting"})
+    job = extract_requirements(
+        title="Financial Analyst",
+        description=describe("Requirements:\n- Advanced SQL"),
+    )
+
+    assessment = evaluate_skills(profile, job)
+
+    assert assessment.missing_required == ("SQL",)
+    assert assessment.required_coverage == 0.0
+
+
+def test_a_mandatory_generic_skill_still_rejects() -> None:
+    # The floor moves a score. It must not move an outcome: mandatory skills
+    # are handled before the threshold and are not part of this arithmetic.
+    profile = make_profile(skills={"excel", "forecasting"})
+    job = extract_requirements(
+        title="Financial Analyst",
+        description=describe(
+            "Requirements:\n- Must have exceptional communication skills"
+        ),
+    )
+
+    result = score_match(profile, job)
+
+    assert result.skills.required_coverage == pytest.approx(0.7)
+    assert result.skills.missing_mandatory == ("Communication",)
+    assert result.qualified is False
+    assert result.rejection_code is RejectionCode.MISSING_MANDATORY_SKILL
+
+
+def test_the_floor_never_lifts_coverage_above_neutral() -> None:
+    profile = make_profile(skills={"excel"})
+    job = extract_requirements(
+        title="Financial Analyst",
+        description=describe(
+            "Requirements:\n- Excel\n- Communication\n- Teamwork\n- Leadership"
+        ),
+    )
+
+    assessment = evaluate_skills(profile, job)
+
+    # 1 of 4 matched would be 0.25; the floor lifts it to neutral, no further.
+    assert assessment.required_coverage == pytest.approx(0.7)
+    assert assessment.required_coverage <= 0.7
+
+
+def test_the_floor_never_lowers_an_already_better_score() -> None:
+    # A posting whose generic requirements are all MET keeps full credit; the
+    # floor is a floor, not a replacement.
+    profile = make_profile(skills={"communication", "teamwork", "excel"})
+    job = extract_requirements(
+        title="Financial Analyst",
+        description=describe("Requirements:\n- Communication\n- Teamwork"),
+    )
+
+    assessment = evaluate_skills(profile, job)
+
+    assert assessment.missing_required == ()
+    assert assessment.required_coverage == 1.0
+
+
+def test_the_floor_moves_a_real_posting_across_the_threshold() -> None:
+    # End to end through score_match, because the component in isolation does
+    # not show that this is worth 21 points.
+    profile = make_profile(skills={"excel", "forecasting", "budgeting"})
+    job = extract_requirements(
+        title="Senior Financial Analyst",
+        description=describe(
+            "Requirements:\n- 3+ years of experience\n"
+            "- Strong communication skills"
+        ),
+    )
+
+    result = score_match(profile, job)
+
+    assert result.skills.required_coverage == pytest.approx(0.7)
+    assert result.final_score >= QUALIFICATION_THRESHOLD
+    assert result.qualified is True
+
+
+def test_the_floor_does_not_rescue_a_posting_missing_a_real_skill() -> None:
+    profile = make_profile(skills={"excel", "forecasting", "budgeting"})
+    job = extract_requirements(
+        title="Senior Financial Analyst",
+        description=describe(
+            "Requirements:\n- 3+ years of experience\n- Advanced SQL\n"
+            "- Strong communication skills"
+        ),
+    )
+
+    result = score_match(profile, job)
+
+    assert "SQL" in result.skills.missing_required
+    assert result.skills.required_coverage < 0.7
+    assert result.qualified is False
+    assert result.rejection_code is RejectionCode.BELOW_THRESHOLD
 
 
 # --- Experience and seniority ----------------------------------------------

@@ -12,12 +12,29 @@ substitute for the one asked for.
 Only a **mandatory** missing skill can reject a job. A requirement the posting
 states ambiguously reduces the score instead, which is the direction the brief
 asks for: uncertain requirements should cost points, not opportunities.
+
+# Why a shortfall of only generic skills is floored
+
+Coverage is a plain fraction, so every stated requirement weighs the same
+whether it is "Kubernetes" or "Communication". That produced a cliff running
+the wrong way: a posting naming NO skill scored the neutral 0.7, while one
+naming a single generic skill the resume happens not to list scored 0.0 - a
+21-point difference turning on whether the employer wrote one recognisable
+word. Measured over 462 live postings it hit 72 of them, and the jobs it hit
+were not weak matches but exact-role ones with full experience credit.
+
+So a shortfall made up *entirely* of generic skills is floored back to the
+same neutral credit an unspecific posting already receives - no better, no
+worse. The floor never applies when any missing requirement is a real one, and
+never lifts coverage above neutral, so a missing SQL still costs exactly what
+it costs today.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass, field
 
+from app.analysis import taxonomy
 from app.matching.profile import ResumeMatchProfile
 from app.matching.requirements import JobRequirements, SkillRequirement
 
@@ -75,6 +92,21 @@ def evaluate_skills(
         len(matched_preferred) / len(preferred) if preferred else _NEUTRAL_COVERAGE
     )
 
+    # A shortfall of nothing but generic skills says no more about the fit than
+    # an advert that listed no skills at all, so it earns the same neutral
+    # credit and never more. One real missing skill disables this entirely.
+    missing_required_keys = {
+        requirement.skill_key
+        for requirement in required
+        if not profile.has_skill(requirement.skill_key)
+    }
+    if (
+        missing_required_keys
+        and missing_required_keys <= GENERIC_SKILL_KEYS
+        and required_coverage < _NEUTRAL_COVERAGE
+    ):
+        required_coverage = _NEUTRAL_COVERAGE
+
     evidence: list[str] = []
     penalties: list[str] = []
 
@@ -120,6 +152,21 @@ def evaluate_skills(
 #: Credit given when a posting states no requirement of a given kind. Not full
 #: marks - an unstated requirement is not evidence of a fit - but not zero.
 _NEUTRAL_COVERAGE = 0.7
+
+#: Skills that identify no field of work. Derived from the taxonomy rather than
+#: listed here, so a skill added to ``skills_data.py`` is classified by the
+#: domains it declares and this set cannot drift out of step with it.
+#:
+#: As it stands the taxonomy leaves exactly nine skills domain-less, and every
+#: one is a soft skill or a generic office tool: Communication, Leadership,
+#: Microsoft Office, PowerPoint, Presentation Skills, Problem Solving,
+#: Teamwork, Time Management and Microsoft Word. Every technical and
+#: domain skill checked - SQL, Python, GAAP, Cisco, AWS, Workday, Power BI,
+#: Excel, Tableau, TCP/IP and the rest - declares at least one domain and is
+#: therefore untouched by the floor above.
+GENERIC_SKILL_KEYS: frozenset[str] = frozenset(
+    spec.key for spec in taxonomy.SKILLS.values() if not spec.domains
+)
 
 
 def _split(
