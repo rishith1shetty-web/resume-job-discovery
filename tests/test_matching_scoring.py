@@ -219,6 +219,170 @@ def test_resume_credentials_are_matched_against_requirements() -> None:
     assert resume_degree_level(()) is None
 
 
+# --- Requirement wording that is not a requirement ---------------------------
+#
+# Every description below is quoted from a live posting the recall audit
+# captured, trimmed only for length. Each one made a real job unreachable: the
+# term in the comment became a mandatory skill and vetoed the posting outright.
+
+
+def test_a_genuine_technical_must_have_stays_mandatory() -> None:
+    # The guard must not cost a single real requirement.
+    job = extract_requirements(
+        title="Data Analyst",
+        description=describe("Requirements:\n- Must have advanced SQL\n- Tableau"),
+    )
+
+    assert {s.skill_key for s in job.mandatory_skills} == {"sql"}
+
+
+def test_a_genuine_domain_must_have_stays_mandatory() -> None:
+    job = extract_requirements(
+        title="Financial Analyst",
+        description=describe(
+            "Qualifications\n- Knowledge of GAAP is required\n- Excel is mandatory"
+        ),
+    )
+
+    assert {s.skill_key for s in job.mandatory_skills} == {"gaap", "excel"}
+
+
+#: Capital One's accommodation notice, as it appears in the posting - one long
+#: line. Twenty postings in the audit were refused over it. The word that made
+#: it mandatory is at the very end, seventy characters after "Recruiting":
+#: "...used only to the extent **required** to provide needed reasonable
+#: accommodations."
+ACCOMMODATION_NOTICE = (
+    "If you have visited our website in search of information on employment "
+    "opportunities or to apply for a position, and you require an "
+    "accommodation, please contact Capital One Recruiting at 1-800-304-9102. "
+    "All information you provide will be kept confidential and will be used "
+    "only to the extent required to provide needed reasonable accommodations."
+)
+
+
+def test_accommodation_boilerplate_does_not_make_recruiting_mandatory() -> None:
+    job = extract_requirements(
+        title="Senior Financial Analyst",
+        description=describe(f"Requirements:\n- Strong Excel\n{ACCOMMODATION_NOTICE}"),
+    )
+
+    assert "recruiting" not in {s.skill_key for s in job.mandatory_skills}
+
+
+def test_export_control_legal_text_does_not_make_c_or_r_mandatory() -> None:
+    # Boeing. "22 C.F.R." is a regulation, not the C and R languages.
+    job = extract_requirements(
+        title="Experienced Financial Analyst",
+        description=describe(
+            "Requirements:\n- Financial modeling\n"
+            "This position must meet export control compliance requirements. "
+            'To meet export control compliance requirements, a "U.S. Person" '
+            "as defined by 22 C.F.R. 120.15 is required."
+        ),
+    )
+
+    mandatory = {s.skill_key for s in job.mandatory_skills}
+    assert "c" not in mandatory
+    assert "r" not in mandatory
+
+
+def test_a_clearance_requirement_does_not_become_a_typescript_requirement() -> None:
+    # "TS/SCI" is a clearance. It was being read as TypeScript.
+    job = extract_requirements(
+        title="Business Analyst",
+        description=describe(
+            "Requirements:\n- Requirements gathering\n"
+            "- An active TS/SCI clearance (required for consideration)"
+        ),
+    )
+
+    assert "typescript" not in {s.skill_key for s in job.mandatory_skills}
+    # The clearance itself is still enforced, by the rule that owns it.
+    assert job.requires_clearance is True
+
+
+def test_pay_disclosure_does_not_make_compensation_mandatory() -> None:
+    # Gilead Sciences.
+    job = extract_requirements(
+        title="Financial Analyst",
+        description=describe(
+            "Requirements:\n- Advanced Excel is required\n"
+            "The salary range for this position is $109,650.00 - $141,900.00. "
+            "Gilead considers a variety of factors when determining base "
+            "compensation, including required experience."
+        ),
+    )
+
+    mandatory = {s.skill_key for s in job.mandatory_skills}
+    assert "compensation" not in mandatory
+    # ...and the real must-have on its own line is untouched.
+    assert "excel" in mandatory
+
+
+def test_a_degree_subject_list_does_not_make_every_subject_mandatory() -> None:
+    # Lyft. A field of study is not a tool the candidate must have used.
+    job = extract_requirements(
+        title="Data Analyst",
+        description=describe(
+            "Requirements:\n"
+            "- Currently pursuing a Bachelors or Masters degree in mathematical "
+            "sciences (Operations Research, Computer Science, Statistics, "
+            "Applied Mathematics) required"
+        ),
+    )
+
+    assert "statistics" not in {s.skill_key for s in job.mandatory_skills}
+
+
+def test_a_boilerplate_skill_still_counts_in_ordinary_coverage() -> None:
+    # The guard withholds the veto and nothing else. The term keeps its
+    # required context, so a candidate missing it still scores lower - which is
+    # what stops this being a way to score a posting more generously.
+    job = extract_requirements(
+        title="Senior Financial Analyst",
+        description=describe(f"Requirements:\n{ACCOMMODATION_NOTICE}"),
+    )
+
+    recruiting = next(s for s in job.skills if s.skill_key == "recruiting")
+    assert recruiting.context is SkillContext.REQUIRED
+    assert recruiting.is_mandatory is False
+    assert "recruiting" in {s.skill_key for s in job.required_skills}
+
+
+def test_a_boilerplate_line_does_not_rescue_a_posting_from_a_real_must_have() -> None:
+    # Both kinds of line in one posting: the artefact loses its veto, the real
+    # requirement keeps it, and the job is still rejected.
+    profile = make_profile(skills={"excel", "financial modeling"})
+    job = extract_requirements(
+        title="Senior Financial Analyst",
+        description=describe(
+            "Requirements:\n- Must have Python\n"
+            "If you require an accommodation, contact our recruiting team."
+        ),
+    )
+
+    result = score_match(profile, job)
+
+    assert {s.skill_key for s in job.mandatory_skills} == {"python"}
+    assert result.rejection_code is RejectionCode.MISSING_MANDATORY_SKILL
+    assert result.skills.missing_mandatory == ("Python",)
+
+
+def test_a_genuine_mandatory_skill_still_rejects_end_to_end() -> None:
+    # The unchanged path, pinned here so the guard cannot quietly widen.
+    profile = make_profile(skills={"excel", "sql"})
+    job = extract_requirements(
+        title="Senior Financial Analyst",
+        description=describe("Requirements:\n- Must have Tableau\n- Excel"),
+    )
+
+    result = score_match(profile, job)
+
+    assert result.qualified is False
+    assert result.rejection_code is RejectionCode.MISSING_MANDATORY_SKILL
+
+
 # --- Skills -----------------------------------------------------------------
 
 

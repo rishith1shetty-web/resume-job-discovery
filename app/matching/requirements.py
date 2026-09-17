@@ -15,6 +15,14 @@ must-have and a missing nice-to-have are not the same thing:
 
 Anything ambiguous lands in ``required`` at most, never ``mandatory``: an
 uncertain requirement lowers the score, it does not reject the job.
+
+That last rule needs one guard, because requirement *wording* is not the same
+thing as a requirement. Employers write their legal, pay and hiring-process
+boilerplate in the same register - "must meet export control requirements",
+"if you require an accommodation" - and a taxonomy term that happens to share
+such a line would otherwise become a must-have able to reject the posting on
+its own. ``_NON_REQUIREMENT_CONTEXT`` marks those lines, and a skill read from
+one keeps its ordinary required status while losing the veto.
 """
 
 from __future__ import annotations
@@ -71,6 +79,55 @@ _MANDATORY_MARKER = re.compile(
     r"\b(?:must\s+(?:have|possess|hold|be)|is\s+required|are\s+required|"
     r"required\b(?!\s*(?:or|/)\s*preferred)|mandatory|essential\b)",
     flags=re.IGNORECASE,
+)
+
+# Lines that carry requirement wording but are not asking the candidate for a
+# skill. A posting's legal, pay and process boilerplate is written in the same
+# register as its requirements - "must meet export control requirements", "if
+# you require an accommodation", "an active TS/SCI clearance (required)" - so
+# `_MANDATORY_MARKER` fires on it, and any taxonomy term sharing the line
+# becomes a must-have that can veto the job outright.
+#
+# Measured over 407 live postings, 51 of the 136 extracted mandatory
+# requirements came from lines like these, and every one of them was an
+# artefact rather than a requirement:
+#
+#   "as defined by 22 C.F.R. ... export control requirements"  -> C, R
+#   "questions about our recruiting process ... require an
+#    accommodation"                                            -> Recruiting
+#   "An active TS/SCI clearance (required for consideration)"   -> TypeScript
+#   "factors when determining base compensation"                -> Compensation
+#   "degree in mathematical sciences (..., Statistics, ...)"    -> Statistics
+#
+# A line matching this loses only the **veto**. The skill keeps the context it
+# was read with, so it still counts in required coverage and a candidate
+# missing it still scores lower - what it can no longer do is reject the job on
+# its own. That asymmetry is the same one `application_type` states: a false
+# negative costs one listing, a false positive silently removes a real vacancy.
+#
+# Clearance wording is here because clearance is already its own rule
+# (`requires_clearance` / `_CLEARANCE`). A clearance line must never *also*
+# mint a mandatory skill; the posting's real requirement is enforced either way.
+_NON_REQUIREMENT_CONTEXT = re.compile(
+    r"""(?ix)
+    # Export-control and other statutory text.
+    export\s+control | \b\d{1,2}\s*c\.?\s*f\.?\s*r\.? | \bitar\b |
+    part\s*810 |
+    # Equal-opportunity, accommodation and application-process text.
+    accommodation | recruiting\s+process | equal\s+opportunity\s+employ |
+    will\s+not\s+discriminate | discriminate\s+against |
+    applicants?\s+with\s+disabilit | reasonable\s+accommodation |
+    # Pay disclosure.
+    salary\s+range | base\s+compensation | compensation\s+and\s+benefits |
+    pay\s+(?:range|transparency) | benefits\s+package |
+    # Degree-subject enumeration: the subjects name a field of study, not a
+    # tool the candidate must have used.
+    degree\s+in\b | field\s+of\s+study | or\s+(?:a\s+)?related\s+field |
+    # Clearance, which has its own rule.
+    ts\s*/\s*sci | top\s+secret | security\s+clearance | public\s+trust |
+    # Pre-employment policy.
+    e-?verify | drug\s+screen | background\s+check
+    """
 )
 
 # Wording that explicitly softens a requirement. Beats a mandatory marker and
@@ -237,7 +294,10 @@ def _classify_line(line: str, heading_context: str) -> tuple[SkillContext, bool]
         return SkillContext.PREFERRED, False
 
     if _MANDATORY_MARKER.search(line):
-        return SkillContext.REQUIRED, True
+        # The wording is there, but the sentence is boilerplate rather than a
+        # request for a skill. Keep the context - the term still counts toward
+        # required coverage exactly as before - and withhold only the veto.
+        return SkillContext.REQUIRED, not _NON_REQUIREMENT_CONTEXT.search(line)
 
     if heading_context == "required":
         return SkillContext.REQUIRED, False
